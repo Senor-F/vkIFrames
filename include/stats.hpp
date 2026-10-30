@@ -26,7 +26,9 @@ struct Record {
     double secs{1.0};                                   // length of the window
     std::string mode;                                   // off / bypass / interp / extrap
     std::string bench;                                  // "" or warmup / settle / off / on while a benchmark runs
-    double target_fps{0}, refresh_hz{0}, native_fps{0}, shown_fps{0}, gen_per_native{0};
+    double target_fps{0}, refresh_hz{0}, native_fps{0}, shown_fps{0};
+    double gen_per_native{0};                           // k: frames shown beyond the native one (2.0 = 30 -> 90). NOT the number of frames the interpolation pass draws: it draws every shown frame, k + 1 per native frame
+
     uint64_t frames{0};                                 // native present-to-present intervals in the window
     double ft_mean{0}, ft_p95{0}, ft_p99{0}, ft_max{0}; // game frame time, ms
     double cpu_game_ms{0}, presenter_core{0};           // game-thread CPU ms per frame inside present; presenter thread share of one core (0..1)

@@ -128,6 +128,12 @@ int main() {
     setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
     setenv("VKIFRAME_LIVE_LOG", (std::string(dir) + "/vkiframes/live.log").c_str(), 1);
     ::mkdir((std::string(dir) + "/vkiframes").c_str(), 0700);
+    {   // a stats.jsonl left at 0644 by an older build is tightened to 0600 on first use
+        const std::string old = std::string(dir) + "/vkiframes/stats.jsonl";
+        const int fd = ::open(old.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) { ::fchmod(fd, 0644); ::close(fd); }
+        struct stat st0; CHECK(stat(old.c_str(), &st0) == 0 && (st0.st_mode & 0777) == 0644);
+    }
     Poll();                                                              // no file yet
     CHECK(!StatsOn() && !StatsWantsSecond());                            // off: nothing is asked of the layer
     Put(conf, "REV=1\nENABLED=1\nBASE_FPS_CAP=60\n");

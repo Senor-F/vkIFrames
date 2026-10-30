@@ -146,9 +146,10 @@ std::string Bench::Json() const {
     };
     const char* status = state_ == State::Complete ? "complete" : state_ == State::Aborted ? "aborted" : "idle";
     std::string j;
-    char b[700];
+    char b[1200];
     std::snprintf(b, sizeof b,
         "{\n\"version\":1,\n\"status\":\"%s\",\n\"reason\":\"%s\",\n"
+        "\"notes\":\"generated_per_s and interp_ms count interpolation passes: the pass draws every shown frame (k + 1 per native frame, k = gen_per_native), the held native frame included. A 60 s segment has about 59 one-second records: 2 settle, about 57 counted, and one at the switch that belongs to neither.\",\n"
         "\"schedule\":{\"warmup_s\":%.0f,\"segment_s\":%.0f,\"repeats\":%d,\"settle_s_left_out_per_segment\":%.0f,\"order\":\"warm-up (layer on), then repeats x (off, on)\"},\n"
         "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
         status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, refresh_);
