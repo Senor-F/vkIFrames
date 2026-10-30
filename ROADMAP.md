@@ -14,6 +14,10 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
   ```
   Stage 6 adds an implicit-layer manifest for everyday use.
 
+**Order of work now (owner, 2026-10-30):** measurement and `bench.json` (done), refresh-rate clamp (done), then the findings of the benchmarks (STATUS.md, open items), the GPU and CPU load list in AUDIT.md, and the async compute queue last, only if the measurements show it is worth it.
+
+`[x]` done, `[ ]` open, `[~]` partly done.
+
 ---
 
 ## Stage 1: Vulkan Layer Skeleton & Swapchain Interception
@@ -64,8 +68,8 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
 - [x] **3b** *(verified on the RX 9070 machine, 18/18)* Hold one frame, ring buffer, passthrough engine (`src/gpu_frames.cpp`).
 - [x] **3c-i** *(verified on the RX 9070 machine, 20/20; visual check pending)* Placeholder blend (`shaders/blend.comp`), hidden images, `scripts/test_stage3c.sh`.
 - [x] **3c-ii** *(verified on the RX 9070 machine, 19/19)* Presenter thread plus per-queue mutexes for exact pacing (`scripts/test_stage3cii.sh`).
-- [ ] Write `shaders/blend.comp` (`mix(A, B, t)`) as the stand-in synthetic frame, plus a small `ComputePass` helper.
-- [ ] Insert `VkImageMemoryBarrier2` transitions between presentation, transfer and compute use.
+- [x] Write `shaders/blend.comp` (`mix(A, B, t)`) as the stand-in synthetic frame, plus a small `ComputePass` helper.
+- [x] Insert `VkImageMemoryBarrier2` transitions between presentation, transfer and compute use.
 
 ### Testing & Validation Milestone
 - **Test:** Run a 30 FPS-capped app with a 60 FPS target, then a 40 FPS-capped app (non-integer ratio).
@@ -77,12 +81,12 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
 **Goal:** Compute dense pixel displacement vectors between frames on an async compute queue.
 
 ### Tasks
-- [ ] At device creation, pick a compute-capable queue family (prefer one without graphics) and request a queue from it; fall back to the graphics queue.
-- [ ] Write the pyramid downsample shader (4–5 levels).
-- [ ] Write coarse-to-fine flow shaders (coarse search, per-level refine).
-- [ ] Write the forward-backward consistency shader that outputs the occlusion mask.
-- [ ] Build SPIR-V at build time and embed it in the library.
-- [ ] Synchronize with the graphics queue using timeline semaphores.
+- [ ] *(not built: flow runs on the present queue; async compute is item 9 of AUDIT.md, last in the order of work)* At device creation, pick a compute-capable queue family (prefer one without graphics) and request a queue from it; fall back to the graphics queue.
+- [x] Write the pyramid downsample shader (4–5 levels).
+- [x] Write coarse-to-fine flow shaders (coarse search, per-level refine).
+- [x] Write the forward-backward consistency shader that outputs the occlusion mask.
+- [x] Build SPIR-V at build time and embed it in the library.
+- [ ] *(not built, same reason)* Synchronize with the graphics queue using timeline semaphores.
 
 ### Testing & Validation Milestone
 - **Test:** Feed two consecutive frames of a camera pan through the pipeline and dump the vector map.
@@ -94,11 +98,11 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
 **Goal:** Combine motion vectors with temporal weights to synthesize clean intermediate frames with UI protection.
 
 ### Tasks
-- [ ] Static difference-threshold compute pass for invariant pixels (HUD, text, crosshairs).
-- [ ] Bilateral edge filtering of the flow field guided by source colors and the UI mask.
-- [ ] GPU reduction of the mean flow magnitude (`flow_stats.comp`).
-- [ ] Backward-gather interpolation shader using the dynamic $t$, with occlusion fallback and smooth blend toward 50/50 when mean velocity exceeds the threshold.
-- [ ] Replace the Stage 3 blend with the interpolation pass.
+- [x] Static difference-threshold compute pass for invariant pixels (HUD, text, crosshairs). *(inside `flow_interp.comp`; `VKIFRAME_UI_MASK_THRESHOLD`)*
+- [x] *(done as colour-guided vector weighting inside `flow_interp.comp`, not as a separate pass)* Bilateral edge filtering of the flow field guided by source colors and the UI mask.
+- [x] *(done differently: the pan fallback measures the bad-match share on a fixed grid inside `flow_interp.comp`; there is no `flow_stats.comp`)* GPU reduction of the mean flow magnitude.
+- [x] Backward-gather interpolation shader using the dynamic $t$, with occlusion fallback and smooth blend toward 50/50 when mean velocity exceeds the threshold.
+- [x] Replace the Stage 3 blend with the interpolation pass.
 
 ### Testing & Validation Milestone
 - **Test:** Play a fast-paced game with prominent HUD elements.
@@ -111,11 +115,11 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
 
 ### Tasks
 - [ ] Swapchain recreation, window resizing, dynamic resolution, and `VK_ERROR_OUT_OF_DATE_KHR` / `VK_SUBOPTIMAL_KHR` forwarding.
-- [ ] Profile and optimize the full chain to the budget: **≤ 2.5 ms at 1080p, ≤ 3.8 ms at 1440p** for flow + masking + interpolation combined (provisional).
+- [~] *(in progress: measurement logic and `bench.json` are in; Deck costs are in STATUS.md; flow tiling comes after the benchmark)* Profile and optimize the full chain to the budget: **≤ 2.5 ms at 1080p, ≤ 3.8 ms at 1440p** for flow + masking + interpolation combined (provisional).
 - [ ] Test on Wayland compositors (KWin, Hyprland) and X11, with VRR and fixed-refresh displays.
-- [ ] Runtime configuration through environment variables, and an optional debug overlay.
-- [ ] Implicit-layer manifest for installation, and hiding `VK_EXT_present_timing` from games.
-- [ ] Steam Deck and SteamOS: build in the Steam Runtime SDK, confirm the layer is visible inside the game container, decide how the base frame rate is capped (TARGETS.md §3), and add a Deck-sized flow setting (half-resolution flow).
+- [x] Runtime configuration through environment variables, and an optional debug overlay. *(plus live settings through `live.conf`, the Decky panel, stats and a benchmark; the debug overlay is not built)*
+- [x] Implicit-layer manifest for installation, and hiding `VK_EXT_present_timing` from games. *(manifest, install scripts and `VKIFRAME_ENABLE`/`VKIFRAME_DISABLE` are done; hiding `VK_EXT_present_timing` from games is still open)*
+- [~] *(partly done: the layer loads in Steam games on the Deck, Cuphead, Cult of the Lamb and Tomb Raider 2013 with `PROTON_USE_WOW64=1` for the 32-bit game; the base-rate cap is `VKIFRAME_BASE_FPS_CAP`; building in the Steam Runtime SDK is not recorded)* Steam Deck and SteamOS: build in the Steam Runtime SDK, confirm the layer is visible inside the game container, decide how the base frame rate is capped (TARGETS.md §3), and add a Deck-sized flow setting (half-resolution flow).
 
 ### Testing & Validation Milestone
 - **Test:** Playtest native Linux and Proton games with base rates from 25 FPS to 60+ FPS.

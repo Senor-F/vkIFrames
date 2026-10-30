@@ -1,6 +1,6 @@
 # vkIFrames: Implementation Status and Measurements
 
-Last updated 2026-10-30. Complements [ROADMAP.md](ROADMAP.md) and [DESIGN.md](DESIGN.md). Source of truth is the git repository; this page records what was measured on hardware.
+Last updated 2026-10-31. Complements [ROADMAP.md](ROADMAP.md) and [DESIGN.md](DESIGN.md). Source of truth is the git repository; this page records what was measured on hardware.
 
 ## Where the stages stand
 
@@ -10,9 +10,9 @@ Last updated 2026-10-30. Complements [ROADMAP.md](ROADMAP.md) and [DESIGN.md](DE
 | 2 Present timing | Done. The Deck and the Wayland desktop expose `VK_EXT_present_timing`; the desktop reports feedback only (no absolute target times), so pacing stays vblank driven. Games that use present timing themselves are detected and the layer's own use is skipped. |
 | 3 Hold one, ring buffer, blend | Done. 45 to 90 in Cuphead on the Deck is locked: shown 90.0 fps, 0 drops, base jitter 0.01 to 0.02 ms in steady state. |
 | 4 Optical flow | Running on RADV (RX 9070) and on the Steam Deck. CPU reference in `include/flow_ref.hpp`, tested against known motion; GPU matches it bit for bit on the desktop. |
-| 5 Interpolation | Done for now (flow guided interpolation, `VKIFRAME_INTERPOLATE=1`) with colour-guided vector weighting and a match-cost fade. Optional static-UI mask (`VKIFRAME_UI_MASK_THRESHOLD`, off by default, awaiting a Deck look test); the mean velocity fallback is still to do. |
+| 5 Interpolation | Done for now (flow guided interpolation, `VKIFRAME_INTERPOLATE=1`) with colour-guided vector weighting and a match-cost fade. Static-UI mask (`VKIFRAME_UI_MASK_THRESHOLD`) and the pan fallback (the whole frame cross-fades when most of the field cannot be matched) are in `flow_interp.comp`. |
 | 5b Phase lock | `VKIFRAME_PHASE_LOCK` (default on) with `VKIFRAME_PHASE_OFFSET` (default 0.5): at a near-integer base/target ratio the content delay is slewed so the output ticks sit at fixed positions between native frames (t = 0.25 / 0.75 at 45 to 90). |
-| 6 Integration | Started: settings renamed `VKIFRAME_*` (old `FRAMEGEN_*` still read), implicit-layer manifest with `VKIFRAME_ENABLE`/`VKIFRAME_DISABLE`, `scripts/install.sh` and `uninstall.sh`, `VKIFRAME_LOG_FILE`. Untested on the Deck: whether Steam's container sees `~/.local/share/vulkan/implicit_layer.d`. |
+| 6 Integration | Mostly done: settings renamed `VKIFRAME_*` (old `FRAMEGEN_*` still read); implicit-layer manifest with `VKIFRAME_ENABLE`/`VKIFRAME_DISABLE`; `scripts/install.sh` and `uninstall.sh`; Decky plugin (panel, live settings, Benchmark button, copy buttons for launch options including the 32-bit one, PR #10 pending); `live.conf`, `live.log`, `status.json`, `stats.jsonl` and `bench.json` (private, 0600); measurement logic and benchmark (`VKIFRAME_STATS`, `scripts/vkiframes-bench.sh`); refresh-rate clamp and cost warning (unit-tested only, because the Deck reports `refresh_hz` 0); security checklist done. The layer loads in Steam games on the Deck (Cuphead, Cult of the Lamb, Tomb Raider 2013 with `PROTON_USE_WOW64=1`, since the layer is 64-bit). Open: hiding `VK_EXT_present_timing` from games, resize handling, the debug overlay. |
 
 ## Measurements
 
@@ -31,6 +31,10 @@ Last updated 2026-10-30. Complements [ROADMAP.md](ROADMAP.md) and [DESIGN.md](DE
   * layer cost per 22 ms base frame (flow + two interpolations): about 9.5 ms before, about 6.3 ms after;
   * `VKIFRAME_FLOW_BWD_SKIP=2` (skip the finest backward refine at any level, mask from a 160x90 field): expected about 0.9 ms per pair at level 2, measured on the Deck: refine L2 1.75 -> 0.91 ms, flow 4.85 -> 4.02 ms per pair (Cuphead, 45 to 90). **Look test, Cuphead: the smudging on the trees is much more noticeable than without the skip (user, 2026-10-30), so it stays off by default**; Lamb showed no visible difference. Mode 1 (default) only acts at flow level 1.
 * **Two-sided interpolation (`VKIFRAME_INTERP_BIDIR=1`, default on)**: A is moved forward along A -> B, B is moved back along B -> A, each trusted by its own match cost and occlusion mask, so uncovered background comes only from B and covered background only from A. Offline (`interp_eval`, method `bidirectional`): Cuphead dash, trackable triplet MAE 0.0258 against 0.0274 for the single interpolation (6% lower; 8% lower on hard pixels), with visibly cleaner tree-trunk edges; the single interpolation's block patches are still visible in both. It needs the full-resolution backward flow, so it turns `VKIFRAME_FLOW_BWD_SKIP` off. **Deck test (Cuphead, 45 to 90, 2026-10-30)**: compiles and runs; interpolation 1.15 ms per synthetic frame against 0.78 ms without (+0.37 ms), flow unchanged at 4.86 ms per pair (the full backward flow is already refined at level 2); the owner reports the frames are a lot smoother (the whole build) but the trees still interpolation, so it is **off by default**; kept as an optional switch.
+
+* **Benchmark 1, Steam Deck, 30 to 90 (base-rate cap 30, `max_synthetic` 4, owner's run, 2026-10-31)**: frame time 33.40 ms off and 33.38 ms on, so the layer cost on the game is **-0.02 ms** (p95 -0.24 ms). The game was not GPU-bound at 30 fps, so the layer cost nothing visible. Layer GPU share 0.377 (flow 6.09 ms per pair, interpolation 2.18 ms per generated frame). Shown 89.7 fps; no cancelled, dropped or late frames. The 146 to 149 ms frame-time maxima occur with the layer off and on alike.
+* **Benchmark 2, Steam Deck, Tomb Raider 2013 (GPU-bound, 18.6 fps native, cap 60 not reached, target 90, owner's run)**: frame time 53.75 ms off, 56.20 ms on: mean cost **+2.45 ms** (4.6 %), per segment +1.97, +2.14, +3.22 ms (the Auditor recomputed these from `stats.jsonl`). Split by mode (Auditor): interpolating seconds (105 s) +0.90 ms, bypass seconds (62 s) +5.28 ms, so the headline number is mostly the bypass seconds. Game-thread waits rise from 0.07 to 2.27 ms per frame (gpu lock about 1.0 ms, command fence about 1.2 ms); because the game is GPU-bound, its CPU thread runs ahead, so these waits are only partly visible in frame time. Layer GPU share 0.089; flow 3.41 ms per pair, interpolation 0.96 ms per pass. The interpolation pass draws every shown frame, including the held native frame (k + 1 passes per native frame). Shown 59.4 fps against the 90 target. At 18 fps a second holds about 18 frames, so per-second p95 and p99 are close to the maximum: use means and per-segment differences only.
+* **Reading of both benchmarks**: the layer is free when the game has GPU headroom and costs a few percent when the game is GPU-bound. The cost is mostly waits on the layer's command buffers and its lock, which point to stage 2 (locks, pools, fences) before an async queue. This is a direction from two scenes, not a final result.
 
 ## Findings that changed the design
 
@@ -51,7 +55,10 @@ Last updated 2026-10-30. Complements [ROADMAP.md](ROADMAP.md) and [DESIGN.md](DE
 
 1. Occlusion strips (uncovered background behind a moving sprite) are cross-faded, which leaves a ghost; a one-sided fill from the frame that actually shows the background would remove it.
 2. Dense line art still distorts; try stronger cost-fade thresholds (`VKIFRAME_CONF_LO/HI`) on the Deck and compare.
-3. UI mask, mean velocity fallback, refresh divisor snapping on the Deck.
+3. Refresh divisor snapping on the Deck; the UI mask default (0.08) still needs a Deck look test.
 4. Lock stays off for non-integer ratios; its behaviour around game hitches (re-lock takes a few seconds) can be tightened.
 5. Mock tests do not exercise the flow engine yet (stub shaders).
-6. Implicit layer manifest and hiding `VK_EXT_present_timing` from games (Stage 6).
+6. Hiding `VK_EXT_present_timing` from games (Stage 6); the Deck reports `refresh_hz` 0.00, so the refresh-rate clamp has never run on hardware.
+7. **Bypass and dropped frames at a low base rate (not diagnosed).** In benchmark 2 the gate was closed in 62 of 167 on-seconds and 357 frames were dropped (265 while interpolating, 92 in bypass). It is not known whether the gate closes in seconds where the game stutters, or whether bypass itself costs. A test with the gate forced open or closed for a whole segment would separate the two.
+8. **Flow cost drifts upward.** Flow took 4.8 ms per pair earlier, 6.1 ms in benchmark 1 and 7.5 to 8.4 ms in the minutes after it (the finest refine pass 2.0 to 3.4 ms). The cause is unknown (scene, clocks or heat).
+9. **Waits on the game thread** (lock and command fence): `VKIFRAME_CMD_BUFFERS` (PR #11) tests whether a deeper ring helps; recording outside the mutex is a separate change.
