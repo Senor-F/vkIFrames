@@ -8,17 +8,19 @@ Every item below uses the same layout: what it is, what it costs today, what hap
 
 | # | Item | Effort | Expected gain | Risk | Status |
 |---|---|---|---|---|---|
-| 1 | Measurement logic and `bench.json` | medium | decides everything below | low | Builder, first |
-| 2 | Refresh-rate clamp and cost warning | small | removes wasted frames and latency | low | next |
-| 3 | Flow passes: tiling, then 16-bit, then 8-bit integer | medium to large | highest (flow is about 69 % of layer GPU time) | medium (look test) | after `bench.json` |
+| 1 | Measurement logic and `bench.json` | medium | decides everything below | low | in main; closed except acceptance (b) |
+| 2 | Refresh-rate clamp and cost warning | small | removes wasted frames and latency | low | in main; unit-tested only (the Deck reports no refresh rate) |
+| 3 | Flow passes: tiling, then 16-bit, then 8-bit integer | medium to large | highest (flow is 48 to 69 % of layer GPU time, depending on the scene) | medium (look test) | after `bench.json` |
 | 4 | Ring and output format | medium | small (estimate 1 to 2 % bandwidth) | medium | only if the blits measure above 0.3 ms |
 | 5 | Locking, command pools, descriptors | medium | removes rare spikes | medium (races) | only if percentiles show spikes |
 | 6 | Barriers | small | small | low (validation layer) | with the validation run |
 | 7 | Timestamps only in stats mode | tiny | tiny | none | part of item 1 |
 | 8 | Fewer submits | medium | negligible | medium | skip unless CPU share is high |
-| 9 | Async compute queue | large | at most the layer's cost on the game | high (hangs) | last, gated by `bench.json` |
+| 9 | Async compute queue | large | at most the layer's cost on the game | high (hangs) | last; undecided: the first `bench.json` was at a 30 fps cap and cannot show the cost |
 
-Closed: session link in a pull request body; checked security items (section 11). Needed from the owner: one `bench.json` from the Deck (section 10).
+Closed: session link in a pull request body; checked security items (section 11); item 1 except acceptance (b).
+
+**First `bench.json` (Deck, cap 30, target 90).** Recomputed by the Auditor and the PM from `stats.jsonl`: all derived numbers match. Layer cost on the game -0.02 ms mean, -0.24 ms p95 (noise is about 0.07 ms per segment). Caveat: frame time was 33.33 ms in every segment, which is the 30 fps cap, so the game was not GPU-bound and the run cannot show what the layer costs a game that fills the GPU. Item 9 stays undecided until a GPU-bound run exists. Layer GPU share 0.377 (flow 0.182, interpolation 0.195); flow 6.09 ms per pair, interpolation 2.18 ms. `refresh_hz` was 0 in every record. Open: acceptance (b), the cost of `STATS=0` against the previous build. Needed from the owner: one GPU-bound `bench.json` (section 10).
 
 ## 1. Measurement logic for the Builder (first; so the Auditor can audit, compute and close)
 
@@ -65,7 +67,7 @@ The run must stop and restore the user's settings when the user changes a settin
 - **Context.** Builder's Deck numbers (60 fps game, 90 fps output): flow 4.84 ms per pair, interpolation 1.43 ms per generated frame, about 42 % of GPU time, about 69 % of that is flow; game-thread waits are about 0.1 ms per frame.
 - **What it is.** The flow engine reads 32-bit float luma pyramids and flow fields; block matching is the expensive part (earlier Deck timings: coarse search 1.25 ms, refine at the 1/8 level 1.45 ms, refine at the 1/4 level 1.75 ms, pyramid 0.3 ms per pair).
 - **If we do, in this order.** (1) Shared-memory tiling of the block-matching loops: a pure speed-up with identical output, no look test needed. (2) 16-bit storage for the pyramid, the masks and the flow fields: halves their bandwidth. (3) 16-bit arithmetic: about twice the ALU rate on this GPU class. (4) 8-bit integer dot products for the matching sums: up to four times fewer operations on 8-bit luma, but the tie-break constants are smaller than one 8-bit level, and the CPU reference must mirror every rounding. Warp coordinates and the sub-pixel fit stay 32-bit. Risks: precision regressions that show as smearing; measure with the offline error tool and a look test after each step.
-- **If we do not.** Flow stays at 4.84 ms per pair, 69 % of the layer's GPU cost.
+- **If we do not.** Flow stays at 4.84 to 6.09 ms per pair (Deck, two runs), 48 to 69 % of the layer's GPU cost.
 - **Recommendation.** Highest expected gain; start with tiling, stop at the first step that reaches the goal.
 - **Decide with.** Per-pass timestamps in `bench.json`; offline error numbers; look test.
 
@@ -130,7 +132,7 @@ The run must stop and restore the user's settings when the user changes a settin
 
 ## 10. Needed from the owner (Deck)
 
-- One `bench.json` from a 60 -> 90 run in a GPU-heavy scene (item 1 produces it).
+- One `bench.json` in a GPU-bound scene: the game's own frame time above 16.7 ms and not equal to a cap, base-fps cap raised above what the game reaches, a static view held for the whole run, target 90 (item 1 produces it). The first run (cap 30) does not count for item 9.
 - A look test of anything that changes the output (ring format, direct write into the swapchain image).
 
 ## 11. Checked and closed (owner agrees, 22:24)
