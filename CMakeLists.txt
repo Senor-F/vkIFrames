@@ -64,6 +64,7 @@ add_library(vkIFrames SHARED
     src/gpu_frames.cpp
     src/optical_flow.cpp
     src/live_config.cpp
+    src/stats.cpp
 )
 target_include_directories(vkIFrames PRIVATE include ${FRAMEGEN_GENERATED_DIR})
 add_dependencies(vkIFrames layer_shaders)
@@ -113,8 +114,13 @@ if(FRAMEGEN_BUILD_TESTS)
     target_include_directories(test_live PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_live PRIVATE Vulkan::Headers)
     add_test(NAME live_config COMMAND test_live)
+    add_executable(test_stats tests/test_stats.cpp src/stats.cpp src/live_config.cpp)
+    target_include_directories(test_stats PRIVATE include ${FRAMEGEN_GENERATED_DIR})
+    target_link_libraries(test_stats PRIVATE Vulkan::Headers)
+    add_test(NAME stats_bench COMMAND test_stats)
     # keep the tests out of the user's ~/.config/vkiframes/live.log
     set_tests_properties(live_config mock_loader mock_timing mock_hold mock_synth mock_extrap mock_pacer PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg")
+    set_tests_properties(stats_bench PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg-stats")
 endif()
 
 # offline scoring of interpolation methods on captured frames (tools/interp_eval); not part of the layer

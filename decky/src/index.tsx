@@ -36,6 +36,8 @@ type State = {
   refresh_hz: number;
   refresh_src: string;
   status: Record<string, unknown> | null;
+  bench: { status: string | null; reason: string; age_s: number; layer_cost_mean_ms: number | null; gpu_share: number | null } | null;
+  bench_file: string;
 };
 
 const getState = callable<[], State>("get_state");
@@ -44,6 +46,7 @@ const resetValues = callable<[], Record<string, number>>("reset_values");
 const installLayer = callable<[lib_path: string], LayerInfo>("install_layer");
 const uninstallLayer = callable<[], LayerInfo>("uninstall_layer");
 const getLog = callable<[lines: number], string[]>("get_log");
+const startBench = callable<[], { token: number }>("start_bench");
 
 const LAUNCH_PLAIN = "VKIFRAME_ENABLE=1";
 const LAUNCH_FULL = "VKIFRAME_ENABLE=1 %command%";
@@ -148,6 +151,9 @@ function Content() {
   if (!state) return <PanelSection title="vkIFrames"><PanelSectionRow>Loading…</PanelSectionRow></PanelSection>;
 
   const { layer, schema, values, status } = state;
+  const gameRunning = !!status && Number(status["age_s"] ?? 99) <= 5;
+  const benchLabel = String(status?.["bench"] ?? "");
+  const benchRunning = gameRunning && benchLabel !== "" && benchLabel !== "done" && benchLabel !== "aborted";
 
   // A slider takes the secondary gamepad button as a shortcut for fine steps; the legend at the bottom of the screen names the button.
   const fineShortcut = {
@@ -330,6 +336,34 @@ function Content() {
           </PanelSection>
         </>
       )}
+      <Gap />
+
+      <PanelSection title="Benchmark">
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.75 }}>
+            Measures what the layer costs the game: 30 s warm-up, then 3 times (60 s layer off, 60 s on), about 7 minutes in the same scene. Start a game first and stay in a demanding scene. The run stops if you change a setting or leave the game. The numbers go to bench.json in the vkiframes config folder.
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={!gameRunning || benchRunning}
+            onClick={() => act(() => startBench(), "Benchmark requested")}
+          >
+            {benchRunning ? "Benchmark running: " + benchLabel : "Run benchmark (7 min)"}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Focusable style={{ fontSize: 12 }} onActivate={() => {}}>
+            {state.bench
+              ? state.bench.status === "complete"
+                ? `Last run: layer costs ${state.bench.layer_cost_mean_ms} ms per game frame, ${Math.round((state.bench.gpu_share ?? 0) * 100)} % of the GPU (${Math.round(state.bench.age_s / 60)} min ago)`
+                : `Last run stopped: ${state.bench.reason}`
+              : "No benchmark run yet."}
+          </Focusable>
+        </PanelSectionRow>
+        <EndMarker text="End of benchmark" />
+      </PanelSection>
       <Gap />
 
       <PanelSection title="Change log">
