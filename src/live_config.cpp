@@ -71,6 +71,10 @@ FILE* OpenPrivateAppend(const std::string& path) {
     if (path == ConfDir() + "/live.log" && !MakePrivateDir(ConfDir())) return nullptr;
     const int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return nullptr;
+    // open() applies the mode only when it creates the file: one that an older version left at 0644 is tightened (our own files in our own folder only).
+    struct stat st;
+    const std::string dir = ConfDir();
+    if (!dir.empty() && path.rfind(dir + "/", 0) == 0 && ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == ::geteuid() && (st.st_mode & 077) != 0) (void)::fchmod(fd, 0600);
     FILE* f = ::fdopen(fd, "a");
     if (!f) ::close(fd);
     return f;

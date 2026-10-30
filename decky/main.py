@@ -10,6 +10,7 @@ import math
 import re
 import os
 import shutil
+import stat
 import subprocess
 import time
 
@@ -91,6 +92,9 @@ def _log(msg):
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
         fd = os.open(LIVE_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode) and (st.st_mode & 0o077):      # open() sets the mode only on creation: a file an older version left at 0644 is tightened
+                os.fchmod(fd, 0o600)
             f.write("%s plugin  %s\n" % (stamp, msg))
         _give_to_user(LIVE_LOG)
     except OSError:

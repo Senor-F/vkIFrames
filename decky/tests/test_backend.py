@@ -64,6 +64,8 @@ bad = os.path.join(tmp, "x.so.txt"); open(bad, "wb").write(b"x"); os.chmod(bad, 
 try: main._check_library(bad); raise SystemExit("x.so.txt accepted")
 except ValueError: pass
 ok = os.path.join(tmp, "libx.so.1.2"); open(ok, "wb").write(b"x"); os.chmod(ok, 0o755); main._check_library(ok)
+# a live.log left at 0644 by an older version is tightened to 0600 on the next write
+os.chmod(main.LIVE_LOG, 0o644); main._log("mode test"); assert (os.stat(main.LIVE_LOG).st_mode & 0o777) == 0o600, oct(os.stat(main.LIVE_LOG).st_mode)
 # the log view reads only the end of a big file
 open(main.LIVE_LOG, "a").write("2026-10-30 19:00:00.000 plugin  junk\n" * 20000)
 run(p.set_value("TARGET_FPS", 61)); assert any("TARGET_FPS" in l for l in run(p.get_log(8))) and len(run(p.get_log(8))) <= 8
