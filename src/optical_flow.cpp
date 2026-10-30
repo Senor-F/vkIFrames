@@ -198,7 +198,7 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
             const double ms = double(t[n - 1] - t[0]) * double(f.ts_period_ns) * 1e-6;
             for (uint32_t i = 1; i < n; ++i) f.stage_sum[i - 1] += t[i] >= t[i - 1] ? double(t[i] - t[i - 1]) * double(f.ts_period_ns) * 1e-6 : 0.0;
             f.ms_sum += ms; f.ms_max = std::max(f.ms_max, ms);
-            if (StatsOn()) { f.stat_flow_ns += uint64_t(ms * 1e6); ++f.stat_flow_n; }
+            { f.stat_flow_ns += uint64_t(ms * 1e6); ++f.stat_flow_n; }
             if (++f.ms_count >= 120) {
                 FG_LOG("flow: GPU %.2f ms per pair (max %.2f) over %u pairs, field %ux%u", f.ms_sum / f.ms_count, f.ms_max, f.ms_count, f.fwd[f.fin].extent.width, f.fwd[f.fin].extent.height);
                 char line[256]; int o = 0;

@@ -162,7 +162,11 @@ void LogTimingStats(const DeviceDispatch& dt, SwapchainState& sc, uint64_t now_n
     if (sc.refresh_ns == 0 && dt.GetSwapchainTimingPropertiesEXT) {          // may not be known until the first presents finished
         VkSwapchainTimingPropertiesEXT tp{VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT};
         uint64_t counter = 0;
-        if (dt.GetSwapchainTimingPropertiesEXT(dt.device, sc.handle, &tp, &counter) == VK_SUCCESS) sc.refresh_ns = tp.refreshDuration;
+        if (dt.GetSwapchainTimingPropertiesEXT(dt.device, sc.handle, &tp, &counter) == VK_SUCCESS) {
+            sc.refresh_ns = tp.refreshDuration;
+            sc.refresh_vrr = tp.refreshInterval == UINT64_MAX;                       // "the presentation engine is operating in VRR mode"; 0 = it cannot tell, treated as fixed
+            if (sc.refresh_ns) FG_LOG("display: refresh %.2f Hz (%s)", 1e9 / double(sc.refresh_ns), sc.refresh_vrr ? "variable refresh: TARGET_FPS is not limited" : "TARGET_FPS is limited to it");
+        }
     }
     auto& s = sc.st;
     const double int_mean = s.n_int ? s.sum_int_ms / s.n_int : 0.0;
