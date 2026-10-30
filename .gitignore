@@ -1,0 +1,12 @@
+build/
+generated/
+*.spv
+*.ppm
+.vscode/
+.idea/
+*.swp
+__pycache__/
+*.pyc
+build/
+dump/
+logs/

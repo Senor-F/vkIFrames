@@ -1,0 +1,29 @@
+#version 450
+// Stage 4: forward/backward consistency at level 1. 0 = the vectors agree, 1 = they do not (or the target is outside the frame).
+// Mirrors flowref::Occlusion.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D u_fwd;   // A -> B
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image2D u_bwd;   // B -> A
+layout(set = 0, binding = 2, r32f)    uniform writeonly image2D u_mask;
+
+layout(push_constant) uniform Params { float threshold; float bwd_scale; } u_params;   // bwd_scale: pixels of u_bwd in pixels of u_fwd (1 = same level, 2 = one level coarser)
+
+void main() {
+    ivec2 pos  = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(u_fwd);
+    if (any(greaterThanEqual(pos, size))) return;
+
+    vec2  f = imageLoad(u_fwd, pos).xy;
+    ivec2 t = ivec2(floor(vec2(pos) + f + 0.5));
+    float m;
+    if (any(lessThan(t, ivec2(0))) || any(greaterThanEqual(t, size))) {
+        m = 1.0;
+    } else {
+        float s = u_params.bwd_scale;
+        ivec2 tb = clamp(ivec2(floor((vec2(t) + 0.5) / s)), ivec2(0), imageSize(u_bwd) - 1);
+        vec2 b = imageLoad(u_bwd, tb).xy * s;
+        m = smoothstep(u_params.threshold, 2.0 * u_params.threshold, length(f + b));
+    }
+    imageStore(u_mask, pos, vec4(m, 0.0, 0.0, 0.0));
+}

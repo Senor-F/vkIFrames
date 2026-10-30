@@ -1,0 +1,273 @@
+[
+  {
+    "key": "ENABLED",
+    "label": "Frame generation",
+    "type": "toggle",
+    "default": 0,
+    "needsLayer": "live",
+    "desc": "Turns the layer on or off while you play. Off: frames pass through untouched and nothing is added.",
+    "group": "switch"
+  },
+  {
+    "key": "TARGET_FPS",
+    "label": "Target FPS",
+    "type": "slider",
+    "default": 60,
+    "min": 30,
+    "max": 120,
+    "step": 5,
+    "fine": 1,
+    "needsLayer": "live",
+    "desc": "The frame rate the layer aims for. Set it to your screen's refresh rate (90 on the Deck OLED). The slider reaches the higher of 120 and your screen's refresh rate.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Frame generation is off.",
+    "group": "main"
+  },
+  {
+    "key": "MAX_SYNTHETIC",
+    "label": "Most generated frames",
+    "type": "slider",
+    "default": 3,
+    "min": 1,
+    "max": 4,
+    "step": 1,
+    "needsLayer": "live",
+    "desc": "The most extra frames it inserts between two game frames. It should be at least target FPS / game FPS - 1. Up to 10 with Experimental on.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Frame generation is off.",
+    "group": "main"
+  },
+  {
+    "key": "BASE_FPS_CAP",
+    "label": "Game FPS cap (0 = off)",
+    "type": "slider",
+    "default": 45,
+    "min": 0,
+    "max": 90,
+    "step": 5,
+    "fine": 1,
+    "needsLayer": "live",
+    "desc": "Limits the game's own frame rate so the layer can fill the gap evenly, e.g. 30 or 45 for a 90 Hz screen. 0 = no limit.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Frame generation is off (no cap is applied).",
+    "group": "main"
+  },
+  {
+    "key": "MIN_GAIN",
+    "label": "Bypass margin",
+    "type": "slider",
+    "default": 1.0,
+    "min": 1.0,
+    "max": 1.5,
+    "step": 0.05,
+    "fine": 0.01,
+    "needsLayer": "live",
+    "desc": "How much faster the target must be than the game before frames are generated. Higher: the layer switches itself off sooner when the game is nearly fast enough.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Frame generation is off.",
+    "group": "more"
+  },
+  {
+    "key": "PHASE_LOCK",
+    "label": "Phase lock",
+    "type": "toggle",
+    "default": 1,
+    "needsLayer": "live",
+    "desc": "Lines the generated frames up with the game's frames so the spacing stays even.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ],
+      [
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 1
+        }
+      ]
+    ],
+    "greyWhy": "Not used while frame generation is off or in low-latency mode.",
+    "group": "more"
+  },
+  {
+    "key": "PHASE_OFFSET",
+    "label": "Phase offset",
+    "type": "slider",
+    "default": 0.5,
+    "min": 0.0,
+    "max": 1.0,
+    "step": 0.1,
+    "fine": 0.05,
+    "needsLayer": "live",
+    "desc": "Where generated frames sit between two game frames. 0.5 = halfway; 0 puts one on the game frame itself.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ],
+      [
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 1
+        }
+      ],
+      [
+        {
+          "key": "PHASE_LOCK",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Needs phase lock, and is not used in low-latency mode.",
+    "group": "more"
+  },
+  {
+    "key": "INTERP_BIDIR",
+    "label": "Two-sided interpolation (experimental)",
+    "type": "toggle",
+    "default": 1,
+    "needsLayer": "live",
+    "desc": "Uses the motion from both neighbouring game frames. Can cut smearing at object edges; costs more GPU time.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ],
+      [
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 1
+        }
+      ],
+      [
+        {
+          "key": "INTERPOLATE",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Needs interpolated frames, and is not used in low-latency mode.",
+    "group": "more"
+  },
+  {
+    "key": "INTERPOLATE",
+    "label": "Interpolated frames",
+    "type": "toggle",
+    "default": 1,
+    "needsLayer": "restart",
+    "desc": "Builds the in-between frames from the motion between two game frames. Off: a plain cross-fade, which ghosts on movement.",
+    "greyWhen": [
+      [
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 1
+        }
+      ]
+    ],
+    "greyWhy": "Low-latency mode always uses motion, so this is on.",
+    "group": "more"
+  },
+  {
+    "key": "EXTRAPOLATE",
+    "label": "Low-latency mode (extrapolate)",
+    "type": "toggle",
+    "default": 0,
+    "needsLayer": "restart",
+    "desc": "Shows each game frame at once and predicts the frames after it, so input feels quicker. Predicted frames can look blockier.",
+    "group": "more"
+  },
+  {
+    "key": "UI_MASK_THRESHOLD",
+    "label": "Keep HUD still (0 = off)",
+    "type": "slider",
+    "default": 0.08,
+    "min": 0.0,
+    "max": 0.2,
+    "step": 0.01,
+    "fine": 0.001,
+    "needsLayer": "restart",
+    "desc": "Stops still parts such as the HUD from being dragged by motion. About 0.03 suits most games; too high freezes real movement.",
+    "greyWhen": [
+      [
+        {
+          "key": "INTERPOLATE",
+          "eq": 0
+        },
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Needs interpolated frames.",
+    "group": "more"
+  },
+  {
+    "key": "FLOW_LEVEL",
+    "label": "Motion detail (1 = finest)",
+    "type": "slider",
+    "default": 2,
+    "min": 1,
+    "max": 3,
+    "step": 1,
+    "needsLayer": "restart",
+    "desc": "How finely motion is detected. 1 is sharpest but costs more GPU time; 3 is coarsest and cheapest.",
+    "greyWhen": [
+      [
+        {
+          "key": "INTERPOLATE",
+          "eq": 0
+        },
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Needs interpolated frames.",
+    "group": "more"
+  },
+  {
+    "key": "EXPERIMENTAL",
+    "label": "Experimental",
+    "type": "toggle",
+    "default": 0,
+    "needsLayer": "restart",
+    "group": "gate",
+    "desc": "Unlocks the settings below and lets Most generated frames go up to 10 (4 otherwise). Not tested: it can add latency, glitches or crashes. Values above 4 need a game restart."
+  }
+]

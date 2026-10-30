@@ -1,0 +1,44 @@
+#version 450
+// Stage 4, coarsest level (1/16): exhaustive block matching in +-RADIUS pixels. Output: (vx, vy, cost, 0) in pixels of this level.
+// Vectors point from A to B: A(p) ~ B(p + v). Mirrors flowref::Coarse.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r32f)    uniform readonly  image2D u_a;
+layout(set = 0, binding = 1, r32f)    uniform readonly  image2D u_b;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D u_flow;
+
+layout(push_constant) uniform Params { int patch_radius; } u_params;
+
+const int   RADIUS    = 4;
+const float TIE_BIAS  = 1e-4;
+const float ZERO_MARGIN = 2e-3;
+
+// mean absolute difference over a (2r+1)^2 patch, coordinates clamp to the edge
+float patch_cost(ivec2 pa, ivec2 pb, int r, ivec2 size) {
+    float sum = 0.0;
+    for (int dy = -r; dy <= r; ++dy)
+        for (int dx = -r; dx <= r; ++dx) {
+            ivec2 qa = clamp(pa + ivec2(dx, dy), ivec2(0), size - 1);
+            ivec2 qb = clamp(pb + ivec2(dx, dy), ivec2(0), size - 1);
+            sum += abs(imageLoad(u_a, qa).r - imageLoad(u_b, qb).r);
+        }
+    float n = float(2 * r + 1);
+    return sum / (n * n);
+}
+
+void main() {
+    ivec2 pos  = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(u_a);
+    if (any(greaterThanEqual(pos, size))) return;
+
+    float best = 1e30;
+    ivec2 bv   = ivec2(0);
+    for (int dy = -RADIUS; dy <= RADIUS; ++dy)
+        for (int dx = -RADIUS; dx <= RADIUS; ++dx) {
+            ivec2 cand = pos + ivec2(dx, dy);
+            if (any(lessThan(cand, ivec2(0))) || any(greaterThanEqual(cand, size))) continue;
+            float c = patch_cost(pos, cand, u_params.patch_radius, size) + TIE_BIAS * float(dx * dx + dy * dy) + ((dx != 0 || dy != 0) ? ZERO_MARGIN : 0.0);
+            if (c < best) { best = c; bv = ivec2(dx, dy); }
+        }
+    imageStore(u_flow, pos, vec4(vec2(bv), best, 0.0));
+}

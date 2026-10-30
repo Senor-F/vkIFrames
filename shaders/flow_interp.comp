@@ -1,0 +1,245 @@
+#version 450
+// Stage 5: the synthetic frame at fractional time t between A (t = 0) and B (t = 1), guided by the optical flow (include/flow_ref.hpp InterpPixel).
+// Both frames are sampled along the flow vector and blended by t; occluded or very fast pixels fall back to the plain cross-fade.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D u_a;
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image2D u_b;
+layout(set = 0, binding = 2, rgba16f) uniform readonly  image2D u_flow;     // A -> B, in pixels of its own level (level 1 = half resolution, level 2 = quarter, ...)
+layout(set = 0, binding = 3, r32f)    uniform readonly  image2D u_mask;     // forward/backward disagreement; the top-left part of this image matches the flow field
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D u_out;
+layout(set = 0, binding = 5, rgba16f) uniform readonly  image2D u_bwd;      // B -> A, same level as u_flow
+
+layout(push_constant) uniform Params { float t; float sigma; float cost_lo; float cost_hi; float cand_thr; float pan_lo; float pan_hi; float bidir; float ui_thr; float extrap; } u_params;   // pan_hi <= pan_lo: no pan fallback; sigma <= 0: no colour guidance; cost_hi <= cost_lo: no cost fade; cand_thr <= 0: no candidate search; ui_thr <= 0: no static-UI mask; extrap > 0.5: t is the fraction of one native interval AFTER B and the frame is predicted from B alone
+
+const float FAST_LOW  = 48.0;
+const float FAST_HIGH = 96.0;
+const float EXTRAP_DEAD_LO = 0.4;   // full-resolution pixels: below this a backward vector is taken as flow noise and the pixel stays as in B
+const float EXTRAP_DEAD_HI = 1.2;
+
+// GLSL cannot pass a formatted image as a parameter, so the two frames get one sampler each
+#define BILINEAR(NAME, IMG)                                                  \
+vec4 NAME(vec2 p) {                                                          \
+    ivec2 m = imageSize(IMG) - 1;                                            \
+    vec2 f = floor(p);                                                       \
+    vec2 w = p - f;                                                          \
+    ivec2 i = ivec2(f);                                                      \
+    vec4 a = imageLoad(IMG, clamp(i, ivec2(0), m));                          \
+    vec4 b = imageLoad(IMG, clamp(i + ivec2(1, 0), ivec2(0), m));            \
+    vec4 c = imageLoad(IMG, clamp(i + ivec2(0, 1), ivec2(0), m));            \
+    vec4 d = imageLoad(IMG, clamp(i + ivec2(1, 1), ivec2(0), m));            \
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);                         \
+}
+BILINEAR(sample_a, u_a)
+BILINEAR(sample_b, u_b)
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+const float CAND_TRIGGER = 0.05;
+const int   CAND_RADIUS  = 2;
+
+// how well A and B agree at pixel p, at time t, if the pixel moves with v (nearest samples; include/flow_ref.hpp InterpPixel)
+float cand_cost(ivec2 p, float t, vec2 v, vec2 prefer) {
+    ivec2 m  = imageSize(u_a) - 1;
+    ivec2 pa = clamp(ivec2(floor(vec2(p) - t * v + 0.5)), ivec2(0), m);
+    ivec2 pb = clamp(ivec2(floor(vec2(p) + (1.0 - t) * v + 0.5)), ivec2(0), m);
+    return abs(luma(imageLoad(u_a, pa).rgb) - luma(imageLoad(u_b, pb).rgb)) + 0.0005 * (abs(v.x - prefer.x) + abs(v.y - prefer.y));
+}
+
+// ---- bidirectional interpolation (VKIFRAME_INTERP_BIDIR; mirrors Bidirectional in tools/interp_eval) ----
+// Two interpolations, each from its own flow and trusted by its own match: A is moved forward by t along A -> B, B is moved back by (1 - t) along
+// B -> A. Where the forward vector is unreliable (A is covered in B) B's interpolation carries the pixel; where the backward vector is unreliable
+// (B is uncovered) A's interpolation does; where both are bad the cross-fade does.
+const float OCCL_T = 1.5;   // flowref::kOcclThreshold: forward/backward disagreement (field pixels) where the occlusion mask starts to rise
+
+// the field FIELD at output pixel p, bilinear with weights guided by the luma of GUIDE: xy = vector in full-resolution pixels, z = match cost
+#define GUIDED_FIELD(NAME, FIELD, GUIDE)                                                                                   \
+vec4 NAME(ivec2 p, ivec2 i0, vec2 w, float scale) {                                                                         \
+    ivec2 mx = imageSize(FIELD) - 1;                                                                                        \
+    ivec2 om = imageSize(GUIDE) - 1;                                                                                        \
+    vec4 wt = vec4((1.0 - w.x) * (1.0 - w.y), w.x * (1.0 - w.y), (1.0 - w.x) * w.y, w.x * w.y);                              \
+    if (u_params.sigma > 0.0) {                                                                                             \
+        float gp = luma(imageLoad(GUIDE, p).rgb);                                                                           \
+        vec4 g = vec4(luma(imageLoad(GUIDE, clamp(ivec2(floor((vec2(i0)                + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb), \
+                      luma(imageLoad(GUIDE, clamp(ivec2(floor((vec2(i0 + ivec2(1, 0)) + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb), \
+                      luma(imageLoad(GUIDE, clamp(ivec2(floor((vec2(i0 + ivec2(0, 1)) + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb), \
+                      luma(imageLoad(GUIDE, clamp(ivec2(floor((vec2(i0 + ivec2(1, 1)) + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb)); \
+        vec4 d = g - vec4(gp);                                                                                              \
+        wt *= vec4(0.02) + exp(-d * d / (2.0 * u_params.sigma * u_params.sigma));                                           \
+    }                                                                                                                       \
+    wt /= max(wt.x + wt.y + wt.z + wt.w, 1e-6);                                                                             \
+    vec4 f00 = imageLoad(FIELD, clamp(i0, ivec2(0), mx));                                                                   \
+    vec4 f10 = imageLoad(FIELD, clamp(i0 + ivec2(1, 0), ivec2(0), mx));                                                     \
+    vec4 f01 = imageLoad(FIELD, clamp(i0 + ivec2(0, 1), ivec2(0), mx));                                                     \
+    vec4 f11 = imageLoad(FIELD, clamp(i0 + ivec2(1, 1), ivec2(0), mx));                                                     \
+    return vec4((wt.x * f00.xy + wt.y * f10.xy + wt.z * f01.xy + wt.w * f11.xy) * scale, wt.x * f00.z + wt.y * f10.z + wt.z * f01.z + wt.w * f11.z, 0.0); \
+}
+GUIDED_FIELD(field_fwd, u_flow, u_a)
+GUIDED_FIELD(field_bwd, u_bwd, u_b)
+
+// B -> A vector at B-grid field pixel q against the forward vector where it lands (flowref::Occlusion with the two fields swapped)
+float mask_bwd(ivec2 q) {
+    ivec2 fs = imageSize(u_flow);
+    vec2  b  = imageLoad(u_bwd, q).xy;
+    ivec2 t  = ivec2(floor(vec2(q) + b + 0.5));
+    if (any(lessThan(t, ivec2(0))) || any(greaterThanEqual(t, fs))) return 1.0;
+    return smoothstep(OCCL_T, 2.0 * OCCL_T, length(b + imageLoad(u_flow, t).xy));
+}
+
+vec4 interp_bidir(ivec2 p, float t, float scale, vec2 fp, ivec2 i0, vec2 w, float pan_k) {
+    vec4 ff = field_fwd(p, i0, w, scale);
+    vec4 fb = field_bwd(p, i0, w, scale);
+    ivec2 q = clamp(ivec2(floor(fp + 0.5)), ivec2(0), imageSize(u_flow) - 1);
+    float cost_f = 0.0, cost_b = 0.0;
+    if (u_params.cost_hi > u_params.cost_lo) {
+        cost_f = smoothstep(u_params.cost_lo, u_params.cost_hi, ff.z);
+        cost_b = smoothstep(u_params.cost_lo, u_params.cost_hi, fb.z);
+    }
+    float kf = max(imageLoad(u_mask, q).r, cost_f);
+    float kb = max(mask_bwd(q), cost_b);
+    float cf = (1.0 - kf) * (1.0 - smoothstep(FAST_LOW, FAST_HIGH, length(ff.xy)));
+    float cb = (1.0 - kb) * (1.0 - smoothstep(FAST_LOW, FAST_HIGH, length(fb.xy)));
+    vec4 pa = sample_a(vec2(p) - t * ff.xy);
+    vec4 pb = sample_b(vec2(p) - (1.0 - t) * fb.xy);
+    vec4 fd = (1.0 - t) * imageLoad(u_a, p) + t * imageLoad(u_b, p);
+    float wa = (1.0 - t) * cf, wb = t * cb, wsum = wa + wb;
+    float trust = min(1.0, wsum / max(1e-6, max(1.0 - t, t))) * (1.0 - pan_k);
+    vec4 moved = wsum > 1e-6 ? (wa * pa + wb * pb) / wsum : fd;
+    return mix(fd, moved, trust);
+}
+
+// ---- extrapolation (VKIFRAME_EXTRAPOLATE; mirrors Extrapolate in tools/interp_eval) ----
+// B moved on along its own backward flow as if the motion A -> B went on for s more intervals: out(x) = B(x + s * v_b(x)). Plain B where B's backward match is
+// poor, the pixel is uncovered, the motion is fast, the vector is too small to be more than flow noise, or the whole frame cannot be matched.
+vec4 predict_frame(ivec2 p, float s, float scale, vec2 fp, ivec2 i0, vec2 w, float pan_k) {
+    vec4 fb = field_bwd(p, i0, w, scale);
+    ivec2 q = clamp(ivec2(floor(fp + 0.5)), ivec2(0), imageSize(u_flow) - 1);
+    float k = mask_bwd(q);
+    if (u_params.cost_hi > u_params.cost_lo) k = max(k, smoothstep(u_params.cost_lo, u_params.cost_hi, fb.z));
+    float len = length(fb.xy);
+    k = max(k, smoothstep(FAST_LOW, FAST_HIGH, len));
+    k = max(k, 1.0 - smoothstep(EXTRAP_DEAD_LO, EXTRAP_DEAD_HI, len));
+    k = max(k, pan_k);
+    return mix(sample_b(vec2(p) + s * fb.xy), imageLoad(u_b, p), k);
+}
+
+// pan fallback: the share of the flow field that is occluded or badly matched, from a fixed 8x6 grid of field pixels (the number tools/interp_eval prints as "bad share").
+// One workgroup works it out once (48 threads read one sample each) instead of every pixel reading all 48 samples.
+shared float s_bad[48];
+shared float s_pan;
+float pan_weight() {
+    uint li = gl_LocalInvocationIndex;
+    if (li < 48u) {
+        ivec2 fs = imageSize(u_flow), ms = imageSize(u_mask);
+        ivec2 q = min(ivec2((vec2(float(li % 8u), float(li / 8u)) + 0.5) / vec2(8.0, 6.0) * vec2(fs)), fs - 1);
+        float k = imageLoad(u_mask, min(q, ms - 1)).r;
+        if (u_params.cost_hi > u_params.cost_lo) k = max(k, smoothstep(u_params.cost_lo, u_params.cost_hi, imageLoad(u_flow, q).z));
+        s_bad[li] = k;
+    }
+    memoryBarrierShared();
+    barrier();
+    if (li == 0u) {
+        float sum = 0.0;
+        for (int i = 0; i < 48; ++i) sum += s_bad[i];
+        s_pan = smoothstep(u_params.pan_lo, u_params.pan_hi, sum / 48.0);
+    }
+    memoryBarrierShared();
+    barrier();
+    return s_pan;
+}
+
+void main() {
+    // before the bounds check: every thread of the workgroup must reach the barriers (pan_hi <= pan_lo is a push constant, so the branch is uniform)
+    float pan_k = (u_params.pan_hi > u_params.pan_lo) ? pan_weight() : 0.0;
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(u_out)))) return;
+    float t = u_params.t;
+    const bool mark = t >= 2.0;                                  // VKIFRAME_TICKMARK: t + 4 * (1 + bar x)
+    int bar_x = 0;
+    if (mark) { float m = floor(t / 4.0); t -= 4.0 * m; bar_x = int(m) - 1; }
+    // full-resolution pixels per flow pixel: a power of two (the pyramid halves, rounding up, so the size ratio is only close to it)
+    vec2  osz   = vec2(imageSize(u_out));
+    ivec2 fsz   = imageSize(u_flow);
+    float scale = exp2(floor(log2(osz.x / float(fsz.x)) + 0.5));
+    vec2  fp    = (vec2(p) + 0.5) / scale - 0.5;                      // position in flow pixels
+    ivec2 i0    = ivec2(floor(fp));
+    vec2  w     = fp - vec2(i0);
+    ivec2 mx    = fsz - 1;
+    ivec2 c00 = clamp(i0,                ivec2(0), mx);
+    ivec2 c10 = clamp(i0 + ivec2(1, 0), ivec2(0), mx);
+    ivec2 c01 = clamp(i0 + ivec2(0, 1), ivec2(0), mx);
+    ivec2 c11 = clamp(i0 + ivec2(1, 1), ivec2(0), mx);
+    vec4 c;
+    if (u_params.extrap > 0.5) {
+        c = predict_frame(p, t, scale, fp, i0, w, pan_k);
+    } else if (u_params.bidir > 0.5) {
+        c = interp_bidir(p, t, scale, fp, i0, w, pan_k);
+    } else {
+    vec4 f00 = imageLoad(u_flow, c00);
+    vec4 f10 = imageLoad(u_flow, c10);
+    vec4 f01 = imageLoad(u_flow, c01);
+    vec4 f11 = imageLoad(u_flow, c11);
+    // bilinear weights, optionally scaled by how close this pixel's luma is to the luma at each field pixel's centre (include/flow_ref.hpp InterpPixel)
+    vec4 wt = vec4((1.0 - w.x) * (1.0 - w.y), w.x * (1.0 - w.y), (1.0 - w.x) * w.y, w.x * w.y);
+    if (u_params.sigma > 0.0) {
+        ivec2 om = imageSize(u_a) - 1;
+        float gp = luma(imageLoad(u_a, p).rgb);
+        vec4 g = vec4(luma(imageLoad(u_a, clamp(ivec2(floor((vec2(i0)                + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb),
+                      luma(imageLoad(u_a, clamp(ivec2(floor((vec2(i0 + ivec2(1, 0)) + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb),
+                      luma(imageLoad(u_a, clamp(ivec2(floor((vec2(i0 + ivec2(0, 1)) + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb),
+                      luma(imageLoad(u_a, clamp(ivec2(floor((vec2(i0 + ivec2(1, 1)) + 0.5) * scale - 0.5 + 0.5)), ivec2(0), om)).rgb));
+        vec4 d = g - vec4(gp);
+        wt *= vec4(0.02) + exp(-d * d / (2.0 * u_params.sigma * u_params.sigma));
+    }
+    wt /= max(wt.x + wt.y + wt.z + wt.w, 1e-6);
+    vec2 v = (wt.x * f00.xy + wt.y * f10.xy + wt.z * f01.xy + wt.w * f11.xy) * scale;   // full-resolution pixels
+    float cost = wt.x * f00.z + wt.y * f10.z + wt.z * f01.z + wt.w * f11.z;
+    ivec2 q = clamp(ivec2(floor(fp + 0.5)), ivec2(0), mx);               // nearest flow pixel: occlusion mask
+    vec4 fade = (1.0 - t) * imageLoad(u_a, p) + t * imageLoad(u_b, p);
+    float k = imageLoad(u_mask, q).r;
+    // pan fallback: when most of the frame cannot be matched (a fast camera pan), the interpolation only smears, so the whole frame cross-fades
+    k = max(k, pan_k);
+    if (u_params.cost_hi > u_params.cost_lo) k = max(k, smoothstep(u_params.cost_lo, u_params.cost_hi, cost));
+    if (u_params.cand_thr > 0.0 && k > CAND_TRIGGER) {
+        // occluded or badly matched: the neighbouring field pixel whose vector makes A and B agree here wins
+        float best = cand_cost(p, t, vec2(0.0), v);
+        vec2  bv   = vec2(0.0);
+        ivec2 bmx  = imageSize(u_bwd) - 1;
+        for (int dy = -CAND_RADIUS; dy <= CAND_RADIUS; ++dy)
+            for (int dx = -CAND_RADIUS; dx <= CAND_RADIUS; ++dx) {
+                vec2 cf = imageLoad(u_flow, clamp(q + ivec2(dx, dy), ivec2(0), mx)).xy * scale;
+                vec2 cb = -imageLoad(u_bwd, clamp(q + ivec2(dx, dy), ivec2(0), bmx)).xy * scale;
+                float c1 = cand_cost(p, t, cf, v);
+                if (c1 < best) { best = c1; bv = cf; }
+                float c2 = cand_cost(p, t, cb, v);
+                if (c2 < best) { best = c2; bv = cb; }
+            }
+        if (best < u_params.cand_thr) {
+            vec4 w2 = (1.0 - t) * sample_a(vec2(p) - t * bv) + t * sample_b(vec2(p) + (1.0 - t) * bv);
+            c = mix(w2, fade, smoothstep(FAST_LOW, FAST_HIGH, length(bv)));
+        } else {
+            c = fade;
+        }
+    } else {
+        vec4 moved = (1.0 - t) * sample_a(vec2(p) - t * v) + t * sample_b(vec2(p) + (1.0 - t) * v);
+        k = max(k, smoothstep(FAST_LOW, FAST_HIGH, length(v)));
+        c = mix(moved, fade, k);
+    }
+    }
+    if (u_params.ui_thr > 0.0) {
+        // static-UI mask (tools/interp_eval, UI_MODE=1): where the 3x3 mean of |A - B| in luma stays below ui_thr the pixel is unmoving UI and takes the plain
+        // cross-fade, so a HUD is not dragged along by the motion next to it. The mean of absolute differences ignores film grain but not a moving edge.
+        ivec2 om = imageSize(u_a) - 1;
+        float acc = 0.0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                ivec2 pp = clamp(p + ivec2(dx, dy), ivec2(0), om);
+                acc += abs(luma(imageLoad(u_a, pp).rgb) - luma(imageLoad(u_b, pp).rgb));
+            }
+        float st = 1.0 - smoothstep(u_params.ui_thr, 2.0 * u_params.ui_thr, acc / 9.0);
+        c = mix(c, (u_params.extrap > 0.5) ? imageLoad(u_b, p) : (1.0 - t) * imageLoad(u_a, p) + t * imageLoad(u_b, p), st);
+    }
+    if (mark && p.x < 64 && p.y < 64) c = (t < 0.5) ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0);
+    if (mark && p.y >= imageSize(u_out).y - 40) c = (p.x >= bar_x && p.x < bar_x + 24) ? vec4(1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+    imageStore(u_out, p, c);
+}

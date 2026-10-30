@@ -1,0 +1,29 @@
+#version 450
+// Stage 4 debug view (VKIFRAME_DEBUG_FLOW=1): replaces the synthetic frame with a picture of the motion field. Frame A is shown dimmed;
+// the colour is the direction of the vector (hue) and its length (saturation of the overlay); occluded pixels are washed out to white.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D u_frame_a;
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image2D u_flow;      // A -> B, in pixels of its own level
+layout(set = 0, binding = 2, r32f)    uniform readonly  image2D u_mask;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D u_out;
+
+vec3 hsv2rgb(vec3 c) {
+    vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(u_out)))) return;
+    float scale = exp2(floor(log2(float(imageSize(u_out).x) / float(imageSize(u_flow).x)) + 0.5));   // full-resolution pixels per flow pixel
+    ivec2 q = min(ivec2(vec2(p) / scale), imageSize(u_flow) - 1);
+    vec2 v = imageLoad(u_flow, q).xy * scale;                 // full-resolution pixels
+    float mag = length(v);
+    float hue = mag > 1e-3 ? atan(v.y, v.x) / 6.2831853 + 0.5 : 0.0;   // atan(0, 0) is undefined
+    vec3 base = imageLoad(u_frame_a, p).rgb * 0.35;
+    vec3 col  = mix(base, hsv2rgb(vec3(hue, 1.0, 1.0)), clamp(mag / 6.0, 0.0, 1.0));
+    float occ = imageLoad(u_mask, q).r;
+    col = mix(col, vec3(1.0), 0.6 * occ);
+    imageStore(u_out, p, vec4(col, 1.0));
+}

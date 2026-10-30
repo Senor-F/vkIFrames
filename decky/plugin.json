@@ -1,0 +1,10 @@
+{
+  "name": "vkIFrames",
+  "author": "vkIFrames",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["frame-generation", "vulkan", "settings"],
+    "description": "Live settings for the vkIFrames Vulkan frame interpolation layer."
+  }
+}

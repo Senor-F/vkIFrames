@@ -1,0 +1,82 @@
+#version 450
+// Stage 4, one pyramid level (levels 3, 2, 1): start from the vectors of the coarser level (doubled), pick the best of the pixel's own
+// and its three nearest other coarse vectors, then search +-radius pixels around it. With subpixel set (the finished level) the vector
+// becomes fractional: a parabola through the plain patch costs at the best vector and its four neighbours. Mirrors flowref::Refine.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r32f)    uniform readonly  image2D u_a;         // this level
+layout(set = 0, binding = 1, r32f)    uniform readonly  image2D u_b;
+layout(set = 0, binding = 2, rgba16f) uniform readonly  image2D u_flow_in;   // coarser level, in coarser-level pixels
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D u_flow_out;  // this level, in this level's pixels
+
+layout(push_constant) uniform Params { int patch_radius; int radius; int subpixel; } u_params;
+
+const float LAMBDA = 2e-4;
+const float ZERO_MARGIN = 2e-3;
+
+float patch_cost(ivec2 pa, ivec2 pb, int r, ivec2 size) {
+    float sum = 0.0;
+    for (int dy = -r; dy <= r; ++dy)
+        for (int dx = -r; dx <= r; ++dx) {
+            ivec2 qa = clamp(pa + ivec2(dx, dy), ivec2(0), size - 1);
+            ivec2 qb = clamp(pb + ivec2(dx, dy), ivec2(0), size - 1);
+            sum += abs(imageLoad(u_a, qa).r - imageLoad(u_b, qb).r);
+        }
+    float n = float(2 * r + 1);
+    return sum / (n * n);
+}
+
+float vec_cost(ivec2 pa, ivec2 v, ivec2 v0, int r, ivec2 size) {
+    vec2 o = vec2(v - v0);
+    return patch_cost(pa, pa + v, r, size) + LAMBDA * dot(o, o) + ((v.x != 0 || v.y != 0) ? ZERO_MARGIN : 0.0);
+}
+
+void main() {
+    ivec2 pos  = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(u_a);
+    if (any(greaterThanEqual(pos, size))) return;
+
+    ivec2 csize = imageSize(u_flow_in);
+    ivec2 c0 = min(pos / 2, csize - 1);
+    ivec2 sgn = ivec2(((pos.x & 1) != 0) ? 1 : -1, ((pos.y & 1) != 0) ? 1 : -1);
+    ivec2 cs[4];
+    cs[0] = c0;
+    cs[1] = ivec2(clamp(c0.x + sgn.x, 0, csize.x - 1), c0.y);
+    cs[2] = ivec2(c0.x, clamp(c0.y + sgn.y, 0, csize.y - 1));
+    cs[3] = ivec2(cs[1].x, cs[2].y);
+    ivec2 bv[4];
+    for (int i = 0; i < 4; ++i) bv[i] = ivec2(floor(imageLoad(u_flow_in, cs[i]).xy * 2.0 + 0.5));
+
+    float best = 1e30;
+    ivec2 mv   = bv[0];
+    for (int i = 0; i < 4; ++i) {
+        float c = vec_cost(pos, bv[i], bv[0], u_params.patch_radius, size);
+        if (c < best) { best = c; mv = bv[i]; }
+    }
+    ivec2 center = mv;
+    for (int dy = -u_params.radius; dy <= u_params.radius; ++dy)
+        for (int dx = -u_params.radius; dx <= u_params.radius; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            ivec2 v = center + ivec2(dx, dy);
+            float c = vec_cost(pos, v, bv[0], u_params.patch_radius, size);
+            if (c < best) { best = c; mv = v; }
+        }
+    {   // the zero vector is always a candidate (compared last: it never moves the search centre)
+        float c = patch_cost(pos, pos, u_params.patch_radius, size);     // no coarse-vector penalty: flat areas drop a wrong coarse vector
+        if (c < best) { best = c; mv = ivec2(0); }
+    }
+    vec2 fv = vec2(mv);
+    if (u_params.subpixel != 0) {
+        int   r   = u_params.patch_radius;
+        float c0  = patch_cost(pos, pos + mv, r, size);
+        float cxm = patch_cost(pos, pos + mv - ivec2(1, 0), r, size);
+        float cxp = patch_cost(pos, pos + mv + ivec2(1, 0), r, size);
+        float cym = patch_cost(pos, pos + mv - ivec2(0, 1), r, size);
+        float cyp = patch_cost(pos, pos + mv + ivec2(0, 1), r, size);
+        float dxn = cxm + cxp - 2.0 * c0;
+        float dyn = cym + cyp - 2.0 * c0;
+        if (c0 <= cxm && c0 <= cxp && dxn > 1e-6) fv.x += clamp(0.5 * (cxm - cxp) / dxn, -0.5, 0.5);
+        if (c0 <= cym && c0 <= cyp && dyn > 1e-6) fv.y += clamp(0.5 * (cym - cyp) / dyn, -0.5, 0.5);
+    }
+    imageStore(u_flow_out, pos, vec4(fv, best, 0.0));
+}

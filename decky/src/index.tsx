@@ -1,0 +1,382 @@
+import {
+  ButtonItem,
+  Focusable,
+  PanelSection,
+  PanelSectionRow,
+  SliderField,
+  ToggleField,
+  staticClasses,
+} from "@decky/ui";
+import { callable, definePlugin, toaster } from "@decky/api";
+import { useEffect, useRef, useState } from "react";
+import { FaFilm } from "react-icons/fa";
+
+type Term = { key: string; eq: number };
+type SchemaItem = {
+  key: string;
+  label: string;
+  type: "toggle" | "slider";
+  default: number;
+  min?: number;
+  max?: number;
+  step?: number;          // normal slider step
+  fine?: number;          // finer step, used while "fine steps" is on
+  desc?: string;          // one or two sentences for the user
+  group?: "switch" | "main" | "gate" | "more";
+  needsLayer?: "live" | "restart";   // live: applied within a second; restart: read when a game starts
+  greyWhen?: Term[][];    // greyed out when any group has all its terms true
+  greyWhy?: string;
+};
+type LayerInfo = { installed: boolean; manifest: string; library: string | null; bundled_available: boolean };
+type State = {
+  schema: SchemaItem[];
+  values: Record<string, number>;
+  layer: LayerInfo;
+  live_conf: string;
+  refresh_hz: number;
+  refresh_src: string;
+  status: Record<string, unknown> | null;
+};
+
+const getState = callable<[], State>("get_state");
+const setValue = callable<[key: string, value: number], Record<string, number>>("set_value");
+const resetValues = callable<[], Record<string, number>>("reset_values");
+const installLayer = callable<[lib_path: string], LayerInfo>("install_layer");
+const uninstallLayer = callable<[], LayerInfo>("uninstall_layer");
+const getLog = callable<[lines: number], string[]>("get_log");
+
+const LAUNCH_PLAIN = "VKIFRAME_ENABLE=1";
+const LAUNCH_FULL = "VKIFRAME_ENABLE=1 %command%";
+
+function describeValue(item: SchemaItem, v: number): string {
+  if ((item.key === "BASE_FPS_CAP" || item.key === "UI_MASK_THRESHOLD") && v === 0) return "off";
+  const step = item.fine ?? item.step ?? 1;
+  if (Number.isInteger(step)) return String(v);
+  return v.toFixed(step < 0.01 ? 3 : 2);
+}
+
+function isGreyed(item: SchemaItem, values: Record<string, number>, all: SchemaItem[]): boolean {
+  const val = (k: string) => values[k] ?? all.find((i) => i.key === k)?.default ?? 0;
+  if (item.group === "more" && !val("EXPERIMENTAL")) return true;      // experimental settings: locked until Experimental is on
+  return (item.greyWhen ?? []).some((group) => group.every((t) => val(t.key) === t.eq));
+}
+
+// Steam's overlay is a browser: try the clipboard API, then the old textarea route.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+function statusLine(status: Record<string, unknown> | null): string {
+  if (!status) return "No status yet. Start a game with VKIFRAME_ENABLE=1 in its launch options.";
+  const age = Number(status["age_s"] ?? 0);
+  if (age > 5) return "No recent status (the game is not running, or the layer is not loaded).";
+  const mode = String(status["mode"] ?? "?");
+  const k = Number(status["k"] ?? 0);
+  return `${status["native_fps"]} fps from the game  →  ${status["output_fps"]} fps shown   |   ${k} generated per game frame   |   mode: ${mode}`;
+}
+
+function Content() {
+  const [state, setState] = useState<State | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [log, setLog] = useState<string[]>([]);
+  const [fine, setFine] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const refresh = async () => {
+    try {
+      setState(await getState());
+      setError(null);
+      setLog(await getLog(8).catch(() => []));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 2000); // pick up the layer's status file
+    return () => clearInterval(t);
+  }, []);
+
+  // Update the screen at once, write to the backend once the slider has settled (150 ms).
+  const change = (key: string, value: number) => {
+    setState((s) => (s ? { ...s, values: { ...s.values, [key]: value } } : s));
+    clearTimeout(timers.current[key]);
+    timers.current[key] = setTimeout(() => {
+      setValue(key, value)
+        .then(() => refresh())
+        .catch((e) => toaster.toast({ title: "vkIFrames", body: String(e) }));
+    }, 150);
+  };
+
+  const act = async (fn: () => Promise<unknown>, ok: string) => {
+    try {
+      await fn();
+      toaster.toast({ title: "vkIFrames", body: ok });
+    } catch (e) {
+      toaster.toast({ title: "vkIFrames", body: String(e) });
+    }
+    refresh();
+  };
+
+  const copy = async (text: string) => {
+    const ok = await copyText(text);
+    toaster.toast({ title: "vkIFrames", body: ok ? `Copied: ${text}` : `Could not copy. Type it: ${text}` });
+  };
+
+  if (error) return <PanelSection title="vkIFrames"><PanelSectionRow>{error}</PanelSectionRow></PanelSection>;
+  if (!state) return <PanelSection title="vkIFrames"><PanelSectionRow>Loading…</PanelSectionRow></PanelSection>;
+
+  const { layer, schema, values, status } = state;
+
+  // A slider takes the secondary gamepad button as a shortcut for fine steps; the legend at the bottom of the screen names the button.
+  const fineShortcut = {
+    onSecondaryButton: () => setFine((f) => !f),
+    onSecondaryActionDescription: fine ? "Coarse steps" : "Fine steps",
+  } as Record<string, unknown>;
+
+  const renderItem = (item: SchemaItem) => {
+    const grey = isGreyed(item, values, schema);
+    const value = values[item.key] ?? item.default;
+    const note = (
+      <div style={{ fontSize: 11, opacity: grey ? 0.55 : 0.75, lineHeight: 1.3 }}>
+        {item.type === "slider" && <div style={{ fontWeight: 600 }}>{describeValue(item, value)}</div>}
+        {item.desc && <div>{item.desc}</div>}
+        {item.key === "TARGET_FPS" && (
+          <div>
+            {state?.refresh_hz ? `Screen: ${Math.round(state.refresh_hz)} Hz (${state.refresh_src}). Slider up to ${item.max}.` : `Screen refresh rate not detected yet. Slider up to ${item.max}.`}
+          </div>
+        )}
+        {grey && (item.group === "more" && !values.EXPERIMENTAL
+          ? <div style={{ fontStyle: "italic" }}>Greyed out: turn on Experimental to change this.</div>
+          : item.greyWhy && <div style={{ fontStyle: "italic" }}>Greyed out: {item.greyWhy}</div>)}
+      </div>
+    );
+    return (
+      <PanelSectionRow key={item.key}>
+        {/* Greyed rows stay focusable (not `disabled`) so the gamepad can still land on them and the panel scrolls to them; changes are ignored while grey. */}
+        <div style={grey ? { opacity: 0.45 } : undefined}>
+        {item.type === "toggle" ? (
+          <ToggleField
+            label={item.label}
+            checked={!!value}
+            description={note}
+            onChange={(on: boolean) => { if (!grey) change(item.key, on ? 1 : 0); }}
+          />
+        ) : (
+          <SliderField
+            label={item.label}
+            value={value}
+            min={item.min}
+            max={item.max}
+            step={fine && item.fine ? item.fine : item.step}
+            showValue
+            valueSuffix={item.key.endsWith("FPS") || item.key.endsWith("CAP") ? " fps" : undefined}
+            onChange={(v: number) => { if (!grey) change(item.key, v); }}
+            description={note}
+            {...fineShortcut}
+          />
+        )}
+        </div>
+      </PanelSectionRow>
+    );
+  };
+
+  return (
+    <>
+      <PanelSection title="Layer and status">
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={!layer.bundled_available}
+            onClick={() => act(() => installLayer(""), "Layer installed")}
+          >
+            {layer.installed ? "Reinstall layer" : "Install layer"}
+          </ButtonItem>
+        </PanelSectionRow>
+        {layer.installed && (
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => act(() => uninstallLayer(), "Layer removed")}>
+              Uninstall layer
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
+        {!layer.bundled_available && (
+          <PanelSectionRow>
+            <div style={{ fontSize: 11, opacity: 0.7 }}>
+              No library in the plugin's bin/ folder. Use scripts/link-build.sh to point at a local build.
+            </div>
+          </PanelSectionRow>
+        )}
+        <PanelSectionRow>
+          <Focusable style={{ fontSize: 12, wordBreak: "break-word" }} onActivate={() => {}}>
+            <div style={{ fontWeight: 600 }}>{layer.installed ? "Layer installed" : "Layer not installed"}</div>
+            {layer.library && <div style={{ fontSize: 11, opacity: 0.7, wordBreak: "break-all" }}>{layer.library}</div>}
+            <div style={{ marginTop: 4 }}>{statusLine(status)}</div>
+          </Focusable>
+        </PanelSectionRow>
+        <EndMarker text="End of status" />
+      </PanelSection>
+      <Gap />
+
+      <PanelSection title="Launch options">
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.75 }}>
+            To use it in a game, put this in the game's launch options (Properties → General). Settings below are changed here, not there.
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => copy(LAUNCH_PLAIN)}>
+            Copy: {LAUNCH_PLAIN}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => copy(LAUNCH_FULL)}>
+            Copy: {LAUNCH_FULL}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.75 }}>
+            No other launch options? Copy the second one. Already have some (for example MANGOHUD=1 %command%)? Copy the first one and put it in front of %command%: MANGOHUD=1 VKIFRAME_ENABLE=1 %command%
+          </div>
+        </PanelSectionRow>
+      </PanelSection>
+      <Gap />
+
+      <PanelSection title="Frame generation">
+        {schema.filter((i) => i.group === "switch").map(renderItem)}
+      </PanelSection>
+
+      {values.ENABLED ? (
+        <>
+          <Gap />
+          <PanelSection title="Main settings (applies while playing)">
+            <PanelSectionRow>
+              <ToggleField
+                label="Fine slider steps"
+                checked={fine}
+                onChange={(on: boolean) => setFine(on)}
+                description={
+                  <div style={{ fontSize: 11, opacity: 0.75 }}>
+                    Smaller steps on the sliders. With a slider selected, the button named at the bottom of the screen switches it too.
+                  </div>
+                }
+              />
+            </PanelSectionRow>
+            {schema.filter((i) => i.group === "main").map(renderItem)}
+          </PanelSection>
+
+          <Gap />
+          <PanelSection title="More settings">
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => setShowMore((v) => !v)}>
+                {showMore ? "▾ Hide more settings" : "▸ Show more settings"}
+              </ButtonItem>
+            </PanelSectionRow>
+            {showMore && (
+              <>
+                <PanelSectionRow>
+                  <div style={{ fontSize: 11, opacity: 0.85 }}>
+                    Experimental: these settings are untested and can add latency, glitches or crashes. They can only be changed while Experimental is on.
+                  </div>
+                </PanelSectionRow>
+                {schema.filter((i) => i.group === "gate").map(renderItem)}
+                {schema.filter((i) => i.group === "more" && (i.needsLayer ?? "live") === "live").map(renderItem)}
+                <PanelSectionRow>
+                  <div style={{ fontSize: 11, fontWeight: 600, marginTop: 8 }}>Applies at the next game start</div>
+                </PanelSectionRow>
+                {schema.filter((i) => i.group === "more" && i.needsLayer === "restart").map(renderItem)}
+              </>
+            )}
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => act(() => resetValues(), "Defaults restored")}>
+                Reset all to defaults
+              </ButtonItem>
+            </PanelSectionRow>
+          </PanelSection>
+        </>
+      ) : (
+        <>
+          <Gap />
+          <PanelSection title="Settings">
+            <PanelSectionRow>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>Turn Frame generation on to see the settings.</div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => act(() => resetValues(), "Defaults restored")}>
+                Reset all to defaults
+              </ButtonItem>
+            </PanelSectionRow>
+          </PanelSection>
+        </>
+      )}
+      <Gap />
+
+      <PanelSection title="Change log">
+        <PanelSectionRow>
+          <div style={{ fontSize: 10, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", opacity: 0.85 }}>
+            {log.length ? log.join("\n") : "Nothing logged yet."}
+          </div>
+        </PanelSectionRow>
+        <EndMarker text="End of change log" />
+      </PanelSection>
+    </>
+  );
+}
+
+// A greyed button with no action: it only gives the gamepad something to land on, so the panel can scroll down to the end of a text-only section.
+function EndMarker({ text }: { text: string }) {
+  return (
+    <PanelSectionRow>
+      <Focusable
+        onActivate={() => {}}
+        style={{
+          opacity: 0.4,
+          minHeight: 0,
+          height: 20,
+          lineHeight: "20px",
+          padding: "0 10px",
+          fontSize: 10,
+          textAlign: "center",
+          borderRadius: 3,
+          background: "rgba(255,255,255,0.08)",
+        }}
+      >
+        {text}
+      </Focusable>
+    </PanelSectionRow>
+  );
+}
+
+// Blank space plus a thin line between sections, so one section's tooltip text is not mistaken for the next one's.
+function Gap() {
+  return <div style={{ height: 1, margin: "18px 16px", background: "rgba(255,255,255,0.15)" }} />;
+}
+
+export default definePlugin(() => ({
+  name: "vkIFrames",
+  titleView: <div className={staticClasses.Title}>vkIFrames</div>,
+  content: <Content />,
+  icon: <FaFilm />,
+  onDismount() {},
+}));

@@ -1,0 +1,23 @@
+#version 450
+// Stage 3 placeholder for a synthetic frame: a plain temporal blend of the two captured frames. Stage 5 replaces this
+// with the optical-flow interpolation. All three images are RGBA16F in VK_IMAGE_LAYOUT_GENERAL.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D u_frame_a;
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image2D u_frame_b;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D u_out;
+
+layout(push_constant) uniform Params { float t; } u_params;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(u_out)))) return;
+    float t = u_params.t;
+    const bool mark = t >= 2.0;                                  // VKIFRAME_TICKMARK: t + 4 * (1 + bar x)
+    int bar_x = 0;
+    if (mark) { float m = floor(t / 4.0); t -= 4.0 * m; bar_x = int(m) - 1; }
+    vec4 c = mix(imageLoad(u_frame_a, p), imageLoad(u_frame_b, p), t);
+    if (mark && p.x < 64 && p.y < 64) c = (t < 0.5) ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0);
+    if (mark && p.y >= imageSize(u_out).y - 40) c = (p.x >= bar_x && p.x < bar_x + 24) ? vec4(1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+    imageStore(u_out, p, c);
+}

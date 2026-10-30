@@ -1,0 +1,5 @@
+node_modules/
+dist/
+bin/*.so
+*.log
+__pycache__/
