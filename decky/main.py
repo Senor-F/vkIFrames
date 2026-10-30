@@ -22,6 +22,7 @@ SETTINGS_DIR = decky.DECKY_PLUGIN_SETTINGS_DIR
 CONF_DIR = os.path.join(USER_HOME, ".config", "vkiframes")
 LIVE_CONF = os.path.join(CONF_DIR, "live.conf")      # plugin -> layer
 STATUS_JSON = os.path.join(CONF_DIR, "status.json")  # layer -> plugin (optional)
+BENCH_JSON = os.path.join(CONF_DIR, "bench.json")    # layer -> plugin: result of a benchmark run (numbers only)
 LIVE_LOG = os.path.join(CONF_DIR, "live.log")        # verbose log of every change; the layer appends to the same file
 DATA_DIR = os.path.join(USER_HOME, ".local", "share", "vkiframes")
 LAYER_DIR = os.path.join(USER_HOME, ".local", "share", "vulkan", "implicit_layer.d")
@@ -170,6 +171,7 @@ def _check_library(path):
 class Plugin:
     values = None
     rev = 0
+    bench_token = 0        # BENCH=<number> in live.conf: a new number asks the layer for one benchmark run (about 7 minutes)
     experimental = False   # EXPERIMENTAL on: the "more" settings can be changed and Most generated frames reaches 10
     refresh_hz = 0.0       # refresh rate of the screen the game renders on; 0 = not known yet
     refresh_src = ""       # "layer" (what the running game's swapchain reports), "xrandr", or "saved"
@@ -259,6 +261,8 @@ class Plugin:
                  "REV=%d" % self.rev]
         for item in self._schema():
             lines.append("%s%s=%s" % (PREFIX, item["key"], self.values[item["key"]]))
+        if self.bench_token:
+            lines.append("%sBENCH=%d" % (PREFIX, self.bench_token))     # kept in every later write, so the layer does not see it change
         _private_dir(CONF_DIR)
         _atomic_write(LIVE_CONF, "\n".join(lines) + "\n")
         _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n")
@@ -272,6 +276,16 @@ class Plugin:
         except (OSError, ValueError):
             pass
         await self._update_display(status)
+        bench = None
+        try:
+            if os.path.getsize(BENCH_JSON) < 65536:
+                with open(BENCH_JSON, "r", encoding="utf-8") as f:
+                    b = json.load(f)
+                d = b.get("derived") or {}
+                bench = {"status": b.get("status"), "reason": b.get("reason", ""), "age_s": round(time.time() - os.path.getmtime(BENCH_JSON)),
+                         "layer_cost_mean_ms": d.get("layer_cost_mean_ms"), "gpu_share": d.get("gpu_share")}
+        except (OSError, ValueError, AttributeError):
+            pass
         return {
             "schema": self._schema(),
             "refresh_hz": self.refresh_hz,
@@ -280,6 +294,8 @@ class Plugin:
             "layer": self._layer_info(),
             "live_conf": LIVE_CONF,
             "status": status,
+            "bench": bench,
+            "bench_file": BENCH_JSON,
         }
 
     async def set_value(self, key: str, value: float):
@@ -300,6 +316,13 @@ class Plugin:
                     self.rev, "; read by the layer within a second" if item.get("needsLayer") == "live" else "; read when the next game starts"))
                 return self.values
         raise ValueError("unknown setting %r" % key)
+
+    async def start_bench(self):
+        """Asks the running game's layer for one benchmark run: 30 s warm-up, then 3 x (60 s off, 60 s on). The layer writes bench.json."""
+        self.bench_token = max(int(time.time()), self.bench_token + 1)
+        self._write_live()
+        _log("panel: benchmark requested (BENCH=%d, REV %d); the layer starts it within a second if a game is running" % (self.bench_token, self.rev))
+        return {"token": self.bench_token}
 
     async def reset_values(self):
         self.values = self._defaults()

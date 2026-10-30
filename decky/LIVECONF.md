@@ -23,6 +23,7 @@ FRAMEGEN_TARGET_FPS=60
 4. `ENABLED=0` must behave like bypass: native frames pass straight through, no added latency.
 5. Clamp bad values to the same ranges as `settings_schema.json`; never crash on a malformed line.
 6. Optional status (layer -> plugin): write `~/.config/vkiframes/status.json` about once a second, e.g. `{"native_fps":42.1,"output_fps":60.0,"k":1,"mode":"interp"}`. The plugin shows it as is.
+7. Benchmark (plugin -> layer): a `BENCH=<number>` line asks for one benchmark run when the number is new (not the one in the file when the game started). The plugin keeps the number in every later write so the layer does not see it change; the run stops if any other setting changes. `status.json` carries `"bench"` (warmup, settle, off, on, done, aborted, or empty) and the layer writes `bench.json` (numbers only) next to it. `STATS=1` writes `stats.jsonl`, one record a second.
 
 ## Keeping the plugin in step
 `settings_schema.json` lists every setting the plugin shows (key, label, type, default, min, max, step). When a `FRAMEGEN_*` setting is added, renamed, removed, or its default or range changes, update `settings_schema.json` in the same change. The plugin needs no other edit.

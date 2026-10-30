@@ -20,12 +20,13 @@
 
 namespace {
 
-enum Key { kEnabled, kTargetFps, kMaxSynthetic, kBaseFpsCap, kMinGain, kPhaseLock, kPhaseOffset, kInterpBidir, kKeys };
+enum Key { kEnabled, kTargetFps, kMaxSynthetic, kBaseFpsCap, kMinGain, kPhaseLock, kPhaseOffset, kInterpBidir, kStats, kBench, kKeys };
 
 struct KeyInfo { const char* name; bool toggle; double lo, hi; };   // ranges as in settings_schema.json on the decky-plugin branch
 constexpr KeyInfo kInfo[kKeys] = {
     {"ENABLED", true, 0, 1}, {"TARGET_FPS", false, 30, 1000}, {"MAX_SYNTHETIC", false, 1, kLiveMaxSyntheticNormal}, {"BASE_FPS_CAP", false, 0, 90},
     {"MIN_GAIN", false, 1.01, 1.5}, {"PHASE_LOCK", true, 0, 1}, {"PHASE_OFFSET", false, 0.0, 0.999}, {"INTERP_BIDIR", true, 0, 1},
+    {"STATS", true, 0, 1}, {"BENCH", false, 0, 4e12},     // BENCH: a request token (any new number starts one benchmark run), see stats.hpp
 };
 
 // Empty when neither XDG_CONFIG_HOME nor HOME is set: then there are no live settings and no live.log (no shared /tmp fallback).
@@ -104,21 +105,23 @@ void LogLine(const char* fmt, ...) {
 double Get(const LiveSettings& s, int k) {
     switch (k) {
         case kEnabled: return s.enabled; case kTargetFps: return s.target_fps; case kMaxSynthetic: return s.max_synthetic; case kBaseFpsCap: return s.base_fps_cap;
-        case kMinGain: return s.min_gain; case kPhaseLock: return s.phase_lock; case kPhaseOffset: return s.phase_offset; default: return s.interp_bidir;
+        case kMinGain: return s.min_gain; case kPhaseLock: return s.phase_lock; case kPhaseOffset: return s.phase_offset; case kStats: return s.stats; case kBench: return double(s.bench_token.load()); default: return s.interp_bidir;
     }
 }
 void Set(LiveSettings& s, int k, double v) {
     switch (k) {
         case kEnabled: s.enabled = int(v); break; case kTargetFps: s.target_fps = float(v); break; case kMaxSynthetic: s.max_synthetic = int(v); break;
         case kBaseFpsCap: s.base_fps_cap = float(v); break; case kMinGain: s.min_gain = float(v); break; case kPhaseLock: s.phase_lock = int(v); break;
-        case kPhaseOffset: s.phase_offset = float(v); break; default: s.interp_bidir = int(v); break;
+        case kPhaseOffset: s.phase_offset = float(v); break; case kStats: s.stats = int(v); break; case kBench: s.bench_token = (long long)v; break; default: s.interp_bidir = int(v); break;
     }
 }
-std::string Show(int k, double v) { char b[40]; if (kInfo[k].toggle || k == kMaxSynthetic) std::snprintf(b, sizeof b, "%d", int(v)); else std::snprintf(b, sizeof b, "%g", v); return b; }
+std::string Show(int k, double v) { char b[40]; if (k == kBench) std::snprintf(b, sizeof b, "%lld", (long long)v); else if (kInfo[k].toggle || k == kMaxSynthetic) std::snprintf(b, sizeof b, "%d", int(v)); else std::snprintf(b, sizeof b, "%g", v); return b; }
 
 double g_startup[kKeys];            // values from the environment (what removing the file goes back to)
 bool   g_have_file = false;
 long long g_mtime_ns = 0; long long g_size = -1; unsigned long long g_rev = 0;
+unsigned long long g_gen = 0;      // counts the loads that changed a setting (the benchmark stops when it moves)
+long long g_bench_seen = 0;        // the BENCH token already handled (or present when the game started)
 uint64_t g_next_poll = 0;
 std::mutex g_poll_mu;
 
@@ -134,11 +137,11 @@ bool ParseValue(int k, const std::string& raw, double& out, std::string& note) {
         return false;
     }
     if (kInfo[k].toggle) { out = v != 0.0 ? 1 : 0; if (v != 0.0 && v != 1.0) note = "any non-zero value counts as 1"; return true; }
-    if (k == kMaxSynthetic) v = std::round(v);
+    if (k == kMaxSynthetic || k == kBench) v = std::round(v);
     const double hi = (k == kMaxSynthetic) ? double(LiveMaxSyntheticLimit()) : kInfo[k].hi;   // experimental mode (set at game start) allows up to 10
     const double c = std::clamp(v, kInfo[k].lo, hi);
     if (c != v) { char b[120]; std::snprintf(b, sizeof b, "clamped to the range %g..%g", kInfo[k].lo, hi); note = b; }
-    out = (k == kMaxSynthetic) ? c : double(float(c));      // the settings are floats: compare as floats, or 1.12 reads as a change from 1.12f
+    out = (k == kMaxSynthetic || k == kBench) ? c : double(float(c));      // the settings are floats: compare as floats, or 1.12 reads as a change from 1.12f
     return true;
 }
 
@@ -192,6 +195,7 @@ void Apply(const char* why, const std::string& text, bool present) {
         LogLine("CHANGE %s: %s -> %s (%s)", kInfo[k].name, Show(k, old).c_str(), Show(k, want[k]).c_str(), from_file[k] ? "live.conf" : "back to the startup value");
         Set(live, k, want[k]);
     }
+    if (changed) ++g_gen;
     LogLine("%s: REV %llu, %u setting line(s), %u comment/blank, %u invalid, %u unknown, %u start-of-game only (not applied now); %d value(s) changed", why, g_rev, lines, comments, bad, unknown, startup, changed);
     if (changed) {
         char sum[300]; int n = 0;
@@ -265,6 +269,7 @@ LiveSettings& Live() {
         const Config& c = GetConfig();
         l->enabled = 1; l->target_fps = c.target_fps; l->max_synthetic = std::min(c.max_synthetic, LiveMaxSyntheticLimit()); l->base_fps_cap = c.base_fps_cap;
         l->min_gain = c.min_gain; l->phase_lock = c.phase_lock ? 1 : 0; l->phase_offset = c.phase_offset; l->interp_bidir = c.interp_bidir ? 1 : 0;
+        if (const char* v = EnvVar("STATS")) l->stats = std::atoi(v) != 0 ? 1 : 0;
         for (int k = 0; k < kKeys; ++k) g_startup[k] = Get(*l, k);
         return l;
     }();
@@ -295,9 +300,54 @@ void LivePoll(uint64_t now_ns) {
     if (ReadOwnFile(ConfPath(), text)) {
     } else { LogLine("live.conf could not be opened (errno %d), keeping the current values", errno); return; }
     Apply(first ? "live.conf found at startup" : "live.conf changed", text, true);
+    if (first) g_bench_seen = Live().bench_token.load();      // a token left in the file from before is not a request
 }
 
-void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz) {
+unsigned long long LiveGeneration() { return g_gen; }
+bool LiveBenchRequest(long long* token) {
+    const long long t = Live().bench_token.load();
+    if (t == 0 || t == g_bench_seen) return false;
+    *token = t; return true;
+}
+void LiveBenchAck(long long token) { g_bench_seen = token; }
+
+// Atomic private file next to live.conf: written to a temp name (O_EXCL, 0600, no symlink) and renamed over NAME.
+bool LiveWritePrivate(const char* name, const std::string& text) {
+    static std::mutex mu;
+    std::lock_guard<std::mutex> l(mu);
+    const std::string dir = ConfDir();
+    if (dir.empty() || !MakePrivateDir(dir)) return false;
+    const std::string tmp = dir + "/" + name + ".tmp", fin = dir + "/" + name;
+    (void)::unlink(tmp.c_str());
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    FILE* f = ::fdopen(fd, "w");
+    if (!f) { ::close(fd); return false; }
+    const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    std::fclose(f);
+    if (!ok || std::rename(tmp.c_str(), fin.c_str()) != 0) { (void)::unlink(tmp.c_str()); return false; }
+    return true;
+}
+
+// One line appended to stats.jsonl (0600, private folder, no symlink). One old file is kept when it grows past 8 MB.
+bool LiveStatsAppend(const std::string& line) {
+    static std::mutex mu;
+    static FILE* f = nullptr;
+    static unsigned n = 0;
+    std::lock_guard<std::mutex> l(mu);
+    const std::string dir = ConfDir(), path = dir + "/stats.jsonl";
+    if (dir.empty() || !MakePrivateDir(dir)) return false;
+    if (f && (++n % 600) == 0) {                                  // about every ten minutes: check the size
+        struct stat st;
+        if (::fstat(::fileno(f), &st) == 0 && st.st_size > 8 * 1024 * 1024) { std::fclose(f); f = nullptr; (void)std::rename(path.c_str(), (path + ".1").c_str()); }
+    }
+    if (!f) f = OpenPrivateAppend(path);
+    if (!f) return false;
+    std::fputs(line.c_str(), f); std::fputc('\n', f); std::fflush(f);
+    return true;
+}
+
+void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz, const char* bench) {
     static std::mutex mu;
     std::lock_guard<std::mutex> l(mu);
     const std::string dir = ConfDir(), tmp = dir + "/status.json.tmp", fin = dir + "/status.json";
@@ -307,7 +357,7 @@ void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mod
     if (fd < 0) return;
     FILE* f = ::fdopen(fd, "w");
     if (!f) { ::close(fd); return; }
-    std::fprintf(f, "{\"native_fps\":%.1f,\"output_fps\":%.1f,\"k\":%d,\"mode\":\"%s\",\"enabled\":%d,\"refresh_hz\":%.2f}\n", native_fps, shown_fps, k, mode, Live().enabled.load(), refresh_hz);
+    std::fprintf(f, "{\"native_fps\":%.1f,\"output_fps\":%.1f,\"k\":%d,\"mode\":\"%s\",\"enabled\":%d,\"refresh_hz\":%.2f,\"bench\":\"%s\"}\n", native_fps, shown_fps, k, mode, Live().enabled.load(), refresh_hz, bench ? bench : "");
     std::fclose(f);
     (void)std::rename(tmp.c_str(), fin.c_str());
 }

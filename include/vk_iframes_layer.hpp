@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "output_clock.hpp"
+#include "stats.hpp"
 #include "timing_engine.hpp"
 
 #define FRAMEGEN_EXPORT extern "C" __attribute__((visibility("default")))
@@ -284,6 +285,8 @@ struct SwapchainState {
     double   cap_render_ema_ns{0.0};          // how long the game takes between our return and its next present
     std::atomic<uint64_t> cpu_hook_ns{0}, cpu_presenter_ns{0};   // CPU time (not waiting) of the game thread inside our present, and of the presenter thread (window totals)
     std::atomic<uint64_t> wait_acquire_ns{0}, wait_present_ns{0}, native_cnt{0};   // game-thread waits (window totals, see LogRates)
+    stats::FrameTimes stat_ft;                // VKIFRAME_STATS: present-to-present intervals of this second (only filled while StatsOn())
+    uint64_t stat_prev_ns{0};
     // frame holding (Stage 3b)
     bool     hold_candidate{false};           // surface, format, usage and image count allow it
     bool     synth_failed{false};             // creating a synthetic frame failed: held frames continue without synthetic ones

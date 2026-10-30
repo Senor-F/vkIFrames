@@ -404,6 +404,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         if (dt.GetQueryPoolResults(dt.device, fs.qpool, FlowState::kQSlots * e + 8, 2, sizeof(t), t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] >= t[0]) {
             const double ms = double(t[1] - t[0]) * double(fs.ts_period_ns) * 1e-6;
             fs.interp_sum += ms; fs.interp_max = std::max(fs.interp_max, ms);
+            if (StatsOn()) { fs.stat_interp_ns += uint64_t(ms * 1e6); ++fs.stat_interp_n; }
             if (++fs.interp_count >= 240) {
                 FG_LOG("interpolation: GPU %.2f ms per generated frame (max %.2f) over %u frames", fs.interp_sum / fs.interp_count, fs.interp_max, fs.interp_count);
                 fs.interp_sum = 0.0; fs.interp_max = 0.0; fs.interp_count = 0;

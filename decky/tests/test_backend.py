@@ -101,4 +101,13 @@ try: run(p.install_layer()); raise SystemExit("installed without bundled lib")
 except ValueError: pass
 assert not run(p.uninstall_layer())["installed"]
 st = run(p.get_state()); assert st["status"] is None and len(st["schema"]) == 13
+# benchmark request: BENCH=<number> in live.conf, kept by later writes; the result is read back from bench.json
+r1 = run(p.start_bench())["token"]
+conf = open(main.LIVE_CONF).read(); assert "VKIFRAME_BENCH=%d" % r1 in conf, conf
+run(p.set_value("TARGET_FPS", 62)); assert "VKIFRAME_BENCH=%d" % r1 in open(main.LIVE_CONF).read()
+r2 = run(p.start_bench())["token"]; assert r2 > r1                      # a second request is a new number, so the layer sees it
+assert run(p.get_state())["bench"] is None
+open(main.BENCH_JSON, "w").write('{"status":"complete","reason":"","derived":{"layer_cost_mean_ms":3.5,"gpu_share":0.22}}')
+b = run(p.get_state())["bench"]; assert b["status"] == "complete" and b["layer_cost_mean_ms"] == 3.5 and b["gpu_share"] == 0.22, b
+open(main.BENCH_JSON, "w").write("not json"); assert run(p.get_state())["bench"] is None
 print("backend tests passed")

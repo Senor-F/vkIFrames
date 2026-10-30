@@ -3,6 +3,7 @@
 // The environment gives the startup values; a key in the file overrides them, removing the file reverts. Every change is written to live.log.
 #include <atomic>
 #include <cstdint>
+#include <string>
 
 struct LiveSettings {
     std::atomic<int>   enabled{1};           // ENABLED: 0 = bypass, native frames pass straight through (also no base-fps cap)
@@ -13,6 +14,8 @@ struct LiveSettings {
     std::atomic<int>   phase_lock{1};        // PHASE_LOCK
     std::atomic<float> phase_offset{0.5f};   // PHASE_OFFSET
     std::atomic<int>   interp_bidir{0};        // INTERP_BIDIR (takes effect from the next pair)
+    std::atomic<int>   stats{0};               // STATS: one measurement record a second in stats.jsonl (see stats.hpp)
+    std::atomic<long long> bench_token{0};     // BENCH: a new non-zero number asks for one benchmark run
 };
 constexpr int kLiveMaxSynthetic = 10;        // hard upper bound of MAX_SYNTHETIC (experimental mode)
 constexpr int kLiveMaxSyntheticNormal = 4;   // the most without experimental mode
@@ -24,4 +27,11 @@ bool LiveLogOpen();
 LiveSettings& Live();                         // initialised from the environment on first use
 void LivePoll(uint64_t now_ns);               // cheap: one stat() per second; re-reads the file when it changed
 // About once a second: native fps, shown fps, generated frames per native frame and the mode; written to status.json next to live.conf
-void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz = 0.0);  // refresh_hz: the swapchain's refresh rate, 0 = unknown
+void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz = 0.0, const char* bench = "");  // refresh_hz: the swapchain's refresh rate, 0 = unknown
+
+// Benchmark support (stats.hpp): the number of loads that changed a setting, the pending BENCH request, and private files next to live.conf.
+unsigned long long LiveGeneration();
+bool LiveBenchRequest(long long* token);      // true when live.conf holds a BENCH number that has not been handled (and was not there at startup)
+void LiveBenchAck(long long token);
+bool LiveWritePrivate(const char* name, const std::string& text);   // temp + rename, 0600, in the 0700 config folder
+bool LiveStatsAppend(const std::string& line);                      // one line of stats.jsonl

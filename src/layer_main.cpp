@@ -369,6 +369,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
 VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                     const VkAllocationCallbacks* pAllocator) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    StatsBenchAbort("the game closed its swapchain");           // a benchmark run stops and restores ENABLED
     FG_LOG("shutdown: vkDestroySwapchainKHR");
     const uint64_t t0 = NowNs();
     if (swapchain) {
@@ -416,9 +417,11 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     if (r.last_ns == 0) { r = {.last_ns = now}; return; }
     if (now - r.last_ns < 1'000'000'000ull) return;
     const double secs = double(now - r.last_ns) / 1e9;
+    const bool want_stats = StatsWantsSecond();
+    stats::Record rec;
     {
         const double nat = double(r.native) / secs, shown = double(r.shown) / secs;
-        LiveWriteStatus(nat, shown, nat > 0.5 ? std::max(0, int(std::lround(shown / nat)) - 1) : 0, !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass", sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0);
+        LiveWriteStatus(nat, shown, nat > 0.5 ? std::max(0, int(std::lround(shown / nat)) - 1) : 0, !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass", sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0, StatsBenchLabel());
     }
     FG_LOG("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
            double(r.native) / secs, double(r.output) / secs, double(r.shown) / secs, sc.gpu ? (GetConfig().extrapolate ? " (extrapolating)" : " (frame holding on)") : "",
@@ -427,17 +430,39 @@ void LogRates(SwapchainState& sc, uint64_t now) {
            sc.sched.ContentDelayNs() / 1e6);
     if (GetConfig().extrapolate) {
         const uint64_t planned = sc.ex_planned.exchange(0), cancelled = sc.ex_cancelled.exchange(0), ln = sc.ex_late_n.exchange(0), lsum = sc.ex_late_sum_ns.exchange(0), lmax = sc.ex_late_max_ns.exchange(0);
+        rec.late_mean_ms = ln ? double(lsum) / double(ln) / 1e6 : 0.0; rec.late_max_ms = double(lmax) / 1e6; rec.cancelled = cancelled;
         FG_LOG("extrapolation: predicted frames not shown %llu of %llu | native frame late against its slot: mean %.2f ms, max %.2f ms",
                (unsigned long long)cancelled, (unsigned long long)planned, ln ? double(lsum) / double(ln) / 1e6 : 0.0, double(lmax) / 1e6);
     }
-    if (sc.gpu) {
+    {
         const double n = std::max<double>(1.0, double(r.native));
-        FG_LOG("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core",
-               double(sc.cpu_hook_ns.exchange(0)) / 1e6 / n, double(sc.cpu_presenter_ns.exchange(0)) / 1e9 / secs * 100.0);
-        FG_LOG("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)",
-               double(sc.wait_acquire_ns.exchange(0)) / 1e6 / n, double(sc.wait_present_ns.exchange(0)) / 1e6 / n,
-               double(sc.gpu->wait_lock_ns.exchange(0)) / 1e6 / n, double(sc.gpu->wait_ring_ns.exchange(0)) / 1e6 / n, double(sc.gpu->wait_fence_ns.exchange(0)) / 1e6 / n);
+        const double cpu_hook = double(sc.cpu_hook_ns.exchange(0)) / 1e6 / n, cpu_pres = double(sc.cpu_presenter_ns.exchange(0)) / 1e9 / secs;
+        const double w_acq = double(sc.wait_acquire_ns.exchange(0)) / 1e6 / n, w_pres = double(sc.wait_present_ns.exchange(0)) / 1e6 / n;
+        double w_lock = 0, w_ring = 0, w_fence = 0;
+        if (sc.gpu) {
+            w_lock = double(sc.gpu->wait_lock_ns.exchange(0)) / 1e6 / n; w_ring = double(sc.gpu->wait_ring_ns.exchange(0)) / 1e6 / n; w_fence = double(sc.gpu->wait_fence_ns.exchange(0)) / 1e6 / n;
+            FG_LOG("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
+            FG_LOG("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
+        }
+        if (want_stats) {                                      // VKIFRAME_STATS / benchmark: this second as one record (stats.hpp)
+            rec.secs = secs; rec.target_fps = Live().target_fps.load(); rec.refresh_hz = sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0;
+            rec.mode = !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass";
+            rec.native_fps = double(r.native) / secs; rec.shown_fps = double(r.shown) / secs;
+            rec.gen_per_native = rec.native_fps > 0.5 ? std::max(0.0, rec.shown_fps / rec.native_fps - 1.0) : 0.0;
+            rec.cpu_game_ms = cpu_hook; rec.presenter_core = cpu_pres;
+            rec.wait_lock_ms = w_lock; rec.wait_ring_ms = w_ring; rec.wait_fence_ms = w_fence; rec.wait_acquire_ms = w_acq; rec.wait_present_ms = w_pres;
+            rec.dropped = r.dropped;
+            if (sc.gpu) {
+                FlowState& fs = sc.gpu->flow;
+                const uint64_t fn = fs.stat_flow_n.exchange(0), fns = fs.stat_flow_ns.exchange(0), in = fs.stat_interp_n.exchange(0), ins = fs.stat_interp_ns.exchange(0);
+                rec.flow_ms = fn ? double(fns) / 1e6 / double(fn) : 0.0; rec.pairs_per_s = double(fn) / secs;
+                rec.interp_ms = in ? double(ins) / 1e6 / double(in) : 0.0; rec.generated_per_s = double(in) / secs;
+            }
+            stats::FillDerived(rec, sc.stat_ft);
+        }
+        sc.stat_ft.Clear();
     }
+    if (want_stats) StatsOnSecond(rec, now);
     r = {.last_ns = now};
 }
 
@@ -782,7 +807,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
     // (VKIFRAME_CAP_EARLY=1: wait before the present, which makes the intervals exact but adds the whole wait to the latency of every frame.)
     uint64_t cap_slot_ns = 0;
     LivePoll(NowNs());                                          // live.conf: one stat() a second
-    const float cap_fps = Live().enabled.load() ? Live().base_fps_cap.load() : 0.0f;   // disabled = pure passthrough, no cap either
+    const float cap_fps = (Live().enabled.load() || StatsBenchActive()) ? Live().base_fps_cap.load() : 0.0f;   // a benchmark keeps the cap in its "off" seconds, so both states pace the game the same way   // disabled = pure passthrough, no cap either
     if (cap_fps > 0.0f) {
         cap_slot_ns = uint64_t(1e9 / cap_fps);
         const uint64_t now0 = NowNs();
@@ -801,6 +826,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
     }
 
     const uint64_t now = NowNs();
+    if (StatsOn()) { if (sc->stat_prev_ns) sc->stat_ft.Add(double(now - sc->stat_prev_ns) / 1e6); sc->stat_prev_ns = now; }   // present-to-present interval of the game
+    else sc->stat_prev_ns = 0;
     PairScheduler::Plan plan;
     {
         std::lock_guard<std::mutex> l(sc->mu);
