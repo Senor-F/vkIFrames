@@ -269,7 +269,7 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            A 32-bit game (the layer is 64-bit and cannot load into it) needs the third one: PROTON_USE_WOW64=1 makes Proton run it inside a 64-bit process. It needs a Proton that supports WoW64 (Proton 10 or Experimental). Not every 32-bit game works with it.
+            A 32-bit game (the layer is 64-bit and cannot load into it) needs the third one: PROTON_USE_WOW64=1 makes Proton run it inside a 64-bit process. It needs a Proton that supports WoW64 (Proton 10 or Experimental). The layer loaded in Tomb Raider (2013) this way; not every 32-bit game works with it.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
