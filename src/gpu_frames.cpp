@@ -59,7 +59,7 @@ uint32_t FindMemoryType(const DeviceDispatch& dt, uint32_t bits, VkMemoryPropert
 
 // Takes the next command buffer, waiting for its previous submission to finish, and starts recording.
 bool BeginCmd(const DeviceDispatch& dt, GpuState& g, uint32_t& entry) {
-    entry = g.cb_next++ % GpuState::kCmdBuffers;
+    entry = g.cb_next++ % g.n_cmd;
     if (dt.WaitForFences(dt.device, 1, &g.fences[entry], VK_TRUE, 2'000'000'000ull) != VK_SUCCESS) { FG_LOG("hold: waiting for a command buffer timed out"); return false; }
     if (dt.ResetCommandBuffer(g.cbs[entry], 0) != VK_SUCCESS) return false;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -202,15 +202,15 @@ bool CreateBlendPass(const DeviceDispatch& dt, GpuState& g) {
     pi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, g.shader, "main", nullptr};
     pi.layout = g.pipe_layout;
     if (dt.CreateComputePipelines(dt.device, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipeline) != VK_SUCCESS) { FG_LOG("synth: compute pipeline creation failed"); return false; }
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 * GpuState::kCmdBuffers};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 * g.n_cmd};
     VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dp.maxSets = GpuState::kCmdBuffers; dp.poolSizeCount = 1; dp.pPoolSizes = &ps;
+    dp.maxSets = g.n_cmd; dp.poolSizeCount = 1; dp.pPoolSizes = &ps;
     if (dt.CreateDescriptorPool(dt.device, &dp, nullptr, &g.desc_pool) != VK_SUCCESS) return false;
     VkDescriptorSetLayout layouts[GpuState::kCmdBuffers]; for (auto& l : layouts) l = g.set_layout;
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = g.desc_pool; ai.descriptorSetCount = GpuState::kCmdBuffers; ai.pSetLayouts = layouts;
+    ai.descriptorPool = g.desc_pool; ai.descriptorSetCount = g.n_cmd; ai.pSetLayouts = layouts;
     if (dt.AllocateDescriptorSets(dt.device, &ai, g.sets) != VK_SUCCESS) return false;
-    g.acquire.assign(GpuState::kCmdBuffers, VK_NULL_HANDLE);
+    g.acquire.assign(g.n_cmd, VK_NULL_HANDLE);
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (auto& s : g.acquire) if (dt.CreateSemaphore(dt.device, &si, nullptr, &s) != VK_SUCCESS) return false;
     return true;
@@ -221,6 +221,7 @@ using namespace gpuint;
 
 GpuState* GpuInit(const DeviceDispatch& dt, SwapchainState& sc, uint32_t family) {
     auto* g = new GpuState;
+    g->n_cmd = uint32_t(GetConfig().cmd_buffers);
     g->extent = sc.extent; g->family = family; g->swapchain = sc.handle;
     bool ok = true;
 
@@ -237,15 +238,15 @@ GpuState* GpuInit(const DeviceDispatch& dt, SwapchainState& sc, uint32_t family)
     }
     if (ok) {
         VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        ai.commandPool = g->pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = GpuState::kCmdBuffers;
+        ai.commandPool = g->pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = g->n_cmd;
         ok = dt.AllocateCommandBuffers(dt.device, &ai, g->cbs) == VK_SUCCESS;
         // Command buffers are dispatchable objects: the loader must initialise their dispatch word, or layers below us break.
-        for (uint32_t i = 0; ok && i < GpuState::kCmdBuffers; ++i) ok = dt.set_loader_data(dt.device, g->cbs[i]) == VK_SUCCESS;
+        for (uint32_t i = 0; ok && i < g->n_cmd; ++i) ok = dt.set_loader_data(dt.device, g->cbs[i]) == VK_SUCCESS;
     }
-    for (auto& f : g->fences) {
+    for (uint32_t i = 0; i < g->n_cmd; ++i) {
         if (!ok) break;
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        ok = dt.CreateFence(dt.device, &fi, nullptr, &f) == VK_SUCCESS;
+        ok = dt.CreateFence(dt.device, &fi, nullptr, &g->fences[i]) == VK_SUCCESS;
     }
     if (ok) {
         g->captured.assign(g->swap_images.size(), VK_NULL_HANDLE);
