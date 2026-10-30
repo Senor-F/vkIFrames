@@ -164,6 +164,8 @@ vkIFrames/
 ├── CMakeLists.txt
 ├── README.md, DESIGN.md, ROADMAP.md, STATUS.md, TARGETS.md   # overview, architecture, plan, measurements, target machines
 ├── STAGE1.md … STAGE6.md        # per-stage implementation notes
+├── ASYNC.md                     # plan and measurements for the asynchronous layer
+├── AUDIT.md                     # Auditor findings
 ├── manifest/VkLayer_frame_gen.json.in
 ├── include/
 │   ├── vk_iframes_layer.hpp     # config (VKIFRAME_* settings), dispatch tables, shared declarations
@@ -180,6 +182,7 @@ vkIFrames/
 │   └── present_timing.cpp
 ├── shaders/                     # flow_luma/down/coarse/refine/occlusion, flow_interp (interpolation, pan fallback, UI mask, extrapolation), flow_vis, blend
 ├── scripts/                     # install.sh, uninstall.sh, gamemode_launch.sh, check_env.sh
+├── decky/                       # Decky Loader plugin (live settings from Game Mode), see decky/README.md
 ├── tests/                       # mock-loader and mock-driver tests, scheduler replay, flow reference
 └── tools/                       # clock_sim (output-clock simulator), interp_eval (offline scoring)
 ```
