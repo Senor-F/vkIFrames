@@ -394,7 +394,10 @@ PairScheduler::Plan PlanAndCount(SwapchainState& sc, uint64_t now) {
     const Config& cfg = GetConfig();
     PairScheduler::Params p;
     const LiveSettings& live = Live();                       // the settings the plugin can change while a game runs
-    p.target_ns = 1e9 / double(live.target_fps.load()); p.k_max = live.max_synthetic.load(); p.phase_lock = live.phase_lock.load() != 0; p.phase_offset = live.phase_offset.load();
+    const double want_fps = double(live.target_fps.load()), use_fps = EffectiveTargetFps(want_fps, sc.refresh_ns, sc.refresh_vrr);
+    if (use_fps != want_fps && sc.clamp_logged_fps != float(want_fps)) { sc.clamp_logged_fps = float(want_fps); FG_LOG("TARGET_FPS %.1f is above the display's refresh rate: using %.2f fps (frames above it would only wait in the present queue)", want_fps, use_fps); }
+    else if (use_fps == want_fps) sc.clamp_logged_fps = 0.0f;
+    p.target_ns = 1e9 / use_fps; p.k_max = live.max_synthetic.load(); p.phase_lock = live.phase_lock.load() != 0; p.phase_offset = live.phase_offset.load();
     p.min_gain = live.enabled.load() ? live.min_gain.load() : 1e6f;   // disabled: the gain gate never opens, so every frame is a plain bypass (a held frame is flushed first)
     auto plan = cfg.extrapolate ? sc.sched.OnNativeFrameExtrap(double(now), sc.timing.SmoothedExactNs(), double(sc.timing.LastRawNs()), p)
                                 : sc.sched.OnNativeFrame(double(now), sc.timing.SmoothedExactNs(), sc.timing.JitterExactNs(), double(sc.timing.LastRawNs()), p);
@@ -444,20 +447,31 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             FG_LOG("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
             FG_LOG("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
         }
+        double flow_ms = 0, pairs_s = 0, interp_ms = 0, gen_s = 0;       // GPU time of the flow and of the interpolation in this second (copied while the readback runs)
+        if (sc.gpu) {
+            FlowState& fs = sc.gpu->flow;
+            const uint64_t fn = fs.stat_flow_n.exchange(0), fns = fs.stat_flow_ns.exchange(0), in = fs.stat_interp_n.exchange(0), ins = fs.stat_interp_ns.exchange(0);
+            flow_ms = fn ? double(fns) / 1e6 / double(fn) : 0.0; pairs_s = double(fn) / secs;
+            interp_ms = in ? double(ins) / 1e6 / double(in) : 0.0; gen_s = double(in) / secs;
+            // One warning per swapchain: the layer's own GPU work is longer than the game's frame time (3 seconds in a row), so the game cannot keep its frame rate.
+            static const double kCostWarn = [] { const char* v = EnvVar("COST_WARN"); const double x = v ? std::atof(v) : 1.0; return x > 0.0 ? x : 1.0; }();
+            const double ratio = LayerCostRatio(double(fns) / 1e6, double(ins) / 1e6, secs);
+            sc.cost_over_windows = ratio > kCostWarn ? sc.cost_over_windows + 1 : 0;
+            if (sc.cost_over_windows >= 3 && !sc.cost_warned) {
+                sc.cost_warned = true;
+                FG_LOG("WARNING: the layer's GPU work is %.0f %% of the game's frame time (flow %.2f ms x %.1f pairs/s + interpolation %.2f ms x %.1f frames/s = %.0f ms of GPU per second). The game cannot hold its frame rate with this: lower MAX_SYNTHETIC or FLOW_LEVEL, or the target.",
+                       ratio * 100.0, flow_ms, pairs_s, interp_ms, gen_s, ratio * 1000.0);
+            }
+        }
         if (want_stats) {                                      // VKIFRAME_STATS / benchmark: this second as one record (stats.hpp)
-            rec.secs = secs; rec.target_fps = Live().target_fps.load(); rec.refresh_hz = sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0;
+            rec.secs = secs; rec.target_fps = EffectiveTargetFps(double(Live().target_fps.load()), sc.refresh_ns, sc.refresh_vrr); rec.refresh_hz = sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0;
             rec.mode = !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass";
             rec.native_fps = double(r.native) / secs; rec.shown_fps = double(r.shown) / secs;
             rec.gen_per_native = rec.native_fps > 0.5 ? std::max(0.0, rec.shown_fps / rec.native_fps - 1.0) : 0.0;
             rec.cpu_game_ms = cpu_hook; rec.presenter_core = cpu_pres;
             rec.wait_lock_ms = w_lock; rec.wait_ring_ms = w_ring; rec.wait_fence_ms = w_fence; rec.wait_acquire_ms = w_acq; rec.wait_present_ms = w_pres;
             rec.dropped = r.dropped;
-            if (sc.gpu) {
-                FlowState& fs = sc.gpu->flow;
-                const uint64_t fn = fs.stat_flow_n.exchange(0), fns = fs.stat_flow_ns.exchange(0), in = fs.stat_interp_n.exchange(0), ins = fs.stat_interp_ns.exchange(0);
-                rec.flow_ms = fn ? double(fns) / 1e6 / double(fn) : 0.0; rec.pairs_per_s = double(fn) / secs;
-                rec.interp_ms = in ? double(ins) / 1e6 / double(in) : 0.0; rec.generated_per_s = double(in) / secs;
-            }
+            rec.flow_ms = flow_ms; rec.pairs_per_s = pairs_s; rec.interp_ms = interp_ms; rec.generated_per_s = gen_s;
             stats::FillDerived(rec, sc.stat_ft);
         }
         sc.stat_ft.Clear();

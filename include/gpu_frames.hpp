@@ -51,7 +51,7 @@ struct FlowState {
     bool        interp_pending[8]{};
     double      interp_sum{0.0}, interp_max{0.0};
     uint32_t    interp_count{0};
-    // VKIFRAME_STATS: totals of the current second (read and cleared by LogRates); only added to while StatsOn()
+    // GPU time of the current second (read and cleared by LogRates): feeds the cost warning and VKIFRAME_STATS; two atomic adds per pair / generated frame
     std::atomic<uint64_t> stat_flow_ns{0}, stat_flow_n{0}, stat_interp_ns{0}, stat_interp_n{0};
 };
 
