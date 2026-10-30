@@ -50,6 +50,7 @@ const startBench = callable<[], { token: number }>("start_bench");
 
 const LAUNCH_PLAIN = "VKIFRAME_ENABLE=1";
 const LAUNCH_FULL = "VKIFRAME_ENABLE=1 %command%";
+const LAUNCH_32BIT = "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%";   // 32-bit games: Proton runs them inside a 64-bit process, so the 64-bit layer can load
 
 function describeValue(item: SchemaItem, v: number): string {
   if ((item.key === "BASE_FPS_CAP" || item.key === "UI_MASK_THRESHOLD") && v === 0) return "off";
@@ -260,6 +261,16 @@ function Content() {
           <ButtonItem layout="below" onClick={() => copy(LAUNCH_FULL)}>
             Copy: {LAUNCH_FULL}
           </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => copy(LAUNCH_32BIT)}>
+            Copy for 32-bit games: {LAUNCH_32BIT}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.75 }}>
+            A 32-bit game (the layer is 64-bit and cannot load into it) needs the third one: PROTON_USE_WOW64=1 makes Proton run it inside a 64-bit process. It needs a Proton that supports WoW64 (Proton 10 or Experimental). The layer loaded in Tomb Raider (2013) this way; not every 32-bit game works with it.
+          </div>
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
