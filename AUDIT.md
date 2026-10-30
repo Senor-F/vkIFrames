@@ -14,40 +14,90 @@ Items 1 and 5 are closed.
 
 The link in the description of pull request 1 was removed; pull request bodies, comments and the board are scanned on every check.
 
-## 2. Layer: refresh-rate clamp and cost warning (not implemented)
+## 2. Refresh-rate clamp and cost warning (small; not implemented)
 
-The status file reports `refresh_hz`, but nothing limits the live `TARGET_FPS` to it. On a fixed-refresh display a target above the refresh rate only fills the present queue (more latency, no more frames shown). Wanted: clamp the live target to the reported refresh rate unless the display is variable-refresh; log one warning when (generated frames per second x warp ms) plus (pairs per second x flow ms) exceeds the base frame time budget.
+Every item below uses the same layout: what it is, what it costs today, what happens if we do it, what happens if we do not, a recommendation, and how to decide. Numbers marked "estimate" are the Auditor's arithmetic from the Builder's Deck figures, not measurements; the measurement logic (section 6) replaces them with real ones.
+
+- **What it is.** The status file reports the screen's refresh rate, but nothing limits the live target to it.
+- **Cost today.** On a fixed-refresh screen a target above the refresh rate only fills the present queue: each extra generated frame costs about 1.4 ms of GPU time (Builder's figure) and is never shown, and the queue adds latency.
+- **If we do.** The target stops at the refresh rate (no clamp on a variable-refresh display, where the layer already sees an unknown refresh duration), and one warning appears when the layer's work per second exceeds the base frame time budget. No wasted GPU work, bounded latency. Cost: a few lines and a test.
+- **If we do not.** A user (or the plugin slider) can ask for a target the screen cannot show and pay for frames that are thrown away.
+- **Recommendation.** Do it, right after the measurement logic.
+- **Decide with.** Nothing to measure; check behaviour on a fixed-refresh and a variable-refresh display.
 
 ## 3. GPU load and CPU<->GPU load (priority list)
 
-State on `main`, by reading the code:
+Context from the Builder's Deck numbers (60 fps game, 90 fps output): flow 4.84 ms per pair, interpolation 1.43 ms per generated frame, about 42 % of GPU time, about 69 % of that is flow. Game-thread waits are already about 0.1 ms per frame. So the layer's GPU cost, mostly flow, is the main lever. Order below is by expected gain, to be confirmed by `bench.json`.
 
-| Item | Finding | Status |
-|---|---|---|
-| B. Ring and output format | Ring slots and the synth image are always RGBA16F; the swapchain is 8-bit. Each capture and each generated frame costs a full-frame blit with format conversion (about 16.6 MB per 1080p frame in 16F). On the Deck the CPU shares this memory. Wanted: ring format follows the swapchain (16F only for 10-bit/HDR), copy instead of blit where formats match, write the warp straight into the swapchain image when storage usage is allowed (blit as fallback). | open |
-| C. Locking and descriptors | The synthesis function holds the shared mutex for its whole body; one command pool and one fence ring are shared by the game thread and the presenter; descriptor sets are rewritten for every generated frame. Wanted: per-thread pools and fence rings, descriptors written once per ring slot (or an indexed array plus slot numbers in push constants). Acquire wait is already outside the mutex. | open (acquire part done) |
-| D. Barriers | Capture, held-present and synthesis barriers still name `ALL_COMMANDS` as source or destination stage, which stalls other work in the queue. Name the real stages; where a semaphore already orders the work the swapchain barrier needs no source stage. | open |
-| E. Timestamps and wakeups | GPU timestamps are written at 5 sites on every pair (bottom-of-pipe stamps add pipeline drains); keep them for a stats switch or sample one pair in N. The extrapolation tick wait is already a condition-variable wait. | open (wait part done) |
-| F. Fewer submits | One submit per capture, per flow, per generated frame, each with a fence wait. Merge flow with the first warp; with timeline semaphores several ticks can be recorded at once. Lowest value. | open |
-| Precision | FP16 storage for pyramid and masks, FP16/INT8 arithmetic in block matching, shared-memory tiling; warp coordinates and the sub-pixel fit stay FP32. | backlog |
+### 3-B. Ring and output format (16-bit float ring, 8-bit swapchain)
+- **What it is.** Ring slots and the synthetic image are always 16-bit float (8 bytes per pixel); the swapchain is normally 8-bit (4 bytes). Every capture and every generated frame goes through a blit that converts the format.
+- **Cost today (estimate).** About 8 MB per frame at the Deck's screen size against 4 MB; about 16 MB more traffic per generated frame, about 0.5 to 1.5 GB/s in total, around 1 to 2 % of the memory bandwidth, plus about 0.1 to 0.3 ms per blit. Small next to flow.
+- **If we do** (ring in the swapchain's 8-bit format, plain copy instead of blit, 16-bit kept for 10-bit/HDR): half the ring memory (matters on shared memory), a little less traffic, copies can run on a transfer queue. Cost: blending happens in gamma space instead of linear light when the swapchain is sRGB (a very small visual difference, needs a look test), one rounding to 8 bits per frame (invisible, the output is 8-bit anyway), more format paths to build and test.
+- **If we do not.** Linear-light blending stays, no new code paths; we keep paying the small bandwidth and blit cost.
+- **Recommendation.** Do not change on a guess. Have the measurement logic time the capture blit and the final blit separately and log the swapchain format once. If the two blits plus the extra reads cost less than about 0.3 ms per frame, skip B. If much more, build the 8-bit ring behind a switch (`auto` / `16f`).
+- **Decide with.** Per-blit timestamps from `bench.json`; look test of mid-tone blends.
 
-Builder's own Deck numbers (60 fps game, 90 fps output): flow 4.84 ms per pair, interpolation 1.43 ms per generated frame, about 42 % of GPU time, about 69 % of that is flow. The game-thread waits are already about 0.1 ms. So the layer's GPU cost, mostly flow, is the main lever; a second queue can only stop game frames queueing behind ours and overlap with idle units.
+### 3-C. Locking, command pools and descriptors
+- **What it is.** The synthesis function holds the shared mutex for its whole body; the game thread and the presenter share one command pool and one fence ring; descriptor sets are rewritten for every generated frame. (The swapchain-image wait is already outside the mutex.)
+- **Cost today.** Measured waits per game-thread frame: image acquire 0.07 ms, mutex 0.00, ring slot 0.00, fence 0.02. Descriptor writes are microseconds of CPU.
+- **If we do** (per-thread pools and fence rings, descriptors written once per slot): removes rare long stalls when the swapchain runs out of images or many ticks queue up, and a little CPU. Cost: real concurrency work, risk of races that show up as hangs, more tests.
+- **If we do not.** About 0.1 ms per frame of waiting stays; the risk is occasional spikes, not average cost.
+- **Recommendation.** Medium priority. Do it only if `bench.json` shows frame-time spikes (95th/99th percentile far above the mean) or non-zero waits; the descriptor part is cheap and safe to do anyway.
+- **Decide with.** Percentiles and the four wait counters.
 
-## 4. Async compute queue (stage 1 design): review points
+### 3-D. Barriers that name every pipeline stage
+- **What it is.** Capture, held-present and synthesis barriers use the "all commands" stage as source or destination.
+- **Cost today (estimate).** Each one can stall unrelated work queued behind it (including the game's own work while we share its queue): small GPU bubbles, tens of microseconds each, several per frame.
+- **If we do.** Name the real stages (transfer, compute) and drop the source stage where a semaphore already orders the work. Small edit, small gain, and a risk of removing a barrier that was needed, which only the synchronization validation layer catches.
+- **If we do not.** Small bubbles continue; matters more while the layer shares the game's queue.
+- **Recommendation.** Do it together with the validation run; low effort.
+- **Decide with.** Warp and flow timestamps before and after; synchronization validation clean.
 
-1. Bound the gain first: game frame time with the layer on against off, same GPU-bound scene. That gap is the most a second queue can hide.
-2. Ask for global priority LOW on the compute queue (needs no privilege) instead of relying on a queue priority of 0.0 in another family.
-3. Timeline-semaphore feature: if the app's feature chain already holds the Vulkan 1.2 features struct, set the bit there; never add both structs. Below API 1.2 also enable the timeline-semaphore extension.
-4. Most important: every cancelled, failed or dropped tick must still signal its timeline value, or the next wait hangs the GPU. Add a test that cancels a tick between flow and synthesis. Reset the values when the swapchain is recreated.
-5. Cross-queue write-after-read: the existing barriers order work inside one queue only. Unpin a ring slot only after the GPU reached its timeline value, never at submit time; assert it.
-6. The compute queue needs its own mutex and must be in the "lock all queues" list used by the queue/device wait-idle hooks. If the family has no spare queue, fall back and log it once.
-7. Validate with synchronization validation switched on (plain validation misses cross-queue hazards), including a long soak with extrapolation on.
+### 3-E. Timestamps and wakeups
+- **What it is.** GPU timestamps are written at 5 sites on every pair, including bottom-of-pipe stamps that make the pipeline drain; the extrapolation tick wait is already a condition-variable wait.
+- **Cost today (estimate).** Tens of microseconds per pair; small but constant.
+- **If we do.** Stamps only while the stats switch is on (it is part of the measurement logic). Zero cost in normal use.
+- **If we do not.** A tiny constant cost stays.
+- **Recommendation.** Do it as part of section 6 (it comes for free there).
+
+### 3-F. Fewer submits
+- **What it is.** One submit per capture, per flow and per generated frame, each with a fence wait.
+- **Cost today (estimate).** Around three submits per output frame at 90 fps; tens of microseconds of CPU each, well under 1 % of a core.
+- **If we do.** Merge flow with the first warp; with timeline semaphores record several ticks at once. Saves little; adds complexity.
+- **If we do not.** Nothing noticeable.
+- **Recommendation.** Skip unless the CPU line shows the presenter thread using a large share of a core.
+
+### 3-P. Precision and tiling inside the flow passes (the biggest lever)
+- **What it is.** The flow engine reads 32-bit float luma pyramids and flow fields; block matching is the expensive part (earlier Deck timings: coarse search 1.25 ms, refine at the 1/8 level 1.45 ms, refine at the 1/4 level 1.75 ms, pyramid 0.3 ms per pair).
+- **If we do, in this order.** (1) Shared-memory tiling of the block-matching loops: a pure speed-up with identical output, no look test needed. (2) 16-bit storage for the pyramid, the masks and the flow fields: halves their bandwidth. (3) 16-bit arithmetic: about twice the ALU rate on this GPU class. (4) 8-bit integer dot products for the matching sums: up to four times fewer operations on 8-bit luma, but the tie-break constants are smaller than one 8-bit level, and the CPU reference must mirror every rounding. Warp coordinates and the sub-pixel fit stay 32-bit. Risks: precision regressions that show as smearing; measure with the offline error tool and a look test after each step.
+- **If we do not.** Flow stays at 4.84 ms per pair, 69 % of the layer's GPU cost.
+- **Recommendation.** Highest expected gain; start with tiling, stop at the first step that reaches the goal.
+- **Decide with.** Per-pass timestamps in `bench.json`; offline error numbers; look test.
+
+## 4. Async compute queue (last; only if the measurements justify it)
+- **What it is.** Run flow and interpolation on a second, low-priority compute queue so the game's frames do not queue behind ours.
+- **Cost today.** Flow and interpolation share the game's queue. How much that delays the game is exactly what the on/off comparison measures.
+- **If we do.** The most it can give is the layer's measured cost on the game's frame time (the "upper bound" field in `bench.json`); on a small GPU there may be no idle units to overlap with, so the real gain can be well below that. Cost: device-creation changes, timeline semaphores, new failure modes (a hang if any cancelled or failed frame leaves a semaphore unsignalled), long validation work.
+- **If we do not.** The game keeps paying the measured layer cost; GPU savings from 3-P and 3-B reduce it anyway.
+- **Recommendation.** Last. Build only if `bench.json` shows a layer cost on the game that cheaper items cannot remove.
+- **Review points for the design:**
+  1. Bound the gain first (the on/off comparison).
+  2. Request global priority LOW for the compute queue (needs no privilege) instead of relying on a queue priority of 0.0 in another family.
+  3. Timeline-semaphore feature: if the app's feature chain already holds the Vulkan 1.2 features struct, set the bit there; never add both structs. Below API 1.2 also enable the extension.
+  4. Every cancelled, failed or dropped tick must still signal its timeline value; add a test that cancels a tick between flow and synthesis; reset the values when the swapchain is recreated.
+  5. Barriers order work inside one queue only: unpin a ring slot only after the GPU reached its timeline value, never at submit time; assert it.
+  6. The compute queue needs its own mutex and a place in the "lock all queues" list used by the wait-idle hooks; if the family has no spare queue, fall back and log it once.
+  7. Validate with synchronization validation switched on, including a long soak with extrapolation on.
 
 ## 5. Checked and closed (owner agrees, 22:24)
 
 Private config folder and files (0700/0600, no symlink following, no temp-directory fallback); the layer's log no longer takes over the game's error output; plugin library check (owner, permissions, file name ends in `.so`); plugin log read from the end of the file; lockfile for the plugin; temporary files in the deploy script; path escaping in the install scripts; default 45 fps cap documented in the README.
 
 ## 6. Measurement logic for the Builder (so the Auditor can audit, compute and close)
+
+- **If we do.** Every decision above comes from one file instead of guesses; stats are off by default and cost nothing when off.
+- **If we do not.** Items 2-B to 4 stay guesses; we could build the wrong thing (for example an async queue that hides nothing).
+- **Recommendation.** First.
 
 Goal: one run on the Deck produces one small file with every number items 2 to 4 need, including the on/off comparison and the derived layer cost. No hand arithmetic, no screenshots of logs.
 
