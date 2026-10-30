@@ -200,6 +200,18 @@ inline float DefaultTargetFps(const char* dmi_file = "/sys/class/dmi/id/product_
     if (FILE* f = std::fopen(dmi_file, "r")) { if (!std::fgets(name, sizeof name, f)) name[0] = 0; std::fclose(f); }
     return std::strncmp(name, "Galileo", 7) == 0 ? 90.0f : 60.0f;
 }
+// The target the layer works to: TARGET_FPS, but not above the display's refresh rate. A frame shown above a fixed refresh rate only fills the present
+// queue (more latency, nothing more on screen). A variable-refresh display and an unknown refresh rate (refresh_ns == 0) are not limited.
+inline double EffectiveTargetFps(double target_fps, uint64_t refresh_ns, bool vrr) {
+    if (vrr || refresh_ns == 0) return target_fps;
+    const double hz = 1e9 / double(refresh_ns);
+    return target_fps > hz * 1.0005 ? hz : target_fps;      // 0.05 % slack: a 90.00 target on a 89.99 Hz report is not "above"
+}
+// The layer's GPU work in one window (flow once per pair, interpolation once per generated frame, in ms) against the time the window lasted. 1.0 = the layer alone
+// would fill the whole GPU; since the work per game frame is compared with the game's frame time, this is the same ratio for any frame rate.
+inline double LayerCostRatio(double flow_ms_total, double interp_ms_total, double window_s) {
+    return window_s > 0.0 ? (flow_ms_total + interp_ms_total) / (window_s * 1000.0) : 0.0;
+}
 // A setting that was renamed: the new name wins, the old one still works.
 inline const char* EnvVar2(const char* name, const char* old_name) {
     if (const char* v = EnvVar(name)) return v;
@@ -274,7 +286,11 @@ struct SwapchainState {
     uint64_t last_calib_ns{0};
     uint64_t next_present_id{1};              // must increase, never 0
     uint32_t image_count{0};
-    uint64_t refresh_ns{0};                   // refresh duration, 0 = unknown / variable
+    uint64_t refresh_ns{0};                   // refresh duration, 0 = unknown (with a variable-refresh display: the shortest refresh)
+    bool     refresh_vrr{false};              // the display is variable-refresh (refreshInterval == UINT64_MAX): TARGET_FPS is not limited then
+    float    clamp_logged_fps{0.0f};          // the limited target last written to the log, so the note appears once per change
+    unsigned cost_over_windows{0};            // consecutive seconds in which the layer's GPU work was over its budget
+    bool     cost_warned{false};              // the cost warning was written (once per swapchain)
     // timing and rate control
     TimingEngine timing;
     std::atomic<uint64_t> job_gen{0};         // VKIFRAME_EXTRAPOLATE: number of the newest presenter job; ticks of an older job are cancelled

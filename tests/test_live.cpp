@@ -28,6 +28,17 @@ static void Touch(const std::string& path, int sec_ahead) {      // the mtime ha
 }
 
 int main() {
+    {   // TARGET_FPS is limited to a fixed refresh rate, not to a variable one or an unknown one
+        const uint64_t hz90 = 11'111'111ull, hz60 = 16'666'667ull;
+        CHECK(std::abs(EffectiveTargetFps(120, hz90, false) - 90.0) < 0.01);                 // above the refresh rate: limited
+        CHECK(EffectiveTargetFps(90, hz90, false) == 90.0);                                  // equal (inside the slack): untouched
+        CHECK(EffectiveTargetFps(60, hz90, false) == 60.0);                                  // below: untouched
+        CHECK(EffectiveTargetFps(1000, hz90, true) == 1000.0);                               // variable refresh: not limited
+        CHECK(EffectiveTargetFps(120, 0, false) == 120.0);                                   // unknown: not limited
+        CHECK(std::abs(EffectiveTargetFps(90, hz60, false) - 60.0) < 0.01);                  // a 60 Hz screen
+        CHECK(std::abs(LayerCostRatio(180.0, 45.0, 1.0) - 0.225) < 1e-12);                   // 4 ms x 45 + 1 ms x 45 of a second
+        CHECK(LayerCostRatio(900.0, 300.0, 1.0) > 1.0 && LayerCostRatio(1.0, 1.0, 0.0) == 0.0);
+    }
     char dir[] = "/tmp/vkilive_XXXXXX";
     if (!mkdtemp(dir)) return 2;
     const std::string conf = std::string(dir) + "/live.conf", log = std::string(dir) + "/live.log";
