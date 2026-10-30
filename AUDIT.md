@@ -2,9 +2,17 @@
 
 Open items only, checked against `main` 6c0e949. Findings go on the board issue; this file holds the detail. Not compiled or run by the Auditor: everything below is from reading the source and the GitHub objects. Nothing here is a Deck measurement unless it says so.
 
-## 1. Open hit: a session link in a pull request body
+## 0. Order of work (owner, 22:24)
 
-The body of pull request 1 (docs-only) ends with a link to one specific Claude Code session (a real id, not the generic footer). Files, commit messages, issue and comment text are clean. Fix (Builder or PM): edit the description to the plain `https://claude.ai/code` footer or delete the line. The cause is the footer a tool adds to pull request descriptions; check every new pull request body before it is merged.
+1. Item 6: measurement logic in the layer (spec below), so every later number comes out of one file and nobody computes by hand.
+2. Item 2: refresh-rate clamp and cost warning (small).
+3. Item 3: GPU and CPU load, ordered by what the measurements show.
+4. Item 4: async compute queue, last, and only if the measurements show it can help.
+Items 1 and 5 are closed.
+
+## 1. Session link in a pull request body: closed (owner, 22:24)
+
+The link in the description of pull request 1 was removed; pull request bodies, comments and the board are scanned on every check.
 
 ## 2. Layer: refresh-rate clamp and cost warning (not implemented)
 
@@ -35,16 +43,42 @@ Builder's own Deck numbers (60 fps game, 90 fps output): flow 4.84 ms per pair, 
 6. The compute queue needs its own mutex and must be in the "lock all queues" list used by the queue/device wait-idle hooks. If the family has no spare queue, fall back and log it once.
 7. Validate with synchronization validation switched on (plain validation misses cross-queue hazards), including a long soak with extrapolation on.
 
-## 5. Checked and closed
+## 5. Checked and closed (owner agrees, 22:24)
 
 Private config folder and files (0700/0600, no symlink following, no temp-directory fallback); the layer's log no longer takes over the game's error output; plugin library check (owner, permissions, file name ends in `.so`); plugin log read from the end of the file; lockfile for the plugin; temporary files in the deploy script; path escaping in the install scripts; default 45 fps cap documented in the README.
 
-## 6. Needed from the owner (Deck)
+## 6. Measurement logic for the Builder (so the Auditor can audit, compute and close)
 
-- The layer's CPU log line and the three wait counters from a 60 -> 90 run.
-- Game frame time with the layer on and off in the same scene.
+Goal: one run on the Deck produces one small file with every number items 2 to 4 need, including the on/off comparison and the derived layer cost. No hand arithmetic, no screenshots of logs.
+
+**Switch.** `VKIFRAME_STATS=1` (also a live key) turns collection on; off by default, and the off path must cost nothing (no timestamps written, no extra atomics beyond what exists today).
+
+**Per second, one record** (appended to a stats file in the private config folder, mode 0600, rotated like the log):
+- mode (off / interpolate / extrapolate), target, refresh rate, native fps, shown fps, generated frames per native frame;
+- game frame time: mean, 95th and 99th percentile, max (milliseconds), from present-to-present intervals;
+- layer CPU: game-thread CPU ms per frame inside present, presenter thread share of one core;
+- waits per frame on the game thread: shared mutex, ring slot, command fence, acquire;
+- GPU: flow ms per pair and interpolation ms per generated frame (the existing timestamps, only while stats are on), and the derived layer GPU share = (pairs per s x flow ms + generated per s x interpolation ms) / 1000;
+- pacing: native frame lateness against its slot (mean, max), cancelled predicted ticks, dropped frames, present-queue depth.
+
+**A/B benchmark.** Use the existing `ENABLED` live key (disabled = pure pass-through). A benchmark run (button in the Decky plugin and a command-line switch) does: 30 s warm-up, then 3 x (60 s off, 60 s on) in the same scene, then writes `bench.json` with, for each state, the mean and percentiles above, plus the derived values:
+- layer cost on the game = frame time on - frame time off (mean and 95th percentile);
+- GPU share of the layer, and flow share of that;
+- game-thread CPU per frame and presenter core share;
+- the verdict fields the Auditor needs for item 4: `async_gain_upper_bound_ms` = layer cost on the game (the most a second queue can hide).
+The run must stop and restore the user's settings when the user changes a setting or leaves the game, and say so in the file.
+
+**Privacy of the files.** No game name, process name, path, host name, user name or IP in any record or in `bench.json`; mode 0600; folder 0700; no symlink following (same rules as `live.log`).
+
+**Acceptance.** (a) A 7-minute run produces `bench.json` that the owner can paste or attach; (b) stats off costs nothing measurable (frame time with `STATS=0` equals today's); (c) a unit test feeds synthetic intervals and checks the percentiles and the derived values; (d) the Auditor computes the same derived numbers independently from the per-second records and the numbers match to rounding.
+
+**Closing rule.** When `bench.json` from a 60 -> 90 run exists, the Auditor checks it against this list and closes item 6; items 2 to 4 are then decided from it (for item 4: if the layer cost on the game is small, the async queue is not worth building).
+
+## 7. Needed from the owner (Deck)
+
+- One `bench.json` from a 60 -> 90 run in a GPU-heavy scene (item 6 produces it).
 - A look test of anything that changes the output (ring format, direct write into the swapchain image).
 
-## 7. Rules for these notes
+## 8. Rules for these notes
 
 No session links, no real name, email, IP, host name or home path; commits as `Claude (Auditor)`, no session line in the message; fast-forward pushes only; no merges or rewrites by the Auditor.
