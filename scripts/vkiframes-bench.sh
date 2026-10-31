@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the layer benchmark in the game that is running now: 30 s warm-up, then 3 x (60 s layer off, 60 s on), about 7 minutes.
+# Runs the layer benchmark in the game that is running now: 30 s warm-up, then 6 x (60 s layer off, 60 s on), about 13 minutes.
 # It asks the layer through live.conf (BENCH=<number>); the layer writes bench.json in the config folder, and this script prints it.
 #   scripts/vkiframes-bench.sh            start a run and wait for the result
 #   scripts/vkiframes-bench.sh --cancel   stop a run (the layer puts your settings back)
@@ -20,7 +20,7 @@ echo "VKIFRAME_BENCH=$want" >> "$tmp"
 mv "$tmp" "$conf"; trap - EXIT
 
 if [ "$want" = 0 ]; then echo "Cancel requested."; exit 0; fi
-echo "Benchmark requested. It starts within a second if a game with the layer is running, and takes about 7 minutes."
+echo "Benchmark requested. It starts within a second if a game with the layer is running, and takes about 13 minutes."
 
 start="$(date +%s)"
 last=""

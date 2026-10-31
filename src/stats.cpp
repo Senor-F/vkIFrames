@@ -55,10 +55,10 @@ std::string RecordJson(const Record& r, long long unix_s) {
 
 // ---------------------------------------------------------------- benchmark
 
-void Bench::Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir) {
+void Bench::Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers, int flow_level) {
     state_ = State::Running; reason_.clear(); elapsed_ = 0.0; rows_.clear();
     user_enabled_ = user_enabled; cur_enabled_ = 1;
-    target_ = target_fps; synth_ = max_synthetic; cap_ = base_fps_cap; gain_ = min_gain; bidir_ = bidir; refresh_ = 0.0;
+    target_ = target_fps; synth_ = max_synthetic; cap_ = base_fps_cap; gain_ = min_gain; bidir_ = bidir; refresh_ = 0.0; cmd_buffers_ = cmd_buffers; flow_level_ = flow_level;
 }
 
 int Bench::SegmentOf(double t, bool& on, double& into) const {
@@ -85,7 +85,8 @@ int Bench::OnSecond(Record& r) {
     const std::string label = Label();
     r.bench = label;
     if (label == "off" || label == "on") {
-        rows_.push_back({r, label == "on"});
+        bool seg_on; double seg_into;
+        rows_.push_back({r, label == "on", SegmentOf(elapsed_, seg_on, seg_into)});
         if (label == "on" && refresh_ == 0.0) refresh_ = r.refresh_hz;
     }
     elapsed_ += r.secs;
@@ -131,6 +132,32 @@ Bench::Agg Bench::Aggregate(bool on) const {
     return a;
 }
 
+std::vector<double> Bench::PairCosts() const {
+    std::vector<double> out;
+    for (int p = 0; p < p_.reps; ++p) {
+        double fo = 0, so = 0, fn = 0, sn = 0;
+        for (const Row& w : rows_) {
+            const double f = double(w.r.frames);
+            if (w.seg == 2 * p)          { fo += f; so += w.r.ft_mean * f; }
+            else if (w.seg == 2 * p + 1) { fn += f; sn += w.r.ft_mean * f; }
+        }
+        if (fo > 0 && fn > 0) out.push_back(sn / fn - so / fo);
+    }
+    return out;
+}
+
+Bench::Spread Bench::SpreadOf(const std::vector<double>& v) {
+    Spread s; s.n = int(v.size());
+    if (v.empty()) return s;
+    for (double x : v) s.mean += x;
+    s.mean /= double(v.size());
+    if (v.size() < 2) return s;                                  // one pair: no spread to judge by
+    double ss = 0; for (double x : v) ss += (x - s.mean) * (x - s.mean);
+    s.se = std::sqrt(ss / double(v.size() - 1)) / std::sqrt(double(v.size()));
+    s.within_noise = std::fabs(s.mean) < 2.0 * s.se;
+    return s;
+}
+
 std::string Bench::Json() const {
     const Agg off = Aggregate(false), on = Aggregate(true);
     const bool ok = state_ == State::Complete && off.seconds > 0 && on.seconds > 0;
@@ -146,13 +173,13 @@ std::string Bench::Json() const {
     };
     const char* status = state_ == State::Complete ? "complete" : state_ == State::Aborted ? "aborted" : "idle";
     std::string j;
-    char b[1200];
+    char b[1500];
     std::snprintf(b, sizeof b,
         "{\n\"version\":1,\n\"status\":\"%s\",\n\"reason\":\"%s\",\n"
         "\"notes\":\"generated_per_s and interp_ms count interpolation passes: the pass draws every shown frame (k + 1 per native frame, k = gen_per_native), the held native frame included. A 60 s segment has about 59 one-second records: 2 settle, about 57 counted, and one at the switch that belongs to neither.\",\n"
         "\"schedule\":{\"warmup_s\":%.0f,\"segment_s\":%.0f,\"repeats\":%d,\"settle_s_left_out_per_segment\":%.0f,\"order\":\"warm-up (layer on), then repeats x (off, on)\"},\n"
-        "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
-        status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, refresh_);
+        "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"cmd_buffers\":%d,\"flow_level\":%d,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
+        status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, cmd_buffers_, flow_level_, refresh_);
     j += b;
     j += "\"off\":" + agg(off) + ",\n\"on\":" + agg(on) + ",\n\"derived\":";
     if (!ok) {
@@ -161,10 +188,18 @@ std::string Bench::Json() const {
     }
     const double cost = on.ft_mean - off.ft_mean;
     const double gpu = on.gpu_share;
+    const std::vector<double> pc = PairCosts();
+    const Spread sp = SpreadOf(pc);
+    std::string pairs = "[";
+    for (size_t i = 0; i < pc.size(); ++i) { char t[32]; std::snprintf(t, sizeof t, "%s%.3f", i ? "," : "", pc[i]); pairs += t; }
+    pairs += "]";
+    char spread[200];
+    if (sp.n >= 2) std::snprintf(spread, sizeof spread, "\"layer_cost_pairs_mean_ms\":%.3f,\"layer_cost_se_ms\":%.3f,\"layer_cost_within_noise\":%s", sp.mean, sp.se, sp.within_noise ? "true" : "false");
+    else           std::snprintf(spread, sizeof spread, "\"layer_cost_pairs_mean_ms\":%.3f,\"layer_cost_se_ms\":null,\"layer_cost_within_noise\":null", sp.mean);
     std::snprintf(b, sizeof b,
-        "{\"layer_cost_mean_ms\":%.3f,\"layer_cost_p95_ms\":%.3f,\"layer_cost_p99_ms\":%.3f,\"gpu_share\":%.5f,\"flow_share_of_gpu\":%.4f,"
+        "{\"layer_cost_mean_ms\":%.3f,\"layer_cost_p95_ms\":%.3f,\"layer_cost_p99_ms\":%.3f,\"layer_cost_pairs_ms\":%s,%s,\"gpu_share\":%.5f,\"flow_share_of_gpu\":%.4f,"
         "\"game_cpu_ms_per_frame\":%.4f,\"presenter_core_share\":%.4f,\"async_gain_upper_bound_ms\":%.3f}\n}\n",
-        cost, on.ft_p95 - off.ft_p95, on.ft_p99 - off.ft_p99, gpu, gpu > 0 ? on.gpu_flow_share / gpu : 0.0, on.cpu_game_ms, on.presenter_core, cost);
+        cost, on.ft_p95 - off.ft_p95, on.ft_p99 - off.ft_p99, pairs.c_str(), spread, gpu, gpu > 0 ? on.gpu_flow_share / gpu : 0.0, on.cpu_game_ms, on.presenter_core, cost);
     j += b;
     return j;
 }
@@ -205,7 +240,7 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
         long long token = 0;
         if (LiveBenchRequest(&token)) {
             LiveBenchAck(token);
-            g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load());
+            g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load(), live.cmd_buffers.load(), GetConfig().flow_level);
             g_gen0 = LiveGeneration();
             g_bench_active = 1; g_last_state.clear();
             live.enabled = 1;                                 // warm-up with the layer on

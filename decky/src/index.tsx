@@ -359,7 +359,7 @@ function Content() {
       <PanelSection title="Benchmark">
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            Measures what the layer costs the game: 30 s warm-up, then 3 times (60 s layer off, 60 s on), about 7 minutes in the same scene. Start a game first and stay in a demanding scene. The run stops if you change a setting or leave the game. The numbers go to bench.json in the vkiframes config folder.
+            Measures what the layer costs the game: 30 s warm-up, then 6 times (60 s layer off, 60 s on), about 13 minutes in the same scene. Start a game first and stay in a demanding scene. The run stops if you change a setting or leave the game. The numbers go to bench.json in the vkiframes config folder.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -368,7 +368,7 @@ function Content() {
             disabled={!gameRunning || benchRunning}
             onClick={() => act(() => startBench(), "Benchmark requested")}
           >
-            {benchRunning ? "Benchmark running: " + benchLabel : "Run benchmark (7 min)"}
+            {benchRunning ? "Benchmark running: " + benchLabel : "Run benchmark (13 min)"}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
