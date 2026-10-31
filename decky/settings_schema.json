@@ -283,6 +283,34 @@
     "group": "more"
   },
   {
+    "key": "SYNTH_MARGIN",
+    "label": "Synthetic margin",
+    "type": "slider",
+    "default": 0.15,
+    "min": 0.0,
+    "max": 0.45,
+    "step": 0.05,
+    "fine": 0.01,
+    "needsLayer": "live",
+    "desc": "Keeps every shown frame at least this far from the game frame, so none is shown as it is. 0 lets a frame sit on the game frame (a sharper frame now and then). It saves a pass only when phase-locked and Phase offset is 0. Applies from the next frame pair.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ],
+      [
+        {
+          "key": "EXTRAPOLATE",
+          "eq": 1
+        }
+      ]
+    ],
+    "greyWhy": "Needs interpolated frames.",
+    "group": "more"
+  },
+  {
     "key": "EXPERIMENTAL",
     "label": "Experimental",
     "type": "toggle",

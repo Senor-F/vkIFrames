@@ -68,19 +68,21 @@ int main() {
         stats::Bench b;
         b.Start(1, 90, 4, 60, 1.01, 1);
         int off_switches = 0, on_switches = 0, seconds = 0, enabled = 1;
-        std::string labels;
+        std::string labels; std::vector<int> on_at;
         while (b.Active() && seconds < 1000) {
             stats::Record r = Second(enabled != 0);
+            on_at.push_back(enabled);
             const int next = b.OnSecond(r);
             ++seconds;
             if (seconds <= 30) CHECK(r.bench == "warmup" && enabled == 1);
             if (next != enabled) { (next ? on_switches : off_switches)++; enabled = next; }
         }
-        CHECK(seconds == 30 + 6 * 60);
+        CHECK(seconds == 30 + 12 * 60);
         CHECK(b.GetState() == stats::Bench::State::Complete);
-        CHECK(off_switches == 3 && on_switches == 3 + 0);        // off at 30, 150, 270; on at 90, 210, 330; the end returns the user's value (1)
+        CHECK(off_switches == 4 && on_switches == 4);            // off, on | on, off | off, on | ...: off at 30, 210, 450, 690; on at 90, 330, 570 and the end returns the user's value (1)
+        CHECK(on_at.size() == 750 && on_at[100] == 1 && on_at[160] == 1 && on_at[220] == 0);   // seconds 90..210 on (pair 1 ends on, pair 2 starts on), then off
         const auto off = b.Aggregate(false), on = b.Aggregate(true);
-        CHECK(off.seconds == 3 * 58 && on.seconds == 3 * 58);    // 2 settle seconds left out of every segment
+        CHECK(off.seconds == 6 * 58 && on.seconds == 6 * 58);    // 2 settle seconds left out of every segment
         NEAR(off.ft_mean, (59 * 16.0 + 20.0) / 60.0, 1e-9);
         NEAR(on.ft_mean, (44 * 22.0 + 30.0) / 45.0, 1e-9);
         NEAR(on.gpu_share, 0.225, 1e-9); NEAR(on.gpu_flow_share, 0.18, 1e-9); NEAR(on.gpu_interp_share, 0.045, 1e-9);
@@ -95,6 +97,28 @@ int main() {
         CHECK(j.find("\"flow_share_of_gpu\":0.8000") != std::string::npos);
         CHECK(j.find("\"base_fps_cap_kept_while_off\":true") != std::string::npos);
         CHECK(b.Restore() == 1);
+        // the spread over the pairs: six identical pairs have no spread, so the cost is not within noise
+        const auto pc = b.PairCosts();
+        CHECK(pc.size() == 6);
+        for (double x : pc) NEAR(x, cost, 1e-9);
+        CHECK(j.find("\"layer_cost_pairs_ms\":[") != std::string::npos && j.find("\"layer_cost_se_ms\":0.000") != std::string::npos && j.find("\"layer_cost_within_noise\":false") != std::string::npos);
+        CHECK(j.find("\"cmd_buffers\":0") != std::string::npos);      // not recorded when Start is not given it
+        CHECK(j.find("\"synth_margin\":-1.00") != std::string::npos);
+    }
+    {   // spread arithmetic by hand: costs 0, 2, 4 -> mean 2, sample sd 2, se 2 / sqrt(3)
+        const auto s3 = stats::Bench::SpreadOf({0.0, 2.0, 4.0});
+        CHECK(s3.n == 3); NEAR(s3.mean, 2.0, 1e-12); NEAR(s3.se, 2.0 / std::sqrt(3.0), 1e-12); CHECK(s3.within_noise);   // |2| < 2 * 1.1547
+        const auto noisy = stats::Bench::SpreadOf({-3.0, 4.0, 0.5, 2.0});
+        CHECK(noisy.within_noise);                                 // mean 0.875, se about 1.5: inside two standard errors of zero
+        const auto tight = stats::Bench::SpreadOf({1.0, 1.2, 0.8, 1.0});   // mean 1, sd 0.163, se 0.0816: clearly above zero
+        CHECK(!tight.within_noise);
+        const auto one = stats::Bench::SpreadOf({1.5});
+        CHECK(one.n == 1 && one.se == 0 && one.within_noise);      // one pair: no judgement, reported as null in the file
+        CHECK(stats::Bench::SpreadOf({}).n == 0);
+    }
+    {   // the settings echo
+        stats::Bench e; e.Start(1, 90, 4, 60, 1.01, 1, 16, 3, 0.0);
+        CHECK(e.Json().find("\"cmd_buffers\":16,\"flow_level\":3,\"synth_margin\":0.00") != std::string::npos);
     }
     // labels and the first seconds of a run
     {
@@ -153,7 +177,7 @@ int main() {
             ++seconds;
             if (Live().enabled.load() == 0) ++enabled_seen_off;
         }
-        CHECK(seconds == 30 + 6 * 60 && enabled_seen_off > 0);
+        CHECK(seconds == 30 + 12 * 60 && enabled_seen_off > 0);
         CHECK(Live().enabled.load() == 1);                               // restored
         CHECK(!StatsBenchActive() && !StatsOn());
         CHECK(std::string(StatsBenchLabel()) == "done");

@@ -41,16 +41,16 @@ struct Record {
 void FillDerived(Record& r, const FrameTimes& ft);      // frame-time mean/p95/p99/max from the intervals, and gpu_share from the GPU fields
 std::string RecordJson(const Record& r, long long unix_s);
 
-// Benchmark: 30 s warm-up (layer on), then reps x (60 s off, 60 s on). The first settle_s seconds after every switch are labelled "settle" and left out of the numbers.
+// Benchmark: 30 s warm-up (layer on), then reps (6) x (60 s off, 60 s on). The first settle_s seconds after every switch are labelled "settle" and left out of the numbers.
 class Bench {
 public:
-    struct Params { double warmup_s{30}, segment_s{60}, settle_s{2}; int reps{3}; };
+    struct Params { double warmup_s{30}, segment_s{60}, settle_s{2}; int reps{6}; };
     enum class State { Idle, Running, Complete, Aborted };
 
     Bench() = default;
     explicit Bench(Params p) : p_(p) {}
     // Starts a run. The settings are echoed into bench.json; user_enabled is what to restore.
-    void Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir);
+    void Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers = 0, int flow_level = 0, double synth_margin = -1.0);
     // Feeds one second. Returns the value ENABLED must have for the next second (1 = layer on, 0 = off). The record's `bench` label is set here.
     int OnSecond(Record& r);
     void Abort(const char* reason);                     // the user changed a setting, or left the game
@@ -68,9 +68,13 @@ public:
         double flow_ms{0}, interp_ms{0};
     };
     Agg Aggregate(bool on) const;                       // exposed for the unit test and the Auditor's recomputation
+    // Layer cost of each off/on pair (frame-weighted mean frame time of the on segment minus the off segment; every second pair runs on first), in ms. Only pairs with frames in both segments.
+    std::vector<double> PairCosts() const;
+    struct Spread { int n{0}; double mean{0}, se{0}; bool within_noise{true}; };   // mean of the pair costs, standard error of that mean, and whether |mean| < t * se, with the 95 % Student t for n - 1 degrees of freedom (n >= 2 only)
+    static Spread SpreadOf(const std::vector<double>& pair_costs);
 
 private:
-    struct Row { Record r; bool on; };
+    struct Row { Record r; bool on; int seg; };
     Params p_;
     State state_{State::Idle};
     std::string reason_;
@@ -80,6 +84,7 @@ private:
     std::vector<Row> rows_;                             // counted seconds only
     double target_{0}, cap_{0}, gain_{0}; int synth_{0}, bidir_{0};
     double refresh_{0};
+    int cmd_buffers_{0}, flow_level_{0}; double synth_margin_{-1.0};                // echoed into bench.json so a file says which settings it was run with (0 = not recorded; synth_margin_ uses -1)
     // where the current second is in the schedule
     int SegmentOf(double t, bool& on, double& into) const;   // -1 warm-up, 0.. segment index
 };
