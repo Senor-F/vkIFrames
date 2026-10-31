@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace { void StopPresenter(SwapchainState& sc); }
+namespace { bool StopPresenter(SwapchainState& sc); void HeldFencesDrop(DeviceDispatch& dt, SwapchainState* sc); std::atomic<bool> g_presenter_detached{false}; }
 
 namespace {
 constexpr uint32_t kMinImageCount = 4;
@@ -123,8 +123,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* p
 
 VKAPI_ATTR void VKAPI_CALL Hook_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator) {
     void* key = GetKey(instance);                                  // read before the handle dies
-    auto destroy = LookupInstance(key)->DestroyInstance;
-    destroy(instance, pAllocator);
+    InstanceDispatch* id = LookupInstance(key);
+    if (!id) return;                                               // not created through this layer: there is no next function to call
+    id->DestroyInstance(instance, pAllocator);
     UnregisterInstance(key);
 }
 
@@ -248,21 +249,23 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(VkPhysicalDevice physicalDevice
 
 VKAPI_ATTR void VKAPI_CALL Hook_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
     void* key = GetKey(device);
-    auto destroy = LookupDevice(key)->DestroyDevice;
-    destroy(device, pAllocator);
-    UnregisterQueues(key);
-    UnregisterDevice(key);
+    DeviceDispatch* dd = LookupDevice(key);
+    if (!dd) return;                                               // not created through this layer: there is no next function to call
+    dd->DestroyDevice(device, pAllocator);
+    if (g_presenter_detached) { LeakQueues(key); LeakDevice(key); }           // a detached presenter thread still holds the dispatch table and may hold a queue mutex
+    else { UnregisterQueues(key); UnregisterDevice(key); }
 }
 
 VKAPI_ATTR void VKAPI_CALL Hook_GetDeviceQueue(VkDevice device, uint32_t family, uint32_t index, VkQueue* pQueue) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) { if (pQueue) *pQueue = VK_NULL_HANDLE; return; }
     dt->GetDeviceQueue(device, family, index, pQueue);
     if (pQueue && *pQueue) RegisterQueue(*pQueue, family, GetKey(device));
 }
 
 VKAPI_ATTR void VKAPI_CALL Hook_GetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pInfo, VkQueue* pQueue) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
-    if (!dt->GetDeviceQueue2) { if (pQueue) *pQueue = VK_NULL_HANDLE; return; }
+    if (!dt || !dt->GetDeviceQueue2) { if (pQueue) *pQueue = VK_NULL_HANDLE; return; }
     dt->GetDeviceQueue2(device, pInfo, pQueue);
     if (pInfo && pQueue && *pQueue) RegisterQueue(*pQueue, pInfo->queueFamilyIndex, GetKey(device));
 }
@@ -274,6 +277,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
                                                        const VkAllocationCallbacks* pAllocator,
                                                        VkSwapchainKHR* pSwapchain) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_INITIALIZATION_FAILED;
     const Config& cfg = GetConfig();
 
     VkSwapchainCreateInfoKHR ci = *pCreateInfo;
@@ -369,18 +373,28 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
 VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                     const VkAllocationCallbacks* pAllocator) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return;
     StatsBenchAbort("the game closed its swapchain");           // a benchmark run stops and restores ENABLED
     FG_LOG("shutdown: vkDestroySwapchainKHR");
     const uint64_t t0 = NowNs();
     if (swapchain) {
         if (SwapchainState* sc = FindSwapchain(swapchain)) {
             if (sc->timing_enabled) DrainPastTimings(*dt, *sc);
-            StopPresenter(*sc);                                                   // no job may touch the swapchain while it is destroyed
+            const bool detached = StopPresenter(*sc);                             // no job may touch the swapchain while it is destroyed
             FG_LOG("shutdown: presenter stopped (%.0f ms)", (NowNs() - t0) / 1e6);
-            if (sc->gpu) { GpuDestroy(*dt, sc->gpu); sc->gpu = nullptr; }      // the held frame is simply dropped with its swapchain
-            FG_LOG("shutdown: GPU resources destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
-        }
-        DestroySwapchainState(swapchain);
+            HeldFencesDrop(*dt, sc);                                              // a later wait on the held frame's fence must not reach this state
+            if (detached) {
+                // The presenter thread is stuck in a driver call and still holds the swapchain state, its GPU state and the device dispatch table:
+                // none of them is freed (this is shutdown, a small leak); vkDestroyDevice leaves the dispatch table alone too.
+                FG_LOG("shutdown: the presenter thread is still running; its swapchain state, GPU state and dispatch table are left allocated");
+                g_presenter_detached = true;
+                LeakSwapchainState(swapchain);
+            } else {
+                if (sc->gpu) { GpuDestroy(*dt, sc->gpu); sc->gpu = nullptr; }  // the held frame is simply dropped with its swapchain
+                FG_LOG("shutdown: GPU resources destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
+                DestroySwapchainState(swapchain);
+            }
+        } else DestroySwapchainState(swapchain);
     }
     dt->DestroySwapchainKHR(device, swapchain, pAllocator);
     FG_LOG("shutdown: swapchain destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
@@ -565,6 +579,10 @@ void HeldFenceAdd(DeviceDispatch& dt, SwapchainState& sc, const HeldFrame& h) {
     if (!h.fence) return;
     std::lock_guard<std::mutex> l(dt.fence_mu);
     dt.held_fences.emplace_back(uint64_t(reinterpret_cast<uintptr_t>(h.fence)), &sc);
+}
+void HeldFencesDrop(DeviceDispatch& dt, SwapchainState* sc) {      // every held fence that belongs to a swapchain that is being destroyed
+    std::lock_guard<std::mutex> l(dt.fence_mu);
+    dt.held_fences.erase(std::remove_if(dt.held_fences.begin(), dt.held_fences.end(), [&](auto& e) { return e.second == sc; }), dt.held_fences.end());
 }
 void HeldFenceRemove(DeviceDispatch& dt, const HeldFrame& h) {
     if (!h.fence) return;
@@ -771,9 +789,9 @@ void StartPresenter(DeviceDispatch& dt, SwapchainState& sc) {
     FG_LOG("presenter: thread started (lead %d us)", GetConfig().pace_lead_us);
 }
 
-void StopPresenter(SwapchainState& sc) {
+bool StopPresenter(SwapchainState& sc) {    // true: the thread was detached and still uses `sc`, its GPU state and the device dispatch table
     Presenter* p = sc.presenter;
-    if (!p) return;
+    if (!p) return false;
     { std::lock_guard<std::mutex> l(p->mu); p->stop = true; p->q.clear(); }
     p->cv.notify_all();
     if (p->th.joinable()) {
@@ -784,13 +802,14 @@ void StopPresenter(SwapchainState& sc) {
             FG_LOG("shutdown: the presenter thread is still busy after 3 s, detaching it");
             p->th.detach();
             sc.presenter = nullptr;
-            return;                                                           // the Presenter object is leaked on purpose: the thread still uses it
+            return true;                                                      // the Presenter object is leaked on purpose: the thread still uses it
         }
         l.unlock();
         p->th.join();
     }
     sc.presenter = nullptr;
     delete p;
+    return false;
 }
 
 // Waits until every queued tick has been presented. Needed before the game's own present goes out, to keep the order.
@@ -804,6 +823,7 @@ void DrainPresenter(SwapchainState& sc) {
 
 VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceDispatch* dt = LookupDevice(GetKey(queue));          // a queue shares its device's key
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     const Config& cfg = GetConfig();
 
     SwapchainState* sc = pPresentInfo->swapchainCount == 1 ? FindSwapchain(pPresentInfo->pSwapchains[0]) : nullptr;
@@ -985,19 +1005,24 @@ template <class F> VkResult PolledAcquire(uint64_t timeout, F&& once) {
 } // namespace
 
 VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo* s, VkFence f) {
-    DeviceDispatch* dt = LookupDevice(GetKey(q)); QueueLock l(q); return dt->QueueSubmit(q, n, s, f);
+    DeviceDispatch* dt = LookupDevice(GetKey(q)); if (!dt) return VK_ERROR_DEVICE_LOST; QueueLock l(q); return dt->QueueSubmit(q, n, s, f);
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2* s, VkFence f) {
-    DeviceDispatch* dt = LookupDevice(GetKey(q)); QueueLock l(q); return dt->QueueSubmit2(q, n, s, f);
+    DeviceDispatch* dt = LookupDevice(GetKey(q)); if (!dt) return VK_ERROR_DEVICE_LOST; QueueLock l(q);
+    const auto submit2 = dt->QueueSubmit2 ? dt->QueueSubmit2 : dt->QueueSubmit2KHR;      // the same fallback as Hook_QueueSubmit2KHR, the other way round
+    return submit2 ? submit2(q, n, s, f) : VK_ERROR_FEATURE_NOT_PRESENT;
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2KHR(VkQueue q, uint32_t n, const VkSubmitInfo2* s, VkFence f) {
-    DeviceDispatch* dt = LookupDevice(GetKey(q)); QueueLock l(q); return (dt->QueueSubmit2KHR ? dt->QueueSubmit2KHR : dt->QueueSubmit2)(q, n, s, f);
+    DeviceDispatch* dt = LookupDevice(GetKey(q)); if (!dt) return VK_ERROR_DEVICE_LOST; QueueLock l(q);
+    const auto submit2 = dt->QueueSubmit2KHR ? dt->QueueSubmit2KHR : dt->QueueSubmit2;
+    return submit2 ? submit2(q, n, s, f) : VK_ERROR_FEATURE_NOT_PRESENT;
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueBindSparse(VkQueue q, uint32_t n, const VkBindSparseInfo* s, VkFence f) {
-    DeviceDispatch* dt = LookupDevice(GetKey(q)); QueueLock l(q); return dt->QueueBindSparse(q, n, s, f);
+    DeviceDispatch* dt = LookupDevice(GetKey(q)); if (!dt) return VK_ERROR_DEVICE_LOST; QueueLock l(q); return dt->QueueBindSparse(q, n, s, f);
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueWaitIdle(VkQueue q) {
     DeviceDispatch* dt = LookupDevice(GetKey(q));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     const uint64_t t0 = NowNs();
     QueueLock l(q);
     const uint64_t t1 = NowNs();
@@ -1008,6 +1033,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueWaitIdle(VkQueue q) {
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_DeviceWaitIdle(VkDevice device) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     const uint64_t t0 = NowNs();
     std::vector<std::unique_lock<std::mutex>> locks;
     for (std::mutex* m : DeviceQueueMutexes(GetKey(device))) locks.emplace_back(*m);        // all queues, in a fixed order
@@ -1020,6 +1046,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_DeviceWaitIdle(VkDevice device) {
 VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                         VkSemaphore sem, VkFence fence, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(swapchain);
     if (!sc || !sc->gpu || !sc->presenter) return dt->AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex);
     GpuState* g = sc->gpu;
@@ -1031,6 +1058,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapc
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(info->swapchain);
     if (!sc || !sc->gpu || !sc->presenter) return dt->AcquireNextImage2KHR(device, info, pIndex);
     GpuState* g = sc->gpu;
@@ -1075,11 +1103,13 @@ void FlushForFences(DeviceDispatch& dt, uint32_t n, const VkFence* fences, const
 
 VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     FlushForFences(*dt, n, fences, "vkWaitForFences");
     return dt->WaitForFences(device, n, fences, all, timeout);
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_GetFenceStatus(VkDevice device, VkFence fence) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     FlushForFences(*dt, 1, &fence, "vkGetFenceStatus");
     return dt->GetFenceStatus(device, fence);
 }
@@ -1090,6 +1120,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_GetFenceStatus(VkDevice device, VkFence fenc
 // on the presenter thread. A game that then stops presenting gets its held frame from the idle flush in the presenter thread.
 VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(swapchain);
     if (!sc) return dt->WaitForPresentKHR(device, swapchain, presentId, timeout);
     {

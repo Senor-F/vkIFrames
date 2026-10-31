@@ -106,8 +106,13 @@ std::vector<std::mutex*> DeviceQueueMutexes(void* device_key) {
     std::sort(v.begin(), v.end());                                  // a fixed order for taking several at once
     return v;
 }
+// Same, for a device whose presenter thread could not be stopped: it may hold a queue's mutex inside a driver call.
+void LeakQueues(void* device_key) { std::lock_guard l(g_mutex); for (auto it = g_queues.begin(); it != g_queues.end();) { if (it->second->device == device_key) { (void)it->second.release(); it = g_queues.erase(it); } else ++it; } }
 void UnregisterQueues(void* device_key) { std::lock_guard l(g_mutex); for (auto it = g_queues.begin(); it != g_queues.end();) it = it->second->device == device_key ? g_queues.erase(it) : std::next(it); }
 void DestroySwapchainState(VkSwapchainKHR handle) { std::lock_guard l(g_mutex); g_swapchains.erase(SwapchainKey(handle)); }
+// A presenter thread that could not be stopped still holds pointers to these objects: forget them without freeing (a deliberate leak at shutdown).
+void LeakSwapchainState(VkSwapchainKHR handle) { std::lock_guard l(g_mutex); auto it = g_swapchains.find(SwapchainKey(handle)); if (it == g_swapchains.end()) return; (void)it->second.release(); g_swapchains.erase(it); }
+void LeakDevice(void* key) { std::lock_guard l(g_mutex); auto it = g_devices.find(key); if (it == g_devices.end()) return; (void)it->second.release(); g_devices.erase(it); }
 
 FRAMEGEN_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 FrameGen_GetInstanceProcAddr(VkInstance instance, const char* name) {
