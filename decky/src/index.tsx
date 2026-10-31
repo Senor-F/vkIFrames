@@ -212,23 +212,19 @@ function Content() {
   return (
     <>
       <PanelSection title="Layer and status">
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={!layer.bundled_available}
-            onClick={() => act(() => installLayer(""), "Layer installed")}
-          >
-            {layer.installed ? "Reinstall layer" : "Install layer"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {layer.installed && (
+        {/* Only while the layer is missing. Once it is installed the button is gone from the top, so a stray tap cannot reinstall it; Reinstall and Uninstall are at the very bottom of the panel. */}
+        {!layer.installed && (
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => act(() => uninstallLayer(), "Layer removed")}>
-              Uninstall layer
+            <ButtonItem
+              layout="below"
+              disabled={!layer.bundled_available}
+              onClick={() => act(() => installLayer(""), "Layer installed")}
+            >
+              Install layer
             </ButtonItem>
           </PanelSectionRow>
         )}
-        {!layer.bundled_available && (
+        {!layer.installed && !layer.bundled_available && (
           <PanelSectionRow>
             <div style={{ fontSize: 11, opacity: 0.7 }}>
               No library in the plugin's bin/ folder. Use scripts/link-build.sh to point at a local build.
@@ -390,6 +386,40 @@ function Content() {
         </PanelSectionRow>
         <EndMarker text="End of change log" />
       </PanelSection>
+
+      {layer.installed && (
+        <>
+          <Gap />
+          <PanelSection title="Layer maintenance">
+            <PanelSectionRow>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>
+                Reinstall copies the layer bundled with this plugin over the installed one (after a plugin update). Uninstall removes the layer: games run without it until you install it again.
+              </div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={!layer.bundled_available}
+                onClick={() => act(() => installLayer(""), "Layer reinstalled")}
+              >
+                Reinstall layer
+              </ButtonItem>
+            </PanelSectionRow>
+            {!layer.bundled_available && (
+              <PanelSectionRow>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>
+                  No library in the plugin's bin/ folder, so it cannot be reinstalled. Use scripts/link-build.sh to point at a local build.
+                </div>
+              </PanelSectionRow>
+            )}
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => act(() => uninstallLayer(), "Layer removed")}>
+                Uninstall layer
+              </ButtonItem>
+            </PanelSectionRow>
+          </PanelSection>
+        </>
+      )}
     </>
   );
 }
