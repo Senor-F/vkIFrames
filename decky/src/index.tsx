@@ -104,6 +104,12 @@ function Content() {
   const [log, setLog] = useState<string[]>([]);
   const [fine, setFine] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  const [confirmUninstall, setConfirmUninstall] = useState(false);   // Uninstall needs a second tap; it asks again after 8 s
+  useEffect(() => {
+    if (!confirmUninstall) return;
+    const t = setTimeout(() => setConfirmUninstall(false), 8000);
+    return () => clearTimeout(t);
+  }, [confirmUninstall]);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const refresh = async () => {
@@ -412,11 +418,29 @@ function Content() {
                 </div>
               </PanelSectionRow>
             )}
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => act(() => uninstallLayer(), "Layer removed")}>
-                Uninstall layer
-              </ButtonItem>
-            </PanelSectionRow>
+            {confirmUninstall ? (
+              <>
+                <PanelSectionRow>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>Remove the layer? Games will run without frame generation until you install it again.</div>
+                </PanelSectionRow>
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={() => { setConfirmUninstall(false); act(() => uninstallLayer(), "Layer removed"); }}>
+                    Yes, uninstall the layer
+                  </ButtonItem>
+                </PanelSectionRow>
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={() => setConfirmUninstall(false)}>
+                    Cancel
+                  </ButtonItem>
+                </PanelSectionRow>
+              </>
+            ) : (
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => setConfirmUninstall(true)}>
+                  Uninstall layer…
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
           </PanelSection>
         </>
       )}
