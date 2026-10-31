@@ -210,6 +210,10 @@ Stages 1–5 (layer, present timing, hold and ring buffer, optical flow, interpo
 
 ---
 
+## Support
+
+vkIFrames is free to use. If you like the work, you can say thanks on [Ko-fi](https://ko-fi.com/senorfm). Tips do not buy features or priority support.
+
 ## License
 
-Not yet chosen.
+vkIFrames is licensed under the [Apache License, Version 2.0](LICENSE). The copyright holder is "vkIFrames contributors" (see [NOTICE](NOTICE)). The Decky plugin in `decky/` is based on the Decky plugin template and stays under its BSD 3-Clause license ([decky/LICENSE](decky/LICENSE)); both licenses allow use, changes and redistribution, with notices kept.
