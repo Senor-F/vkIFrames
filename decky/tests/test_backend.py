@@ -112,4 +112,50 @@ assert run(p.get_state())["bench"] is None
 open(main.BENCH_JSON, "w").write('{"status":"complete","reason":"","derived":{"layer_cost_mean_ms":3.5,"gpu_share":0.22}}')
 b = run(p.get_state())["bench"]; assert b["status"] == "complete" and b["layer_cost_mean_ms"] == 3.5 and b["gpu_share"] == 0.22, b
 open(main.BENCH_JSON, "w").write("not json"); assert run(p.get_state())["bench"] is None
+
+# ---- hardening: root reads and writes in folders the user controls (symlinks), user-editable settings.json
+import stat as _st
+# a symlink in place of a private folder: _private_dir must not change the mode of the target
+tgt = os.path.join(tmp, "elsewhere"); os.makedirs(tgt, 0o755); os.chmod(tgt, 0o755)
+lnk = os.path.join(tmp, "linkdir"); os.symlink(tgt, lnk)
+main._private_dir(lnk); assert _st.S_IMODE(os.stat(tgt).st_mode) == 0o755, "chmod followed a symlink"
+plain = os.path.join(tmp, "plaindir"); main._private_dir(plain); assert _st.S_IMODE(os.stat(plain).st_mode) == 0o700
+# status.json, bench.json and live.log as symlinks are not read
+secret = os.path.join(tmp, "secret.json"); open(secret, "w").write('{"native_fps": 1, "status": "complete", "derived": {}}')
+for f in (main.STATUS_JSON, main.BENCH_JSON):
+    if os.path.lexists(f): os.unlink(f)
+    os.symlink(secret, f)
+st = run(p.get_state()); assert st["status"] is None and st["bench"] is None, st
+if os.path.lexists(main.LIVE_LOG): os.unlink(main.LIVE_LOG)
+open(secret, "w").write("2026-10-30 19:02:15.030 plugin  panel: X 1 -> 2 (REV 1)\n"); os.symlink(secret, main.LIVE_LOG)
+assert run(p.get_log()) == []
+os.unlink(main.LIVE_LOG); open(main.LIVE_LOG, "w").write("2026-10-30 19:02:15.030 plugin  panel: X 1 -> 2 (REV 1)\n")
+assert run(p.get_log()) == ["19:02:15 X 1 -> 2 [plugin]"], run(p.get_log())
+for f in (main.STATUS_JSON, main.BENCH_JSON): os.unlink(f)
+# the bundled library is copied without following a symlink planted at the .new name; a leftover file there goes
+os.makedirs(os.path.join(root, "bin"), exist_ok=True)
+bundled = os.path.join(root, "bin", "libvkIFrames.so"); had_bundled = os.path.exists(bundled)
+if not had_bundled: open(bundled, "wb").write(b"\x7fELF fake")
+try:
+    os.makedirs(main.DATA_DIR, exist_ok=True)
+    victim = os.path.join(tmp, "victim"); open(victim, "w").write("keep"); os.chmod(victim, 0o600)
+    new = main.INSTALLED_LIB + ".new"
+    if os.path.lexists(new): os.unlink(new)
+    os.symlink(victim, new)
+    run(p.install_layer())
+    assert open(victim).read() == "keep" and _st.S_IMODE(os.stat(victim).st_mode) == 0o600, "install wrote through a symlink"
+    assert not os.path.islink(main.INSTALLED_LIB) and os.access(main.INSTALLED_LIB, os.X_OK)
+    assert open(main.INSTALLED_LIB, "rb").read() == open(bundled, "rb").read()
+    run(p.uninstall_layer())
+finally:
+    if not had_bundled: os.unlink(bundled)
+# settings.json: one bad value keeps that setting's default and nothing else; a non-object file is ignored
+good = {"TARGET_FPS": 77, "MIN_GAIN": [1, 2], "MAX_SYNTHETIC": 1e999, "BASE_FPS_CAP": None, "INTERP_BIDIR": 0, "EXPERIMENTAL": [1]}
+open(main.SETTINGS_FILE, "w").write(json.dumps(good).replace("Infinity", "1e999"))
+p3 = main.Plugin(); run(p3._main())                                    # must not raise
+d = p3._defaults()
+assert p3.values["TARGET_FPS"] == 77 and p3.values["INTERP_BIDIR"] == 0, p3.values
+assert p3.values["MIN_GAIN"] == d["MIN_GAIN"] and p3.values["BASE_FPS_CAP"] == d["BASE_FPS_CAP"], p3.values
+open(main.SETTINGS_FILE, "w").write("[1, 2]")
+p4 = main.Plugin(); run(p4._main()); assert p4.values == p4._defaults()
 print("backend tests passed")

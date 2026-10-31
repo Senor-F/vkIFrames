@@ -135,24 +135,58 @@ def _makedirs(path, mode=0o755):
 
 
 def _private_dir(path):
-    """A folder only the user can enter (config, data): created 0700, owned by the user."""
+    """A folder only the user can enter (config, data): created 0700, owned by the user. A symlink in its place is left alone: root must not
+    change the mode of whatever it points at (the folder is in the user's hands)."""
     _makedirs(path, 0o700)
     try:
-        os.chmod(path, 0o700)
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)       # ELOOP for a symlink
+        try:
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
     except OSError:
         pass
     _give_to_user(path)
 
 
+def _read_user_file(path, limit=None, tail=None):
+    """Bytes of a regular file in the user's folders, or None. Root reads these, so a symlink in their place is refused (O_NOFOLLOW), as is
+    anything that is not a regular file or belongs to neither the user nor root. With a limit, a bigger file is refused (None); with a tail,
+    only the last `tail` bytes are read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        own = _owner()
+        if not stat.S_ISREG(st.st_mode) or st.st_uid not in ({own[0]} if own else set()) | {0, os.geteuid()}:
+            return None
+        if limit is not None and st.st_size > limit:
+            return None
+        if tail is not None and st.st_size > tail:
+            os.lseek(fd, st.st_size - tail, os.SEEK_SET)
+        with os.fdopen(os.dup(fd), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path, text):
     _makedirs(os.path.dirname(path))
     tmp = "%s.tmp.%d" % (path, os.getpid())
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        os.unlink(tmp)                                    # a leftover or planted file (or symlink) at the temporary name goes; unlink never follows
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
-    os.chmod(tmp, 0o644 if path == MANIFEST else 0o600)   # the Vulkan loader reads the manifest; everything else is private
+        os.fchmod(f.fileno(), 0o644 if path == MANIFEST else 0o600)   # the Vulkan loader reads the manifest; everything else is private
     _give_to_user(tmp)
     os.replace(tmp, path)  # atomic: the layer never sees a half-written file
 
@@ -175,7 +209,7 @@ def _check_library(path):
 class Plugin:
     values = None
     rev = 0
-    bench_token = 0        # BENCH=<number> in live.conf: a new number asks the layer for one benchmark run (about 7 minutes)
+    bench_token = 0        # BENCH=<number> in live.conf: a new number asks the layer for one benchmark run (6 pairs of 60 s, about 13 minutes)
     experimental = False   # EXPERIMENTAL on: the "more" settings can be changed and Most generated frames reaches 10
     refresh_hz = 0.0       # refresh rate of the screen the game renders on; 0 = not known yet
     refresh_src = ""       # "layer" (what the running game's swapchain reports), "xrandr", or "saved"
@@ -248,15 +282,23 @@ class Plugin:
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-            for old, new in RENAMED.items():
-                if old in saved and new not in saved:
-                    saved[new] = saved[old]
-            self.experimental = bool(saved.get("EXPERIMENTAL", 0))     # decides the Most generated frames range below
-            for item in self._schema():
-                if item["key"] in saved:
-                    vals[item["key"]] = _clamp(item, saved[item["key"]])
         except (OSError, ValueError):
-            pass
+            return vals
+        if not isinstance(saved, dict):
+            return vals
+        for old, new in RENAMED.items():
+            if old in saved and new not in saved:
+                saved[new] = saved[old]
+        try:
+            self.experimental = bool(saved.get("EXPERIMENTAL", 0))     # decides the Most generated frames range below
+        except (TypeError, ValueError):
+            self.experimental = False
+        for item in self._schema():                                    # the file is user-editable: one bad value keeps that setting's default, nothing else
+            if item["key"] in saved:
+                try:
+                    vals[item["key"]] = _clamp(item, saved[item["key"]])
+                except (TypeError, ValueError, OverflowError):
+                    pass
         return vals
 
     def _write_live(self):
@@ -274,19 +316,20 @@ class Plugin:
     async def get_state(self):
         status = None
         try:
-            with open(STATUS_JSON, "r", encoding="utf-8") as f:
-                status = json.load(f)
-            status["age_s"] = round(time.time() - os.path.getmtime(STATUS_JSON), 1)
-        except (OSError, ValueError):
-            pass
+            raw = _read_user_file(STATUS_JSON, 65536)
+            if raw is not None:
+                status = json.loads(raw.decode("utf-8", errors="replace"))
+                status["age_s"] = round(time.time() - os.lstat(STATUS_JSON).st_mtime, 1)
+        except (OSError, ValueError, TypeError):
+            status = None
         await self._update_display(status)
         bench = None
         try:
-            if os.path.getsize(BENCH_JSON) < 65536:
-                with open(BENCH_JSON, "r", encoding="utf-8") as f:
-                    b = json.load(f)
+            raw = _read_user_file(BENCH_JSON, 65536)
+            if raw is not None:
+                b = json.loads(raw.decode("utf-8", errors="replace"))
                 d = b.get("derived") or {}
-                bench = {"status": b.get("status"), "reason": b.get("reason", ""), "age_s": round(time.time() - os.path.getmtime(BENCH_JSON)),
+                bench = {"status": b.get("status"), "reason": b.get("reason", ""), "age_s": round(time.time() - os.lstat(BENCH_JSON).st_mtime),
                          "layer_cost_mean_ms": d.get("layer_cost_mean_ms"), "gpu_share": d.get("gpu_share")}
         except (OSError, ValueError, AttributeError):
             pass
@@ -322,7 +365,7 @@ class Plugin:
         raise ValueError("unknown setting %r" % key)
 
     async def start_bench(self):
-        """Asks the running game's layer for one benchmark run: 30 s warm-up, then 3 x (60 s off, 60 s on). The layer writes bench.json."""
+        """Asks the running game's layer for one benchmark run: 30 s warm-up, then 6 pairs of 60 s (layer off, on; every second pair on, off), about 13 minutes. The layer writes bench.json."""
         self.bench_token = max(int(time.time()), self.bench_token + 1)
         self._write_live()
         _log("panel: benchmark requested (BENCH=%d, REV %d); the layer starts it within a second if a game is running" % (self.bench_token, self.rev))
@@ -337,27 +380,24 @@ class Plugin:
 
     async def get_log(self, lines: int = 60):
         """The last change lines of live.log (what changed, when), newest last. The log itself keeps everything; this view drops the layer's fps and status chatter and shortens each line."""
-        try:
-            with open(LIVE_LOG, "rb") as fb:
-                size = fb.seek(0, os.SEEK_END)
-                fb.seek(max(0, size - 256 * 1024))           # only the end of the file: live.log can be megabytes
-                all_lines = fb.read().decode("utf-8", errors="replace").splitlines()
-            if size > 256 * 1024:
-                all_lines = all_lines[1:]                    # the first line is cut off
-            if True:
-                keep = []
-                for ln in all_lines:
-                    if " plugin " in ln or "live: CHANGE " in ln:
-                        # "2026-10-30 19:02:15.030 plugin  panel: X 1 -> 2 (REV ...)" -> "19:02:15 X 1 -> 2 [plugin]"
-                        t = ln[11:19] if len(ln) > 19 else ""
-                        body = ln[24:] if len(ln) > 24 else ln
-                        who = "plugin" if " plugin " in ln else "layer"
-                        body = body.replace("plugin  panel: ", "").replace("[FrameGen] live: CHANGE ", "").replace("(live.conf)", "")
-                        body = body.split(" (REV")[0].strip()
-                        keep.append("%s %s [%s]" % (t, body, who))
-                return keep[-max(1, min(int(lines), 500)):]
-        except OSError:
+        cut = 256 * 1024                                     # only the end of the file: live.log can be megabytes
+        raw = _read_user_file(LIVE_LOG, tail=cut + 1)
+        if raw is None:
             return []
+        all_lines = raw.decode("utf-8", errors="replace").splitlines()
+        if len(raw) > cut:
+            all_lines = all_lines[1:]                        # the first line is cut off
+        keep = []
+        for ln in all_lines:
+            if " plugin " in ln or "live: CHANGE " in ln:
+                # "2026-10-30 19:02:15.030 plugin  panel: X 1 -> 2 (REV ...)" -> "19:02:15 X 1 -> 2 [plugin]"
+                t = ln[11:19] if len(ln) > 19 else ""
+                body = ln[24:] if len(ln) > 24 else ln
+                who = "plugin" if " plugin " in ln else "layer"
+                body = body.replace("plugin  panel: ", "").replace("[FrameGen] live: CHANGE ", "").replace("(live.conf)", "")
+                body = body.split(" (REV")[0].strip()
+                keep.append("%s %s [%s]" % (t, body, who))
+        return keep[-max(1, min(int(lines), 500)):]
 
     # ---- layer install --------------------------------------------------
     def _layer_info(self):
@@ -387,8 +427,15 @@ class Plugin:
                 raise ValueError("no libvkIFrames.so bundled in the plugin's bin/ folder")
             _private_dir(DATA_DIR)
             tmp = INSTALLED_LIB + ".new"
-            shutil.copyfile(BUNDLED_LIB, tmp)
-            os.chmod(tmp, 0o755)
+            try:
+                os.unlink(tmp)                               # a leftover or planted file (or symlink) goes; unlink never follows
+            except FileNotFoundError:
+                pass
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o755)
+            with os.fdopen(fd, "wb") as out, open(BUNDLED_LIB, "rb") as src:
+                shutil.copyfileobj(src, out)
+                out.flush()
+                os.fchmod(out.fileno(), 0o755)
             _give_to_user(tmp)
             os.replace(tmp, INSTALLED_LIB)
             target = INSTALLED_LIB
