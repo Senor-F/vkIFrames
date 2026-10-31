@@ -59,7 +59,8 @@ uint32_t FindMemoryType(const DeviceDispatch& dt, uint32_t bits, VkMemoryPropert
 
 // Takes the next command buffer, waiting for its previous submission to finish, and starts recording.
 bool BeginCmd(const DeviceDispatch& dt, GpuState& g, uint32_t& entry) {
-    entry = g.cb_next++ % g.n_cmd;
+    const uint32_t n = std::clamp<uint32_t>(uint32_t(Live().cmd_buffers.load()), 4u, g.n_cmd);   // live setting; every entry has its own fence, so changing n while frames are in flight is safe
+    entry = g.cb_next++ % n;
     if (dt.WaitForFences(dt.device, 1, &g.fences[entry], VK_TRUE, 2'000'000'000ull) != VK_SUCCESS) { FG_LOG("hold: waiting for a command buffer timed out"); return false; }
     if (dt.ResetCommandBuffer(g.cbs[entry], 0) != VK_SUCCESS) return false;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -221,7 +222,7 @@ using namespace gpuint;
 
 GpuState* GpuInit(const DeviceDispatch& dt, SwapchainState& sc, uint32_t family) {
     auto* g = new GpuState;
-    g->n_cmd = uint32_t(GetConfig().cmd_buffers);
+    g->n_cmd = kMaxCmdBuffers;                 // always allocate the most; CMD_BUFFERS (live) picks how many are used
     g->extent = sc.extent; g->family = family; g->swapchain = sc.handle;
     bool ok = true;
 

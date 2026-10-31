@@ -20,7 +20,7 @@ struct HeldFrame {
     uint64_t present_id{0};     // the application's VK_KHR_present_id value for this frame (0 = none), re-attached when it is shown
 };
 
-// The most command buffer entries a swapchain can use (VKIFRAME_CMD_BUFFERS picks how many, default 8). Each entry has its own fence, descriptor sets and query slots.
+// The most command buffer entries a swapchain can use (the live CMD_BUFFERS setting picks how many, default 8). Each entry has its own fence, descriptor sets and query slots.
 constexpr uint32_t kMaxCmdBuffers = 32;
 
 // An image of the optical-flow engine (Stage 4).
@@ -62,7 +62,7 @@ struct GpuState {
     static constexpr VkFormat kRingFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     static constexpr uint32_t kRingCapacity = 6;     // frames waiting for their ticks (held, queued jobs) plus the one being captured
     static constexpr uint32_t kCmdBuffers = kMaxCmdBuffers;   // array size; n_cmd of them are used
-    uint32_t n_cmd{8};                               // VKIFRAME_CMD_BUFFERS: the more entries, the further the layer may run ahead of the GPU before the game thread waits on a fence
+    uint32_t n_cmd{8};                               // entries allocated (all kMaxCmdBuffers); the live CMD_BUFFERS setting picks how many are used: the more entries, the further the layer may run ahead of the GPU before the game thread waits on a fence
 
     struct Slot { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; bool initialized{false}; };
 

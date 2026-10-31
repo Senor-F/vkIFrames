@@ -14,6 +14,7 @@ struct LiveSettings {
     std::atomic<int>   phase_lock{1};        // PHASE_LOCK
     std::atomic<float> phase_offset{0.5f};   // PHASE_OFFSET
     std::atomic<int>   interp_bidir{0};        // INTERP_BIDIR (takes effect from the next pair)
+    std::atomic<int>   cmd_buffers{8};         // CMD_BUFFERS (4..32): command buffer entries in use; the fence of each entry keeps a change safe
     std::atomic<int>   stats{0};               // STATS: one measurement record a second in stats.jsonl (see stats.hpp)
     std::atomic<long long> bench_token{0};     // BENCH: a new non-zero number asks for one benchmark run
 };

@@ -20,12 +20,12 @@
 
 namespace {
 
-enum Key { kEnabled, kTargetFps, kMaxSynthetic, kBaseFpsCap, kMinGain, kPhaseLock, kPhaseOffset, kInterpBidir, kStats, kBench, kKeys };
+enum Key { kEnabled, kTargetFps, kMaxSynthetic, kBaseFpsCap, kMinGain, kPhaseLock, kPhaseOffset, kInterpBidir, kCmdBuffers, kStats, kBench, kKeys };
 
 struct KeyInfo { const char* name; bool toggle; double lo, hi; };   // ranges as in settings_schema.json on the decky-plugin branch
 constexpr KeyInfo kInfo[kKeys] = {
     {"ENABLED", true, 0, 1}, {"TARGET_FPS", false, 30, 1000}, {"MAX_SYNTHETIC", false, 1, kLiveMaxSyntheticNormal}, {"BASE_FPS_CAP", false, 0, 90},
-    {"MIN_GAIN", false, 1.01, 1.5}, {"PHASE_LOCK", true, 0, 1}, {"PHASE_OFFSET", false, 0.0, 0.999}, {"INTERP_BIDIR", true, 0, 1},
+    {"MIN_GAIN", false, 1.01, 1.5}, {"PHASE_LOCK", true, 0, 1}, {"PHASE_OFFSET", false, 0.0, 0.999}, {"INTERP_BIDIR", true, 0, 1}, {"CMD_BUFFERS", false, 4, 32},
     {"STATS", true, 0, 1}, {"BENCH", false, 0, 4e12},     // BENCH: a request token (any new number starts one benchmark run), see stats.hpp
 };
 
@@ -109,17 +109,17 @@ void LogLine(const char* fmt, ...) {
 double Get(const LiveSettings& s, int k) {
     switch (k) {
         case kEnabled: return s.enabled; case kTargetFps: return s.target_fps; case kMaxSynthetic: return s.max_synthetic; case kBaseFpsCap: return s.base_fps_cap;
-        case kMinGain: return s.min_gain; case kPhaseLock: return s.phase_lock; case kPhaseOffset: return s.phase_offset; case kStats: return s.stats; case kBench: return double(s.bench_token.load()); default: return s.interp_bidir;
+        case kMinGain: return s.min_gain; case kPhaseLock: return s.phase_lock; case kPhaseOffset: return s.phase_offset; case kCmdBuffers: return s.cmd_buffers; case kStats: return s.stats; case kBench: return double(s.bench_token.load()); default: return s.interp_bidir;
     }
 }
 void Set(LiveSettings& s, int k, double v) {
     switch (k) {
         case kEnabled: s.enabled = int(v); break; case kTargetFps: s.target_fps = float(v); break; case kMaxSynthetic: s.max_synthetic = int(v); break;
         case kBaseFpsCap: s.base_fps_cap = float(v); break; case kMinGain: s.min_gain = float(v); break; case kPhaseLock: s.phase_lock = int(v); break;
-        case kPhaseOffset: s.phase_offset = float(v); break; case kStats: s.stats = int(v); break; case kBench: s.bench_token = (long long)v; break; default: s.interp_bidir = int(v); break;
+        case kPhaseOffset: s.phase_offset = float(v); break; case kCmdBuffers: s.cmd_buffers = int(v); break; case kStats: s.stats = int(v); break; case kBench: s.bench_token = (long long)v; break; default: s.interp_bidir = int(v); break;
     }
 }
-std::string Show(int k, double v) { char b[40]; if (k == kBench) std::snprintf(b, sizeof b, "%lld", (long long)v); else if (kInfo[k].toggle || k == kMaxSynthetic) std::snprintf(b, sizeof b, "%d", int(v)); else std::snprintf(b, sizeof b, "%g", v); return b; }
+std::string Show(int k, double v) { char b[40]; if (k == kBench) std::snprintf(b, sizeof b, "%lld", (long long)v); else if (kInfo[k].toggle || k == kMaxSynthetic || k == kCmdBuffers) std::snprintf(b, sizeof b, "%d", int(v)); else std::snprintf(b, sizeof b, "%g", v); return b; }
 
 double g_startup[kKeys];            // values from the environment (what removing the file goes back to)
 bool   g_have_file = false;
@@ -141,11 +141,11 @@ bool ParseValue(int k, const std::string& raw, double& out, std::string& note) {
         return false;
     }
     if (kInfo[k].toggle) { out = v != 0.0 ? 1 : 0; if (v != 0.0 && v != 1.0) note = "any non-zero value counts as 1"; return true; }
-    if (k == kMaxSynthetic || k == kBench) v = std::round(v);
+    if (k == kMaxSynthetic || k == kBench || k == kCmdBuffers) v = std::round(v);
     const double hi = (k == kMaxSynthetic) ? double(LiveMaxSyntheticLimit()) : kInfo[k].hi;   // experimental mode (set at game start) allows up to 10
     const double c = std::clamp(v, kInfo[k].lo, hi);
     if (c != v) { char b[120]; std::snprintf(b, sizeof b, "clamped to the range %g..%g", kInfo[k].lo, hi); note = b; }
-    out = (k == kMaxSynthetic || k == kBench) ? c : double(float(c));      // the settings are floats: compare as floats, or 1.12 reads as a change from 1.12f
+    out = (k == kMaxSynthetic || k == kBench || k == kCmdBuffers) ? c : double(float(c));      // the settings are floats: compare as floats, or 1.12 reads as a change from 1.12f
     return true;
 }
 
@@ -181,7 +181,7 @@ void Apply(const char* why, const std::string& text, bool present) {
             for (int i = 0; i < kKeys; ++i) if (key == kInfo[i].name) k = i;
             if (k < 0) {
                 bool startup_only = false;
-                for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL", "CMD_BUFFERS"}) if (key == sk) startup_only = true;
+                for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL"}) if (key == sk) startup_only = true;
                 if (startup_only) { ++startup; continue; }     // read once when the game starts (logged then), not an error
                 ++unknown; LogLine("line %d: unknown key \"%.40s\" ignored", lineno, key.c_str()); continue;
             }
@@ -212,7 +212,7 @@ void Apply(const char* why, const std::string& text, bool present) {
 
 // Settings that cannot change while a game runs (they size buffers or pick shaders) are read from live.conf once, when the game starts.
 const char* StartupFileValue(const char* name) {
-    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL", "CMD_BUFFERS"};
+    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL"};
     bool allowed = false;
     for (const char* k : kStartupKeys) if (std::strcmp(name, k) == 0) allowed = true;
     if (!allowed) return nullptr;                       // also keeps LIVE_CONF / LIVE_LOG lookups out of the loader below
@@ -271,7 +271,7 @@ LiveSettings& Live() {
     static LiveSettings* s = [] {
         auto* l = new LiveSettings;
         const Config& c = GetConfig();
-        l->enabled = 1; l->target_fps = c.target_fps; l->max_synthetic = std::min(c.max_synthetic, LiveMaxSyntheticLimit()); l->base_fps_cap = c.base_fps_cap;
+        l->enabled = 1; l->target_fps = c.target_fps; l->max_synthetic = std::min(c.max_synthetic, LiveMaxSyntheticLimit()); l->base_fps_cap = c.base_fps_cap; l->cmd_buffers = c.cmd_buffers;
         l->min_gain = c.min_gain; l->phase_lock = c.phase_lock ? 1 : 0; l->phase_offset = c.phase_offset; l->interp_bidir = c.interp_bidir ? 1 : 0;
         if (const char* v = EnvVar("STATS")) l->stats = std::atoi(v) != 0 ? 1 : 0;
         for (int k = 0; k < kKeys; ++k) g_startup[k] = Get(*l, k);
