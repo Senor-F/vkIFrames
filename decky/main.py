@@ -5,6 +5,7 @@ Standard library only (Decky runs a frozen Python).
 Live config protocol: see LIVECONF.md.
 """
 import asyncio
+import errno
 import json
 import math
 import re
@@ -134,10 +135,22 @@ def _makedirs(path, mode=0o755):
         _give_to_user(d)
 
 
+def _real_dir(path):
+    """Raises OSError unless `path` is a real directory (not a symlink) owned by the user or root. Root writes into these folders, so a symlink
+    planted in place of one (or a folder of another user) must not be followed."""
+    st = os.lstat(path)
+    own = _owner()
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(errno.ENOTDIR, "not a real directory (a symlink or a file): %s" % path)
+    if st.st_uid not in ({own[0]} if own else set()) | {0, os.geteuid()}:
+        raise OSError(errno.EPERM, "folder belongs to another user: %s" % path)
+
+
 def _private_dir(path):
-    """A folder only the user can enter (config, data): created 0700, owned by the user. A symlink in its place is left alone: root must not
-    change the mode of whatever it points at (the folder is in the user's hands)."""
+    """A folder only the user can enter (config, data): created 0700, owned by the user. Raises OSError if the path is a symlink, not a folder
+    or belongs to someone else: the callers then write nothing there (root must not follow the link or change the mode of its target)."""
     _makedirs(path, 0o700)
+    _real_dir(path)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)       # ELOOP for a symlink
         try:
@@ -174,8 +187,10 @@ def _read_user_file(path, limit=None, tail=None):
         os.close(fd)
 
 
-def _atomic_write(path, text):
+def _atomic_write(path, text, user_dir=True):
     _makedirs(os.path.dirname(path))
+    if user_dir:
+        _real_dir(os.path.dirname(path))                  # a symlink in place of the folder is refused, nothing is written
     tmp = "%s.tmp.%d" % (path, os.getpid())
     try:
         os.unlink(tmp)                                    # a leftover or planted file (or symlink) at the temporary name goes; unlink never follows
@@ -247,7 +262,7 @@ class Plugin:
             old = self._target_max()
             self.refresh_hz, self.refresh_src = hz, src
             try:
-                _atomic_write(DISPLAY_FILE, json.dumps({"refresh_hz": hz, "source": src}) + "\n")
+                _atomic_write(DISPLAY_FILE, json.dumps({"refresh_hz": hz, "source": src}) + "\n", user_dir=False)
             except OSError:
                 pass
             _log("display: refresh rate %.1f Hz (%s); Target FPS slider now reaches %d (was %d)" % (hz, src, self._target_max(), old))
@@ -309,9 +324,14 @@ class Plugin:
             lines.append("%s%s=%s" % (PREFIX, item["key"], self.values[item["key"]]))
         if self.bench_token:
             lines.append("%sBENCH=%d" % (PREFIX, self.bench_token))     # kept in every later write, so the layer does not see it change
-        _private_dir(CONF_DIR)
-        _atomic_write(LIVE_CONF, "\n".join(lines) + "\n")
-        _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n")
+        _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n", user_dir=False)    # the plugin's own folder: always
+        try:
+            _private_dir(CONF_DIR)
+            _atomic_write(LIVE_CONF, "\n".join(lines) + "\n")
+        except OSError as e:                                # the config folder is a symlink or not the user's: live.conf is not written
+            decky.logger.error("live.conf not written: %s", e)
+            return False
+        return True
 
     async def get_state(self):
         status = None
@@ -425,7 +445,10 @@ class Plugin:
         else:
             if not os.path.exists(BUNDLED_LIB):
                 raise ValueError("no libvkIFrames.so bundled in the plugin's bin/ folder")
-            _private_dir(DATA_DIR)
+            try:
+                _private_dir(DATA_DIR)
+            except OSError as e:
+                raise ValueError("the data folder is not a private folder of the user: %s" % e)
             tmp = INSTALLED_LIB + ".new"
             try:
                 os.unlink(tmp)                               # a leftover or planted file (or symlink) goes; unlink never follows

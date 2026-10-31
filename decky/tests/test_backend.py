@@ -8,6 +8,7 @@ fake.DECKY_PLUGIN_SETTINGS_DIR = os.path.join(tmp, "settings")
 fake.DECKY_PLUGIN_DIR = root
 class L:
     def info(self, *a): pass
+    def error(self, *a): pass
 fake.logger = L()
 sys.modules["decky"] = fake
 spec = importlib.util.spec_from_file_location("main", os.path.join(root, "main.py"))
@@ -118,8 +119,36 @@ import stat as _st
 # a symlink in place of a private folder: _private_dir must not change the mode of the target
 tgt = os.path.join(tmp, "elsewhere"); os.makedirs(tgt, 0o755); os.chmod(tgt, 0o755)
 lnk = os.path.join(tmp, "linkdir"); os.symlink(tgt, lnk)
-main._private_dir(lnk); assert _st.S_IMODE(os.stat(tgt).st_mode) == 0o755, "chmod followed a symlink"
+try: main._private_dir(lnk); raise SystemExit("_private_dir accepted a symlink")
+except OSError: pass
+assert _st.S_IMODE(os.stat(tgt).st_mode) == 0o755, "chmod followed a symlink"
 plain = os.path.join(tmp, "plaindir"); main._private_dir(plain); assert _st.S_IMODE(os.stat(plain).st_mode) == 0o700
+# the config and data folders replaced by symlinks: nothing is written into the target (live.conf, live.log, the library, the manifest folder)
+real_conf = main.CONF_DIR; moved = real_conf + ".real"; os.rename(real_conf, moved)
+bait = os.path.join(tmp, "bait_conf"); os.makedirs(bait, 0o755); os.symlink(bait, real_conf)
+before = sorted(os.listdir(bait)); rev_before = p.rev
+run(p.set_value("TARGET_FPS", 61))                                    # must not raise; settings.json (the plugin's own folder) is still written
+assert sorted(os.listdir(bait)) == before == [], os.listdir(bait)
+assert json.load(open(main.SETTINGS_FILE))["TARGET_FPS"] == 61
+main._log("must not land in the target"); assert os.listdir(bait) == []
+os.unlink(real_conf); os.rename(moved, real_conf)
+had_data = os.path.exists(main.DATA_DIR)
+if had_data:
+    d_moved = main.DATA_DIR + ".real"; os.rename(main.DATA_DIR, d_moved)
+bait2 = os.path.join(tmp, "bait_data"); os.makedirs(bait2, 0o755); os.symlink(bait2, main.DATA_DIR)
+bundled0 = os.path.join(root, "bin", "libvkIFrames.so"); made_bin = not os.path.exists(bundled0)
+os.makedirs(os.path.dirname(bundled0), exist_ok=True)
+if made_bin: open(bundled0, "wb").write(b"\x7fELF fake")
+try:
+    try: run(p.install_layer()); raise SystemExit("install_layer wrote into a symlinked data folder")
+    except ValueError: pass
+    assert os.listdir(bait2) == [] and _st.S_IMODE(os.stat(bait2).st_mode) == 0o755
+finally:
+    if made_bin: os.unlink(bundled0)
+    os.unlink(main.DATA_DIR)
+    if had_data: os.rename(d_moved, main.DATA_DIR)
+run(p.set_value("TARGET_FPS", 62))                                    # back to normal
+assert "VKIFRAME_TARGET_FPS=62" in open(main.LIVE_CONF).read()
 # status.json, bench.json and live.log as symlinks are not read
 secret = os.path.join(tmp, "secret.json"); open(secret, "w").write('{"native_fps": 1, "status": "complete", "derived": {}}')
 for f in (main.STATUS_JSON, main.BENCH_JSON):
