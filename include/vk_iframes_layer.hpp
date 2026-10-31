@@ -331,6 +331,8 @@ DeviceDispatch*   RegisterDevice(void* key, VkDevice device, VkPhysicalDevice ph
                                  PFN_vkGetDeviceProcAddr gdpa, InstanceDispatch* instance);
 InstanceDispatch* LookupInstance(void* key);
 DeviceDispatch*   LookupDevice(void* key);
+void LeakSwapchainState(VkSwapchainKHR handle);   // forget without freeing: a detached presenter thread still uses it
+void LeakDevice(void* key);                       // same, for the device dispatch table
 void UnregisterInstance(void* key);
 void UnregisterDevice(void* key);
 
