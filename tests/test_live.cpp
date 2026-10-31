@@ -89,9 +89,14 @@ int main() {
     Write(conf, "REV=5\nCMD_BUFFERS=2\n"); Touch(conf, 14); Poll(); CHECK(L.cmd_buffers == 4);
     Write(conf, "REV=6\nCMD_BUFFERS=16\n"); Touch(conf, 16); Poll(); CHECK(L.cmd_buffers == 16);
 
+    CHECK(L.synth_margin == 0.15f);                               // the default, as in the environment
+    Write(conf, "REV=7\nSYNTH_MARGIN=0\n"); Touch(conf, 18); Poll(); CHECK(L.synth_margin == 0.0f);
+    Write(conf, "REV=8\nSYNTH_MARGIN=0.9\n"); Touch(conf, 20); Poll(); CHECK(L.synth_margin == 0.45f);
+    Write(conf, "REV=9\nSYNTH_MARGIN=-1\n"); Touch(conf, 22); Poll(); CHECK(L.synth_margin == 0.0f);
+
     unlink(conf.c_str());                                         // removing the file reverts everything
     Poll();
-    CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8);
+    CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8 && L.synth_margin == 0.15f);
 
     const std::string text = Slurp(log);
     CHECK(text.find("startup setting EXTRAPOLATE=1") != std::string::npos);

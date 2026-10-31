@@ -401,8 +401,8 @@ PairScheduler::Plan PlanAndCount(SwapchainState& sc, uint64_t now) {
     p.min_gain = live.enabled.load() ? live.min_gain.load() : 1e6f;   // disabled: the gain gate never opens, so every frame is a plain bypass (a held frame is flushed first)
     auto plan = cfg.extrapolate ? sc.sched.OnNativeFrameExtrap(double(now), sc.timing.SmoothedExactNs(), double(sc.timing.LastRawNs()), p)
                                 : sc.sched.OnNativeFrame(double(now), sc.timing.SmoothedExactNs(), sc.timing.JitterExactNs(), double(sc.timing.LastRawNs()), p);
-    if (plan.kind == PairScheduler::Kind::Pair && cfg.synth_margin > 0.0f && !cfg.extrapolate) {          // only generated frames: no tick may sit on A (or B)
-        const double m = double(cfg.synth_margin);
+    if (plan.kind == PairScheduler::Kind::Pair && live.synth_margin.load() > 0.0f && !cfg.extrapolate) {   // only generated frames: no tick may sit on A (or B)
+        const double m = double(live.synth_margin.load());
         for (int i = 0; i < plan.n; ++i) { plan.ticks[i].t = std::clamp(plan.ticks[i].t, m, 1.0 - m); plan.ticks[i].native_a = false; }
     }
     auto& r = sc.rates;

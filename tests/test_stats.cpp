@@ -103,6 +103,7 @@ int main() {
         for (double x : pc) NEAR(x, cost, 1e-9);
         CHECK(j.find("\"layer_cost_pairs_ms\":[") != std::string::npos && j.find("\"layer_cost_se_ms\":0.000") != std::string::npos && j.find("\"layer_cost_within_noise\":false") != std::string::npos);
         CHECK(j.find("\"cmd_buffers\":0") != std::string::npos);      // not recorded when Start is not given it
+        CHECK(j.find("\"synth_margin\":-1.00") != std::string::npos);
     }
     {   // spread arithmetic by hand: costs 0, 2, 4 -> mean 2, sample sd 2, se 2 / sqrt(3)
         const auto s3 = stats::Bench::SpreadOf({0.0, 2.0, 4.0});
@@ -116,8 +117,8 @@ int main() {
         CHECK(stats::Bench::SpreadOf({}).n == 0);
     }
     {   // the settings echo
-        stats::Bench e; e.Start(1, 90, 4, 60, 1.01, 1, 16, 3);
-        CHECK(e.Json().find("\"cmd_buffers\":16,\"flow_level\":3") != std::string::npos);
+        stats::Bench e; e.Start(1, 90, 4, 60, 1.01, 1, 16, 3, 0.0);
+        CHECK(e.Json().find("\"cmd_buffers\":16,\"flow_level\":3,\"synth_margin\":0.00") != std::string::npos);
     }
     // labels and the first seconds of a run
     {

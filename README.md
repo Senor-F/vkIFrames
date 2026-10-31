@@ -117,7 +117,7 @@ Environment variables, read once at start. Defaults in the second column.
 | `VKIFRAME_INTERP_BIDIR` | `1` (old name `VKIFRAME_WARP_BIDIR`) | `1`: two-sided interpolation (A forward, B backward); costs about 0.37 ms more per synthetic frame. |
 | `VKIFRAME_FLOW_LEVEL` | `2` | Resolution of the flow field: 1 = half (most expensive), 2 = quarter (default), 3 = eighth. |
 | `VKIFRAME_PHASE_LOCK` / `VKIFRAME_PHASE_OFFSET` | `1` / `0.5` | Keep the output ticks at fixed positions between native frames when the ratio is near an integer. |
-| `VKIFRAME_SYNTH_MARGIN` | `0.15` | Keep *t* at least this far from 0 and 1, so no native frame is shown as it is. |
+| `VKIFRAME_SYNTH_MARGIN` | `0.15` | Keep *t* at least this far from 0 and 1, so no native frame is shown as it is. Live: change it in live.conf while the game runs (from the next pair); bench.json echoes the value. |
 | `VKIFRAME_INTERP_GUIDE`, `VKIFRAME_CONF_LO`, `VKIFRAME_CONF_HI` | `0.08`, `0.06`, `0.14` | Colour guidance of the vector weighting and the match-cost range where the interpolation fades to the cross-fade. |
 | `VKIFRAME_PAN_LO`, `VKIFRAME_PAN_HI` | `0.15`, `0.35` | Share of unmatched flow where the whole frame starts / finishes cross-fading (fast pans). |
 | `VKIFRAME_PRESENTER` | `1` | `0`: present the ticks from the game thread instead of the pacing thread. |
