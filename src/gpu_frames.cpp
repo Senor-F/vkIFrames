@@ -61,6 +61,8 @@ uint32_t FindMemoryType(const DeviceDispatch& dt, uint32_t bits, VkMemoryPropert
 bool BeginCmd(const DeviceDispatch& dt, GpuState& g, uint32_t& entry) {
     const uint32_t n = std::clamp<uint32_t>(uint32_t(Live().cmd_buffers.load()), 4u, g.n_cmd);   // live setting; every entry has its own fence, so changing n while frames are in flight is safe
     entry = g.cb_next++ % n;
+    for (uint32_t tries = 1; (g.cb_reserved >> entry & 1u) && tries < n; ++tries) entry = g.cb_next++ % n;      // an entry that is being recorded while gpu_mu is dropped is not ours
+    if (g.cb_reserved >> entry & 1u) { FG_LOG("hold: every command buffer entry is reserved"); return false; }
     if (dt.WaitForFences(dt.device, 1, &g.fences[entry], VK_TRUE, 2'000'000'000ull) != VK_SUCCESS) { FG_LOG("hold: waiting for a command buffer timed out"); return false; }
     if (dt.ResetCommandBuffer(g.cbs[entry], 0) != VK_SUCCESS) return false;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -379,10 +381,11 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         const uint64_t wait_ns = uint64_t(GetConfig().acquire_wait_us) * 1000ull;
         const uint64_t deadline = [] { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return uint64_t(ts.tv_sec) * 1000000000ull + ts.tv_nsec + 2'000'000'000ull; }();
         // With a wait time the presenter does not hold gpu_mu while it waits for a free image (the game thread captures under that mutex):
-        // entry e and its command buffer are ours alone, so the lock is dropped for the acquire and taken again before recording goes on.
+        // entry e is marked in g.cb_reserved while the lock is dropped, so BeginCmd (the game thread's captures) skips it and nobody resets the
+        // command buffer that is being recorded; the lock is taken again before recording goes on.
         // wait_ns == 0 is the old behaviour: poll with 200 us naps under the lock.
-        if (wait_ns) lk.unlock();
-        auto relock = [&] { if (wait_ns) lk.lock(); };
+        if (wait_ns) { g.cb_reserved |= 1u << e; lk.unlock(); }
+        auto relock = [&] { if (wait_ns) { lk.lock(); g.cb_reserved &= ~(1u << e); } };
         for (;;) {
             VkResult ar;
             { std::lock_guard<std::mutex> al(g.acquire_mu); ar = dt.AcquireNextImageKHR(dt.device, g.swapchain, wait_ns, g.acquire[e], VK_NULL_HANDLE, &idx); }
