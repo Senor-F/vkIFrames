@@ -19,7 +19,7 @@ FRAMEGEN_TARGET_FPS=60
 ## Layer side (to implement)
 1. Once per second from the present path (or a tiny thread), `stat()` the file. If the mtime or size changed, re-read it. Never block the present path on I/O for more than that one `stat()`.
 2. Environment variables are the startup defaults. A key in `live.conf` overrides the environment from then on. Removing the file reverts to the environment values.
-3. Apply on the next present for: `ENABLED`, `TARGET_FPS`, `MAX_SYNTHETIC`, `BASE_FPS_CAP`, `MIN_GAIN`, `PHASE_LOCK`, `PHASE_OFFSET`, `WARP_BIDIR` (use the next-swapchain/next-pair rule where a buffer must be rebuilt).
+3. Apply on the next present for: `ENABLED`, `TARGET_FPS`, `MAX_SYNTHETIC`, `BASE_FPS_CAP`, `MIN_GAIN`, `PHASE_LOCK`, `PHASE_OFFSET`, `SYNTH_MARGIN` (0..0.45), `WARP_BIDIR` (use the next-swapchain/next-pair rule where a buffer must be rebuilt).
 4. `ENABLED=0` must behave like bypass: native frames pass straight through, no added latency.
 5. Clamp bad values to the same ranges as `settings_schema.json`; never crash on a malformed line.
 6. Optional status (layer -> plugin): write `~/.config/vkiframes/status.json` about once a second, e.g. `{"native_fps":42.1,"output_fps":60.0,"k":1,"mode":"interp"}`. The plugin shows it as is.

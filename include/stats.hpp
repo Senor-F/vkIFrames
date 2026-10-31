@@ -50,7 +50,7 @@ public:
     Bench() = default;
     explicit Bench(Params p) : p_(p) {}
     // Starts a run. The settings are echoed into bench.json; user_enabled is what to restore.
-    void Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers = 0, int flow_level = 0);
+    void Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers = 0, int flow_level = 0, double synth_margin = -1.0);
     // Feeds one second. Returns the value ENABLED must have for the next second (1 = layer on, 0 = off). The record's `bench` label is set here.
     int OnSecond(Record& r);
     void Abort(const char* reason);                     // the user changed a setting, or left the game
@@ -84,7 +84,7 @@ private:
     std::vector<Row> rows_;                             // counted seconds only
     double target_{0}, cap_{0}, gain_{0}; int synth_{0}, bidir_{0};
     double refresh_{0};
-    int cmd_buffers_{0}, flow_level_{0};                // echoed into bench.json so a file says which settings it was run with (0 = not recorded)
+    int cmd_buffers_{0}, flow_level_{0}; double synth_margin_{-1.0};                // echoed into bench.json so a file says which settings it was run with (0 = not recorded; synth_margin_ uses -1)
     // where the current second is in the schedule
     int SegmentOf(double t, bool& on, double& into) const;   // -1 warm-up, 0.. segment index
 };
