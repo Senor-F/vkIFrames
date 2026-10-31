@@ -320,7 +320,12 @@ function Content() {
                 {schema.filter((i) => i.group === "gate").map(renderItem)}
                 {schema.filter((i) => i.group === "more" && (i.needsLayer ?? "live") === "live").map(renderItem)}
                 <PanelSectionRow>
-                  <div style={{ fontSize: 11, fontWeight: 600, marginTop: 8 }}>Applies at the next game start</div>
+                  <div style={{ marginTop: 12, padding: "6px 8px", borderLeft: "3px solid #e8a33d", background: "rgba(232, 163, 61, 0.12)" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>⚠ NEEDS RESTART</div>
+                    <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.3 }}>
+                      The settings below are only read when a game starts. Change them, then close and start the game again.
+                    </div>
+                  </div>
                 </PanelSectionRow>
                 {schema.filter((i) => i.group === "more" && i.needsLayer === "restart").map(renderItem)}
               </>
