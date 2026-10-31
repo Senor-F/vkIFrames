@@ -86,6 +86,7 @@ struct GpuState {
     VkCommandBuffer          cbs[kCmdBuffers]{};
     VkFence                  fences[kCmdBuffers]{};
     uint32_t                 cb_next{0};
+    uint32_t                 cb_reserved{0};         // bit per command buffer entry: begun, but gpu_mu is dropped before it is submitted (hidden acquire); BeginCmd skips it. Guarded by gpu_mu
     std::vector<VkSemaphore> captured;     // per swapchain image: signaled by the capture submit
     std::vector<VkSemaphore> staged;       // per swapchain image: signaled by the debug round trip
     FlowState                flow;
