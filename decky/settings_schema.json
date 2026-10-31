@@ -262,6 +262,27 @@
     "group": "more"
   },
   {
+    "key": "CMD_BUFFERS",
+    "label": "Command buffers",
+    "type": "slider",
+    "default": 8,
+    "min": 4,
+    "max": 32,
+    "step": 1,
+    "needsLayer": "live",
+    "desc": "How far the layer may queue ahead of the GPU before the game waits. Try 16 if the game is GPU-bound and the stats show wait_fence_ms. Higher adds a little latency.",
+    "greyWhen": [
+      [
+        {
+          "key": "ENABLED",
+          "eq": 0
+        }
+      ]
+    ],
+    "greyWhy": "Frame generation is off.",
+    "group": "more"
+  },
+  {
     "key": "EXPERIMENTAL",
     "label": "Experimental",
     "type": "toggle",

@@ -50,7 +50,7 @@ bool SkipFinestBackward(const FlowState& f) {
     return !f.pair_bidir && !GetConfig().extrapolate && GetConfig().cand_thr <= 0.0f && f.fin + 1 < FlowState::kLevels && ((mode >= 1 && f.fin == 0) || mode >= 2);
 }
 
-static_assert(GpuState::kCmdBuffers == 8, "FlowState::sets has one row per command buffer entry");
+static_assert(GpuState::kCmdBuffers == kMaxCmdBuffers, "FlowState::sets has one row per command buffer entry");
 
 struct PassSpec { FlowState::Pass FlowState::* member; const uint32_t* spv; size_t bytes; uint32_t bindings; uint32_t push_bytes; const char* name; };
 
@@ -130,13 +130,13 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
     if (!CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext[0], kUse, f.mask)) return false;
 
     // descriptor sets
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kSetsStorageImages * GpuState::kCmdBuffers};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kSetsStorageImages * g.n_cmd};
     VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dp.maxSets = FlowState::kPasses * GpuState::kCmdBuffers; dp.poolSizeCount = 1; dp.pPoolSizes = &ps;
+    dp.maxSets = FlowState::kPasses * g.n_cmd; dp.poolSizeCount = 1; dp.pPoolSizes = &ps;
     if (dt.CreateDescriptorPool(dt.device, &dp, nullptr, &f.pool) != VK_SUCCESS) return false;
     VkDescriptorSetLayout layouts[FlowState::kPasses];
     for (uint32_t i = 0; i < FlowState::kPasses; ++i) layouts[i] = (f.*kSetPass[i]).set_layout;
-    for (uint32_t e = 0; e < GpuState::kCmdBuffers; ++e) {
+    for (uint32_t e = 0; e < g.n_cmd; ++e) {
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool = f.pool; ai.descriptorSetCount = FlowState::kPasses; ai.pSetLayouts = layouts;
         if (dt.AllocateDescriptorSets(dt.device, &ai, f.sets[e]) != VK_SUCCESS) return false;
@@ -151,7 +151,7 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
         dt.instance->GetPhysicalDeviceProperties(dt.physical_device, &props);
         if (g.family < nq && qf[g.family].timestampValidBits >= 40 && props.limits.timestampPeriod > 0.0f) {
             VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-            qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = FlowState::kQSlots * GpuState::kCmdBuffers;
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = FlowState::kQSlots * g.n_cmd;
             if (dt.CreateQueryPool(dt.device, &qi, nullptr, &f.qpool) == VK_SUCCESS) f.ts_period_ns = props.limits.timestampPeriod;
         }
     }

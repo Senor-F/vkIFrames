@@ -85,9 +85,13 @@ int main() {
     Poll();
     CHECK(L.enabled == 1 && L.target_fps == 75.0f && L.max_synthetic == 3 && L.base_fps_cap == 45.0f);
 
+    Write(conf, "REV=4\nCMD_BUFFERS=99\n"); Touch(conf, 12); Poll(); CHECK(L.cmd_buffers == 32);
+    Write(conf, "REV=5\nCMD_BUFFERS=2\n"); Touch(conf, 14); Poll(); CHECK(L.cmd_buffers == 4);
+    Write(conf, "REV=6\nCMD_BUFFERS=16\n"); Touch(conf, 16); Poll(); CHECK(L.cmd_buffers == 16);
+
     unlink(conf.c_str());                                         // removing the file reverts everything
     Poll();
-    CHECK(L.target_fps == 90.0f && L.enabled == 1);
+    CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8);
 
     const std::string text = Slurp(log);
     CHECK(text.find("startup setting EXTRAPOLATE=1") != std::string::npos);

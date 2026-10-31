@@ -180,7 +180,7 @@ int main(int, char** argv) {
     CHECK(r_submits.back().waits.size() == 1 && r_submits.back().waits[0] == (VkSemaphore)(uintptr_t)(5000 + frame - 1));   // waits for the game's rendering
     const size_t presents_at_hold = r_presents.size();
     const uint32_t held_image = game_images.back(); VkSemaphore held_sem = r_submits.back().signal;
-    CHECK(r_blits >= 1 && r_barriers == 3 && r_loader_data_calls == 8);
+    CHECK(r_blits >= 1 && r_barriers == 3 && r_loader_data_calls == 32);
 
     // 2) next frames: the previous image is presented (waiting on its capture semaphore), the new one is captured
     for (int i = 0; i < 20; ++i) {

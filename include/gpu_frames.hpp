@@ -20,6 +20,9 @@ struct HeldFrame {
     uint64_t present_id{0};     // the application's VK_KHR_present_id value for this frame (0 = none), re-attached when it is shown
 };
 
+// The most command buffer entries a swapchain can use (the live CMD_BUFFERS setting picks how many, default 8). Each entry has its own fence, descriptor sets and query slots.
+constexpr uint32_t kMaxCmdBuffers = 32;
+
 // An image of the optical-flow engine (Stage 4).
 struct FlowImage { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; VkExtent2D extent{}; bool initialized{false}; };
 
@@ -38,17 +41,17 @@ struct FlowState {
     FlowImage fwd[kLevels], bwd[kLevels];            // RGBA16F (x, y, cost, 0); fwd[fin] is the final field, A -> B
     FlowImage mask;                                  // R32F, allocated at level 1 size; the part covering fwd[fin] is used: forward/backward disagreement
     VkDescriptorPool pool{};
-    VkDescriptorSet  sets[8][kPasses]{};             // one row per command buffer entry (GpuState::kCmdBuffers)
+    VkDescriptorSet  sets[kMaxCmdBuffers][kPasses]{};   // one row per command buffer entry (GpuState::n_cmd of them are used)
     // GPU time of the engine (timestamp queries, read back when a command buffer entry is reused)
     VkQueryPool qpool{};
     float       ts_period_ns{0.0f};
     static constexpr uint32_t kQSlots = 10;          // timestamps per command buffer entry: 0..7 flow stage boundaries, 8..9 the interpolation pass
-    bool        ts_pending[8]{};
+    bool        ts_pending[kMaxCmdBuffers]{};
     uint32_t    ts_n{0};                             // stamps written by one flow pass: start, pyramid, coarse, one per refine level, end
     double      stage_sum[8]{};                      // per interval between stamps
     double      ms_sum{0.0}, ms_max{0.0};
     uint32_t    ms_count{0};
-    bool        interp_pending[8]{};
+    bool        interp_pending[kMaxCmdBuffers]{};
     double      interp_sum{0.0}, interp_max{0.0};
     uint32_t    interp_count{0};
     // GPU time of the current second (read and cleared by LogRates): feeds the cost warning and VKIFRAME_STATS; two atomic adds per pair / generated frame
@@ -58,7 +61,8 @@ struct FlowState {
 struct GpuState {
     static constexpr VkFormat kRingFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     static constexpr uint32_t kRingCapacity = 6;     // frames waiting for their ticks (held, queued jobs) plus the one being captured
-    static constexpr uint32_t kCmdBuffers = 8;
+    static constexpr uint32_t kCmdBuffers = kMaxCmdBuffers;   // array size; n_cmd of them are used
+    uint32_t n_cmd{8};                               // entries allocated (all kMaxCmdBuffers); the live CMD_BUFFERS setting picks how many are used: the more entries, the further the layer may run ahead of the GPU before the game thread waits on a fence
 
     struct Slot { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; bool initialized{false}; };
 

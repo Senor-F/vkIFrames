@@ -158,6 +158,7 @@ struct Config {
     bool  synth{true};           // VKIFRAME_SYNTH=0: hold frames but never create synthetic ones (Stage 3b behaviour)
     bool  pace_sleep{false};     // VKIFRAME_PACE_SLEEP=1: sleep in the game thread until each tick (experimental, vblank-paced path)
     bool  presenter{true};       // VKIFRAME_PRESENTER=0: present the ticks from the game thread (Stage 3c-i behaviour, no pacing thread)
+    int   cmd_buffers{8};        // VKIFRAME_CMD_BUFFERS (4..32): command buffer entries per swapchain; a GPU-bound game makes the game thread wait on the fence of the oldest one
     int   acquire_wait_us{1000}; // VKIFRAME_ACQUIRE_WAIT_US: the presenter waits this long per try for a free swapchain image without holding the capture mutex; 0 = old polling under the mutex
     int   pace_lead_us{2000};    // VKIFRAME_PACE_LEAD_US: the presenter calls present this long before a tick is due (vblank-paced path)
     bool  absolute{false};       // VKIFRAME_ABSOLUTE=1: give each tick an absolute target time when the surface supports it (untested path)
@@ -235,6 +236,7 @@ inline const Config& GetConfig() {
         if (const char* v = EnvVar("SYNTH"))            c.synth         = std::atoi(v) != 0;
         if (const char* v = EnvVar("PACE_SLEEP"))       c.pace_sleep    = std::atoi(v) != 0;
         if (const char* v = EnvVar("PRESENTER"))        c.presenter     = std::atoi(v) != 0;
+        if (const char* v = EnvVar("CMD_BUFFERS"))      c.cmd_buffers = std::clamp(std::atoi(v), 4, 32);
         if (const char* v = EnvVar("ACQUIRE_WAIT_US"))  c.acquire_wait_us = std::clamp(std::atoi(v), 0, 20000);
         if (const char* v = EnvVar("PACE_LEAD_US"))     c.pace_lead_us  = std::clamp(std::atoi(v), 0, 20000);
         if (const char* v = EnvVar("ABSOLUTE"))         c.absolute      = std::atoi(v) != 0;
