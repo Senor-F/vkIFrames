@@ -1,6 +1,7 @@
 #pragma once
 // Measurement logic: VKIFRAME_STATS=1 writes one record per second to stats.jsonl; a benchmark run alternates the layer off and on and writes bench.json.
-// Off by default. When off, the only cost is one relaxed atomic load per present (StatsOn()); no timestamps are taken and nothing is written.
+// Off by default. When off, no stats.jsonl record is written and no per-present interval is sampled; the only cost of the stats code is one relaxed atomic load per present (StatsOn()).
+// STATS gates only those two. The per-second log line and status.json are written either way, and the GPU timestamps of the flow and interpolation passes are always on (optical_flow.cpp; the cost warning uses them).
 // The records and bench.json hold numbers only: no game name, process name, path, host name, user name or IP.
 #include <cstdint>
 #include <string>
