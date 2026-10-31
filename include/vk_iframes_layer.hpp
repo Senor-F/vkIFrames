@@ -345,6 +345,7 @@ void     RegisterQueue(VkQueue queue, uint32_t family, void* device_key);
 std::mutex* QueueMutex(VkQueue queue);                       // nullptr for an unknown queue
 std::vector<std::mutex*> DeviceQueueMutexes(void* device_key);
 void     UnregisterQueues(void* device_key);
+void     LeakQueues(void* device_key);   // forget the queue infos (and their mutexes) without freeing: a detached presenter thread may hold one
 uint32_t QueueFamilyOf(VkQueue queue);                      // UINT32_MAX when unknown
 
 // ---- Hooks (layer_main.cpp) ----

@@ -68,6 +68,7 @@ static void VKAPI_CALL m_MemProps(VkPhysicalDevice, VkPhysicalDeviceMemoryProper
 static VkResult VKAPI_CALL m_CreateSwapchain(VkDevice, const VkSwapchainCreateInfoKHR* ci, const VkAllocationCallbacks*, VkSwapchainKHR* s) {
     r_usage = ci->imageUsage; r_min_images = ci->minImageCount; *s = (VkSwapchainKHR)(uintptr_t)0x77; return VK_SUCCESS;
 }
+static void VKAPI_CALL m_DestroyDevice(VkDevice, const VkAllocationCallbacks*) {}
 static void VKAPI_CALL m_DestroySwapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*) {}
 static void VKAPI_CALL m_GetQueue(VkDevice, uint32_t, uint32_t, VkQueue* q) { *q = (VkQueue)&g_q; }
 static VkResult VKAPI_CALL m_SwapImages(VkDevice, VkSwapchainKHR, uint32_t* n, VkImage* p) { if (!p) { *n = 8; return VK_SUCCESS; } for (uint32_t i = 0; i < *n; ++i) p[i] = (VkImage)(uintptr_t)(1000 + i); return VK_SUCCESS; }
@@ -98,9 +99,9 @@ static VkResult VKAPI_CALL m_Submit2(VkQueue, uint32_t, const VkSubmitInfo2* si,
 }
 static void VKAPI_CALL m_Barrier2(VkCommandBuffer, const VkDependencyInfo*) { ++r_barriers; }
 static void VKAPI_CALL m_Blit(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout, uint32_t, const VkImageBlit*, VkFilter) { ++r_blits; }
-static std::atomic<bool> g_block_present{false}; static pthread_t g_main_thread; static std::atomic<int> g_blocked{0};
+static std::atomic<bool> g_block_present{false}; static pthread_t g_main_thread, g_game_thread; static std::atomic<bool> g_game_set{false}; static std::atomic<int> g_blocked{0};
 static VkResult VKAPI_CALL m_Present(VkQueue, const VkPresentInfoKHR* pi) {
-    if (!pthread_equal(pthread_self(), g_main_thread) && g_block_present.exchange(false)) { g_blocked = 1; usleep(8'000'000); g_blocked = 2; }   // the presenter thread only, once
+    if (!pthread_equal(pthread_self(), g_main_thread) && !(g_game_set && pthread_equal(pthread_self(), g_game_thread)) && g_block_present.exchange(false)) { g_blocked = 1; usleep(8'000'000); g_blocked = 2; }   // the presenter thread only, once
     CHECK(pi->swapchainCount == 1 && pi->waitSemaphoreCount <= 1);
     uint64_t pid = 0; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) { auto* x = (const VkPresentIdKHR*)c; CHECK(x->swapchainCount == 1); pid = x->pPresentIds[0]; }
     VkFence fence = VK_NULL_HANDLE; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR) { auto* x = (const VkSwapchainPresentFenceInfoKHR*)c; CHECK(x->swapchainCount == 1); fence = x->pFences[0]; }
@@ -145,7 +146,7 @@ static PFN_vkVoidFunction VKAPI_CALL next_gipa(VkInstance, const char* n) {
     return nullptr;
 }
 static PFN_vkVoidFunction VKAPI_CALL next_gdpa(VkDevice, const char* n) {
-    R(CreateSwapchainKHR, m_CreateSwapchain) R(DestroySwapchainKHR, m_DestroySwapchain) R(QueuePresentKHR, m_Present) R(GetDeviceQueue, m_GetQueue)
+    R(CreateSwapchainKHR, m_CreateSwapchain) R(DestroySwapchainKHR, m_DestroySwapchain) R(DestroyDevice, m_DestroyDevice) R(QueuePresentKHR, m_Present) R(GetDeviceQueue, m_GetQueue)
     R(GetSwapchainImagesKHR, m_SwapImages) R(DeviceWaitIdle, m_WaitIdle) R(CreateImage, m_CreateImage) R(DestroyImage, m_DestroyImage)
     R(GetImageMemoryRequirements, m_ImgReq) R(AllocateMemory, m_Alloc) R(FreeMemory, m_Free) R(BindImageMemory, m_Bind)
     R(CreateCommandPool, m_CreatePool) R(DestroyCommandPool, m_DestroyPool) R(AllocateCommandBuffers, m_AllocCb) R(BeginCommandBuffer, m_Begin)
@@ -209,7 +210,7 @@ int main(int, char** argv) {
     g_block_present = true;
     // one more frame, from a helper thread (the game thread's present waits for the presenter): its ticks reach the presenter thread,
     // which blocks in the first present of them
-    std::thread game([&] { present_frame(25'000); });
+    std::thread game([&] { g_game_thread = pthread_self(); g_game_set = true; present_frame(25'000); });
     for (int i = 0; i < 300 && !g_blocked; ++i) usleep(10'000);
     CHECK(g_blocked == 1);                                                            // the presenter thread is inside vkQueuePresentKHR
     const auto t0 = std::chrono::steady_clock::now();
@@ -218,6 +219,7 @@ int main(int, char** argv) {
     std::printf("vkDestroySwapchainKHR returned after %.2f s with the presenter thread stuck\n", waited);
     CHECK(waited > 2.5 && waited < 4.5);                                              // it waited 3 s for the thread, then detached it
     CHECK(g_blocked == 1);
+    ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);        // the stuck thread holds the queue mutex: the queue infos must stay allocated
     sleep(6);                                                                         // the thread wakes up and runs on (under ASan: no use after free)
     CHECK(g_blocked == 2);
     game.join();

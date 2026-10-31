@@ -106,6 +106,8 @@ std::vector<std::mutex*> DeviceQueueMutexes(void* device_key) {
     std::sort(v.begin(), v.end());                                  // a fixed order for taking several at once
     return v;
 }
+// Same, for a device whose presenter thread could not be stopped: it may hold a queue's mutex inside a driver call.
+void LeakQueues(void* device_key) { std::lock_guard l(g_mutex); for (auto it = g_queues.begin(); it != g_queues.end();) { if (it->second->device == device_key) { (void)it->second.release(); it = g_queues.erase(it); } else ++it; } }
 void UnregisterQueues(void* device_key) { std::lock_guard l(g_mutex); for (auto it = g_queues.begin(); it != g_queues.end();) it = it->second->device == device_key ? g_queues.erase(it) : std::next(it); }
 void DestroySwapchainState(VkSwapchainKHR handle) { std::lock_guard l(g_mutex); g_swapchains.erase(SwapchainKey(handle)); }
 // A presenter thread that could not be stopped still holds pointers to these objects: forget them without freeing (a deliberate leak at shutdown).
