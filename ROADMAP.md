@@ -14,7 +14,7 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
   ```
   Stage 6 adds an implicit-layer manifest for everyday use.
 
-**Order of work now (owner, 2026-10-30):** measurement and `bench.json` (done), refresh-rate clamp (done), then the findings of the benchmarks (STATUS.md, open items), the GPU and CPU load list in AUDIT.md, and the async compute queue last, only if the measurements show it is worth it.
+**Order of work now (owner, 2026-10-31):** measurement and `bench.json` (done), refresh-rate clamp (done), the benchmark series on the saved-game scene and the code-audit fixes (merged on `main` 9c0dd39 except #27, partly addressed, and #33, open; results in STATUS.md, findings tracked in issues #21 to #34), then the margin-0 fix (PR #37, waiting for its rerun on the Deck), the remaining open items in STATUS.md and the GPU and CPU load list in AUDIT.md, and the async compute queue last, only if the measurements show it is worth it (the layer's cost is serial GPU time, so a second queue does not add capacity).
 
 `[x]` done, `[ ]` open, `[~]` partly done.
 
