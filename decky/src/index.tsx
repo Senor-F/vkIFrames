@@ -104,6 +104,12 @@ function Content() {
   const [log, setLog] = useState<string[]>([]);
   const [fine, setFine] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  const [confirmUninstall, setConfirmUninstall] = useState(false);   // Uninstall needs a second tap; it asks again after 8 s
+  useEffect(() => {
+    if (!confirmUninstall) return;
+    const t = setTimeout(() => setConfirmUninstall(false), 8000);
+    return () => clearTimeout(t);
+  }, [confirmUninstall]);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const refresh = async () => {
@@ -212,23 +218,19 @@ function Content() {
   return (
     <>
       <PanelSection title="Layer and status">
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={!layer.bundled_available}
-            onClick={() => act(() => installLayer(""), "Layer installed")}
-          >
-            {layer.installed ? "Reinstall layer" : "Install layer"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {layer.installed && (
+        {/* Only while the layer is missing. Once it is installed the button is gone from the top, so a stray tap cannot reinstall it; Reinstall and Uninstall are at the very bottom of the panel. */}
+        {!layer.installed && (
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => act(() => uninstallLayer(), "Layer removed")}>
-              Uninstall layer
+            <ButtonItem
+              layout="below"
+              disabled={!layer.bundled_available}
+              onClick={() => act(() => installLayer(""), "Layer installed")}
+            >
+              Install layer
             </ButtonItem>
           </PanelSectionRow>
         )}
-        {!layer.bundled_available && (
+        {!layer.installed && !layer.bundled_available && (
           <PanelSectionRow>
             <div style={{ fontSize: 11, opacity: 0.7 }}>
               No library in the plugin's bin/ folder. Use scripts/link-build.sh to point at a local build.
@@ -320,7 +322,12 @@ function Content() {
                 {schema.filter((i) => i.group === "gate").map(renderItem)}
                 {schema.filter((i) => i.group === "more" && (i.needsLayer ?? "live") === "live").map(renderItem)}
                 <PanelSectionRow>
-                  <div style={{ fontSize: 11, fontWeight: 600, marginTop: 8 }}>Applies at the next game start</div>
+                  <div style={{ marginTop: 12, padding: "6px 8px", borderLeft: "3px solid #e8a33d", background: "rgba(232, 163, 61, 0.12)" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>⚠ NEEDS RESTART</div>
+                    <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.3 }}>
+                      The settings below are only read when a game starts. Change them, then close and start the game again.
+                    </div>
+                  </div>
                 </PanelSectionRow>
                 {schema.filter((i) => i.group === "more" && i.needsLayer === "restart").map(renderItem)}
               </>
@@ -385,6 +392,58 @@ function Content() {
         </PanelSectionRow>
         <EndMarker text="End of change log" />
       </PanelSection>
+
+      {layer.installed && (
+        <>
+          <Gap />
+          <PanelSection title="Layer maintenance">
+            <PanelSectionRow>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>
+                Reinstall copies the layer bundled with this plugin over the installed one (after a plugin update). Uninstall removes the layer: games run without it until you install it again.
+              </div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={!layer.bundled_available}
+                onClick={() => act(() => installLayer(""), "Layer reinstalled")}
+              >
+                Reinstall layer
+              </ButtonItem>
+            </PanelSectionRow>
+            {!layer.bundled_available && (
+              <PanelSectionRow>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>
+                  No library in the plugin's bin/ folder, so it cannot be reinstalled. Use scripts/link-build.sh to point at a local build.
+                </div>
+              </PanelSectionRow>
+            )}
+            {confirmUninstall ? (
+              <>
+                <PanelSectionRow>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>Remove the layer? Games will run without frame generation until you install it again.</div>
+                </PanelSectionRow>
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={() => { setConfirmUninstall(false); act(() => uninstallLayer(), "Layer removed"); }}>
+                    Yes, uninstall the layer
+                  </ButtonItem>
+                </PanelSectionRow>
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={() => setConfirmUninstall(false)}>
+                    Cancel
+                  </ButtonItem>
+                </PanelSectionRow>
+              </>
+            ) : (
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => setConfirmUninstall(true)}>
+                  Uninstall layer…
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
+          </PanelSection>
+        </>
+      )}
     </>
   );
 }
