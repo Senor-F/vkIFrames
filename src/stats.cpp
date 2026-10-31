@@ -251,7 +251,7 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
             g_gen0 = LiveGeneration();
             g_bench_active = 1; g_last_state.clear();
             live.enabled = 1;                                 // warm-up with the layer on
-            FG_LOG("benchmark started: 30 s warm-up, then 3 x (60 s off, 60 s on); do not change settings or leave the game");
+            FG_LOG("benchmark started: 30 s warm-up, then 6 pairs of 60 s (off, on; every second pair on, off), about 13 minutes; do not change settings or leave the game");
             return;                                           // this second belongs to the time before the run
         }
     } else if (LiveGeneration() != g_gen0) {                  // the user changed a setting: their value wins
