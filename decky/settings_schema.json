@@ -292,7 +292,7 @@
     "step": 0.05,
     "fine": 0.01,
     "needsLayer": "live",
-    "desc": "Keeps every shown frame at least this far from the game frame, so none is shown as it is. 0 lets a frame sit on the game frame (a sharper frame now and then, one pass less). Applies from the next frame pair.",
+    "desc": "Keeps every shown frame at least this far from the game frame, so none is shown as it is. 0 lets a frame sit on the game frame (a sharper frame now and then). It saves a pass only when phase-locked and Phase offset is 0. Applies from the next frame pair.",
     "greyWhen": [
       [
         {
