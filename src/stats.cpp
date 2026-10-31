@@ -66,7 +66,7 @@ int Bench::SegmentOf(double t, bool& on, double& into) const {
     const double u = t - p_.warmup_s;
     int seg = int(std::floor(u / p_.segment_s));
     seg = std::clamp(seg, 0, 2 * p_.reps - 1);
-    on = (seg % 2) == 1;                                  // segments alternate off, on, off, on ...
+    on = ((seg % 2) == 1) != (((seg / 2) % 2) == 1);       // pair 0: off, on; pair 1: on, off; pair 2: off, on ... (a steady drift cancels in the mean of the pairs)
     into = u - double(seg) * p_.segment_s;
     return seg;
 }
@@ -137,13 +137,20 @@ std::vector<double> Bench::PairCosts() const {
     for (int p = 0; p < p_.reps; ++p) {
         double fo = 0, so = 0, fn = 0, sn = 0;
         for (const Row& w : rows_) {
+            if (w.seg != 2 * p && w.seg != 2 * p + 1) continue;
             const double f = double(w.r.frames);
-            if (w.seg == 2 * p)          { fo += f; so += w.r.ft_mean * f; }
-            else if (w.seg == 2 * p + 1) { fn += f; sn += w.r.ft_mean * f; }
+            if (w.on) { fn += f; sn += w.r.ft_mean * f; }
+            else      { fo += f; so += w.r.ft_mean * f; }
         }
-        if (fo > 0 && fn > 0) out.push_back(sn / fn - so / fo);
+        if (fo > 0 && fn > 0) out.push_back(sn / fn - so / fo);          // on segment minus off segment, whichever came first
     }
     return out;
+}
+
+// Two-sided 95 % Student t for n - 1 degrees of freedom (n = 2 .. 11); the normal value 2.0 beyond that.
+static double T95(int n) {
+    static const double t[] = {12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228};
+    return (n >= 2 && n <= 11) ? t[n - 2] : 2.0;
 }
 
 Bench::Spread Bench::SpreadOf(const std::vector<double>& v) {
@@ -154,7 +161,7 @@ Bench::Spread Bench::SpreadOf(const std::vector<double>& v) {
     if (v.size() < 2) return s;                                  // one pair: no spread to judge by
     double ss = 0; for (double x : v) ss += (x - s.mean) * (x - s.mean);
     s.se = std::sqrt(ss / double(v.size() - 1)) / std::sqrt(double(v.size()));
-    s.within_noise = std::fabs(s.mean) < 2.0 * s.se;
+    s.within_noise = std::fabs(s.mean) < T95(s.n) * s.se;
     return s;
 }
 
@@ -176,8 +183,8 @@ std::string Bench::Json() const {
     char b[1500];
     std::snprintf(b, sizeof b,
         "{\n\"version\":1,\n\"status\":\"%s\",\n\"reason\":\"%s\",\n"
-        "\"notes\":\"generated_per_s and interp_ms count interpolation passes: the pass draws every shown frame (k + 1 per native frame, k = gen_per_native), the held native frame included. A 60 s segment has about 59 one-second records: 2 settle, about 57 counted, and one at the switch that belongs to neither.\",\n"
-        "\"schedule\":{\"warmup_s\":%.0f,\"segment_s\":%.0f,\"repeats\":%d,\"settle_s_left_out_per_segment\":%.0f,\"order\":\"warm-up (layer on), then repeats x (off, on)\"},\n"
+        "\"notes\":\"generated_per_s and interp_ms count interpolation passes: the pass draws every shown frame (k + 1 per native frame, k = gen_per_native), the held native frame included. A 60 s segment has about 59 one-second records: 2 settle, about 57 counted, and one at the switch that belongs to neither. layer_cost_pairs_ms is on minus off for each pair; layer_cost_within_noise compares the mean with the 95 %% t interval of the pairs. async_gain_upper_bound_ms equals the layer cost and is NOT an achievable gain: in a GPU-bound game the cost is the layer own GPU time, which a second queue does not remove.\",\n"
+        "\"schedule\":{\"warmup_s\":%.0f,\"segment_s\":%.0f,\"repeats\":%d,\"settle_s_left_out_per_segment\":%.0f,\"order\":\"warm-up (layer on), then pairs of segments, off then on in the first pair and on then off in the second, and so on\"},\n"
         "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"cmd_buffers\":%d,\"flow_level\":%d,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
         status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, cmd_buffers_, flow_level_, refresh_);
     j += b;

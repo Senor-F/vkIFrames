@@ -68,9 +68,10 @@ int main() {
         stats::Bench b;
         b.Start(1, 90, 4, 60, 1.01, 1);
         int off_switches = 0, on_switches = 0, seconds = 0, enabled = 1;
-        std::string labels;
+        std::string labels; std::vector<int> on_at;
         while (b.Active() && seconds < 1000) {
             stats::Record r = Second(enabled != 0);
+            on_at.push_back(enabled);
             const int next = b.OnSecond(r);
             ++seconds;
             if (seconds <= 30) CHECK(r.bench == "warmup" && enabled == 1);
@@ -78,7 +79,8 @@ int main() {
         }
         CHECK(seconds == 30 + 12 * 60);
         CHECK(b.GetState() == stats::Bench::State::Complete);
-        CHECK(off_switches == 6 && on_switches == 6 + 0);        // off at 30, 150, ...; on at 90, 210, ...; the end returns the user's value (1)
+        CHECK(off_switches == 4 && on_switches == 4);            // off, on | on, off | off, on | ...: off at 30, 210, 450, 690; on at 90, 330, 570 and the end returns the user's value (1)
+        CHECK(on_at.size() == 750 && on_at[100] == 1 && on_at[160] == 1 && on_at[220] == 0);   // seconds 90..210 on (pair 1 ends on, pair 2 starts on), then off
         const auto off = b.Aggregate(false), on = b.Aggregate(true);
         CHECK(off.seconds == 6 * 58 && on.seconds == 6 * 58);    // 2 settle seconds left out of every segment
         NEAR(off.ft_mean, (59 * 16.0 + 20.0) / 60.0, 1e-9);

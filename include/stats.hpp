@@ -68,9 +68,9 @@ public:
         double flow_ms{0}, interp_ms{0};
     };
     Agg Aggregate(bool on) const;                       // exposed for the unit test and the Auditor's recomputation
-    // Layer cost of each off/on pair (frame-weighted mean frame time of the on segment minus the off segment before it), in ms. Only pairs with frames in both segments.
+    // Layer cost of each off/on pair (frame-weighted mean frame time of the on segment minus the off segment; every second pair runs on first), in ms. Only pairs with frames in both segments.
     std::vector<double> PairCosts() const;
-    struct Spread { int n{0}; double mean{0}, se{0}; bool within_noise{true}; };   // mean of the pair costs, standard error of that mean, and whether |mean| < 2 se (n >= 2 only)
+    struct Spread { int n{0}; double mean{0}, se{0}; bool within_noise{true}; };   // mean of the pair costs, standard error of that mean, and whether |mean| < t * se, with the 95 % Student t for n - 1 degrees of freedom (n >= 2 only)
     static Spread SpreadOf(const std::vector<double>& pair_costs);
 
 private:
