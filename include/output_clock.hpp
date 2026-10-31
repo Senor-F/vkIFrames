@@ -33,6 +33,7 @@ struct PlannedTick {
 class PairScheduler {
 public:
     static constexpr int kMaxTicks = 16;
+    static constexpr double kNativeFrac = 0.02;   // a tick this close to A (t) or to B (1 - t) is the native frame: no interpolation pass
     enum class Kind { Bypass, Hold, Pair };
 
     struct Params {
@@ -116,15 +117,19 @@ public:
 
         plan.kind = Kind::Pair;
         int emitted = 0;
+        const double span = m_v_cur - m_v_prev;
         for (int guard = 0; guard < 256; ++guard) {
             const double tick = m_anchor + double(m_next) * p.target_ns;
             const double tau  = tick - m_L;                                 // content time of this tick
             if (tau >= m_v_cur) break;                                      // belongs to the next pair
+            // A tick within kNativeFrac of B (the phase lock puts one there) is B itself: leave it to the next pair, where it is t = 0
+            // and shows the native frame without an interpolation pass. Without this a tick a few ns before B was t = 1 in this pair,
+            // a full pass for a frame that is B. The first tick of a pair is never deferred, so a pair keeps at least one tick.
+            if (emitted > 0 && span > 0 && tau >= m_v_cur - kNativeFrac * span) break;
             ++m_next;
             if (emitted > p.k_max) { ++plan.dropped; continue; }
-            const double span = m_v_cur - m_v_prev;
             const double t = span > 0 ? std::clamp((tau - m_v_prev) / span, 0.0, 1.0) : 0.0;
-            if (plan.n < kMaxTicks) plan.ticks[plan.n++] = {tick, t, t < 0.02};
+            if (plan.n < kMaxTicks) plan.ticks[plan.n++] = {tick, t, t < kNativeFrac};
             ++emitted;
         }
         if (plan.n == 0) {                                                  // the held frame must still go out

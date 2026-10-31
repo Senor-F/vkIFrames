@@ -102,6 +102,25 @@ int main(int argc, char** argv) {
         std::printf("phase offset 0.5: %d/%d pairs at t = 0.25 / 0.75\n", ok, pairs);
         if (pairs < 300 || ok < pairs * 8 / 10) { std::printf("FAIL: phase offset\n"); ++total_bad; }
     }
+    // Locked ratio 2 with PHASE_OFFSET 0 (SYNTH_MARGIN 0 in the layer): the locked tick is the native frame, so only the other tick of a pair
+    // needs an interpolation pass. A tick is a pass when it is not native_a. Arrival jitter must not bring the passes back: before the
+    // fix a locked tick a few ns before B was t = 1.0 in its own pair (a full pass), about 1.5 passes per game frame instead of 1.
+    for (double sd_ms : {0.0, 0.05, 0.13, 0.3}) {
+        TimingEngine t; PairScheduler s; PairScheduler::Params p; p.target_ns = 1e9 / 60.0; p.min_gain = 1.01; p.phase_lock = true; p.phase_offset = 0.0;
+        unsigned rng = 4242; auto gauss = [&] { double a = 0; for (int k = 0; k < 12; ++k) { rng = rng * 1664525u + 1013904223u; a += double(rng >> 8) / double(1u << 24); } return a - 6.0; };   // about N(0, 1)
+        const double T30 = 1e9 / 30.0; long pairs = 0, passes = 0, short_pairs = 0;
+        for (long i = 0; i < 6000; ++i) {
+            const double now = double(kOffset) + double(i) * T30 + sd_ms * 1e6 * gauss();
+            t.Update(uint64_t(now));
+            auto pl = s.OnNativeFrame(now, t.SmoothedExactNs(), t.JitterExactNs(), double(t.LastRawNs()), p);
+            if (pl.kind != PairScheduler::Kind::Pair || i < 600) continue;
+            ++pairs; int n_pass = 0; for (int k = 0; k < pl.n; ++k) n_pass += !pl.ticks[k].native_a;
+            passes += n_pass; short_pairs += pl.n < 1;
+        }
+        const double per_frame = double(passes) / double(pairs);
+        std::printf("locked ratio 2, offset 0, arrival sd %.2f ms: %.3f passes per game frame\n", sd_ms, per_frame);
+        if (pairs < 5000 || short_pairs || per_frame > 1.1) { std::printf("FAIL: a locked tick on B still costs a pass\n"); ++total_bad; }
+    }
     // Extrapolation: tick 0 is the new frame on a slot of the fixed clock, then one predicted tick per free slot before the next frame is due: all slots
     // are used (output = target), the ticks of one job end before the next frame's slot, and t stays inside (0, 1).
     for (double base_fps : {45.0, 15.0, 30.0, 40.0, 60.0}) {

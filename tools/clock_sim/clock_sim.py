@@ -39,6 +39,7 @@ def run(frames,tf,kmax=3,enter=1.12,exit_=1.03,dwell=8,jm=2.0,ja=0.05,slew=0.02,
         while True:
             tick=anchor+nxt*target; tau=tick-L
             if tau>=v_cur: break
+            if em>0 and v_cur>v_prev and tau>=v_cur-0.02*(v_cur-v_prev): break      # a tick on B is B: the next pair shows it as t = 0 (the first tick of a pair is never deferred)
             nxt+=1
             if em>kmax: continue
             t=min(max((tau-v_prev)/(v_cur-v_prev),0),1)
