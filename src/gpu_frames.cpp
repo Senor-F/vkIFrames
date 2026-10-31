@@ -63,6 +63,7 @@ bool BeginCmd(const DeviceDispatch& dt, GpuState& g, uint32_t& entry) {
     entry = g.cb_next++ % n;
     for (uint32_t tries = 1; (g.cb_reserved >> entry & 1u) && tries < n; ++tries) entry = g.cb_next++ % n;      // an entry that is being recorded while gpu_mu is dropped is not ours
     if (g.cb_reserved >> entry & 1u) { FG_LOG("hold: every command buffer entry is reserved"); return false; }
+    if (g.fences[entry] == VK_NULL_HANDLE) return false;                    // its fence could not be recreated after a failed submit (EndAndSubmit)
     if (dt.WaitForFences(dt.device, 1, &g.fences[entry], VK_TRUE, 2'000'000'000ull) != VK_SUCCESS) { FG_LOG("hold: waiting for a command buffer timed out"); return false; }
     if (dt.ResetCommandBuffer(g.cbs[entry], 0) != VK_SUCCESS) return false;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -89,7 +90,10 @@ bool EndAndSubmit(const DeviceDispatch& dt, VkQueue queue, GpuState& g, uint32_t
         // possible, so recreate it
         dt.DestroyFence(dt.device, g.fences[entry], nullptr);
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        dt.CreateFence(dt.device, &fi, nullptr, &g.fences[entry]);
+        if (dt.CreateFence(dt.device, &fi, nullptr, &g.fences[entry]) != VK_SUCCESS) {
+            g.fences[entry] = VK_NULL_HANDLE;                              // never keep a destroyed handle: BeginCmd refuses this entry from now on
+            FG_LOG("hold: could not recreate the fence of command buffer entry %u, the entry is out of use", entry);
+        }
         return false;
     }
     return true;
@@ -108,6 +112,7 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
         ok = type != UINT32_MAX && dt.AllocateMemory(dt.device, &ai, nullptr, &mem) == VK_SUCCESS && dt.BindBufferMemory(dt.device, buf, mem, 0) == VK_SUCCESS;
     }
     uint32_t e = 0;
+    bool submitted = false, copy_pending = false;
     if (ok) ok = BeginCmd(dt, g, e);
     if (ok) {
         VkCommandBuffer cb = g.cbs[e];
@@ -115,7 +120,9 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
         VkBufferImageCopy rg{}; rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; rg.imageExtent = {extent.width, extent.height, 1};
         dt.CmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &rg);
         MemBarrier(dt, cb, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-        ok = EndAndSubmit(dt, queue, g, e, {}, VK_NULL_HANDLE) && dt.WaitForFences(dt.device, 1, &g.fences[e], VK_TRUE, 2'000'000'000ull) == VK_SUCCESS;
+        submitted = EndAndSubmit(dt, queue, g, e, {}, VK_NULL_HANDLE);
+        ok = submitted && dt.WaitForFences(dt.device, 1, &g.fences[e], VK_TRUE, 2'000'000'000ull) == VK_SUCCESS;
+        copy_pending = submitted && !ok;                                   // the copy was queued but the wait timed out or failed: it may still be running
     }
     if (ok) {
         void* p = nullptr;
@@ -125,8 +132,11 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
             dt.UnmapMemory(dt.device, mem);
         } else ok = false;
     }
-    if (buf) dt.DestroyBuffer(dt.device, buf, nullptr);
-    if (mem) dt.FreeMemory(dt.device, mem, nullptr);
+    if (copy_pending) FG_LOG("dump: the copy did not finish in 2 s; its buffer is left allocated rather than freed under a copy that may still run");   // debug path: a small, one-off leak
+    else {
+        if (buf) dt.DestroyBuffer(dt.device, buf, nullptr);
+        if (mem) dt.FreeMemory(dt.device, mem, nullptr);
+    }
     FG_LOG("dump: %s (%ux%u, %u bytes per texel): %s", path, extent.width, extent.height, bpt, ok ? "written" : "FAILED");
     return ok;
 }
@@ -377,6 +387,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     uint32_t idx = a.image_index;
     std::vector<VkSemaphoreSubmitInfo> waits;
     VkSemaphoreSubmitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}; w.stageMask = ALL;
+    bool acquired = false;                                                   // a hidden image is ours and not yet handed on
     if (hidden) {
         const uint64_t wait_ns = uint64_t(GetConfig().acquire_wait_us) * 1000ull;
         const uint64_t deadline = [] { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return uint64_t(ts.tv_sec) * 1000000000ull + ts.tv_nsec + 2'000'000'000ull; }();
@@ -396,8 +407,8 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
             if (!wait_ns) { timespec nap{0, 200'000}; nanosleep(&nap, nullptr); }
         }
         relock();
-        if (idx >= g.swap_images.size()) { dt.EndCommandBuffer(cb); return VK_ERROR_UNKNOWN; }
-        w.semaphore = g.acquire[e]; waits.push_back(w);
+        if (idx >= g.swap_images.size()) { FG_LOG("synth: the driver returned image index %u of %zu", idx, g.swap_images.size()); dt.EndCommandBuffer(cb); return VK_ERROR_UNKNOWN; }
+        w.semaphore = g.acquire[e]; waits.push_back(w); acquired = true;
     } else {
         w.semaphore = g.captured[a.image_index]; waits.push_back(w);               // A's own capture must be done before its image is overwritten
     }
@@ -490,7 +501,12 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     Blit(dt, cb, g.synth.image, VK_IMAGE_LAYOUT_GENERAL, g.swap_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, g.extent);
     Barrier(dt, cb, g.swap_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL, 0);
 
-    if (!EndAndSubmit(dt, queue, g, e, waits, g.staged[idx])) return VK_ERROR_UNKNOWN;
+    if (!EndAndSubmit(dt, queue, g, e, waits, g.staged[idx])) {
+        // The layer has no way to hand an acquired image back (no vkReleaseSwapchainImages), so say so: synthetic frames are switched off
+        // for this swapchain after a failure, and the image stays acquired until the swapchain is recreated.
+        if (acquired) FG_LOG("synth: submit failed after acquiring swapchain image %u; the image is not presented and stays with the layer until the swapchain is recreated", idx);
+        return VK_ERROR_UNKNOWN;
+    }
     g.synth.initialized = true;
     if (g.dump_synth > 0) {
         char path[512]; std::snprintf(path, sizeof path, "%s/synth%02d_t%.3f.rgba16f", GetConfig().dump_dir, g.dump_tick++, double(t));
