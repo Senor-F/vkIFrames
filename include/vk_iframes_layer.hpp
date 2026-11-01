@@ -269,6 +269,17 @@ inline const Config& GetConfig() {
 }
 
 // ---- Per-swapchain state ----
+struct GpuState;
+// A pointer that is written by one thread and read by others (#33): the same syntax as a plain pointer, loads and stores are atomic (acquire/release, so
+// what the pointer leads to is visible to the thread that reads it).
+template <class T> struct AtomicPtr {
+    std::atomic<T*> p{nullptr};
+    AtomicPtr& operator=(T* v) { p.store(v, std::memory_order_release); return *this; }
+    operator T*() const { return p.load(std::memory_order_acquire); }
+    T* operator->() const { return p.load(std::memory_order_acquire); }
+    T& operator*() const { return *p.load(std::memory_order_acquire); }
+};
+
 struct SwapchainState {
     VkSwapchainKHR handle{};
     std::mutex flow_mu;                       // the hold/pair/flush logic of one swapchain (present hook, fence and present-wait hooks)
@@ -283,7 +294,7 @@ struct SwapchainState {
     VkTimeDomainKHR time_domain{VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR};
     bool     domain_monotonic{true};          // the chosen domain is CLOCK_MONOTONIC: no conversion needed
     bool     absolute_ok{false};              // the surface accepts absolute target times; if not, timing is feedback only
-    bool     calib_ok{false};
+    bool     calib_ok{false};                 // calib_ok, domain_offset_ns and last_calib_ns: every access after the swapchain is created is under mu (PresentWithTiming)
     int64_t  domain_offset_ns{0};             // domain time - CLOCK_MONOTONIC, refreshed about once a second
     uint64_t last_calib_ns{0};
     uint64_t next_present_id{1};              // must increase, never 0
@@ -309,11 +320,11 @@ struct SwapchainState {
     bool     hold_candidate{false};           // surface, format, usage and image count allow it
     bool     synth_failed{false};             // creating a synthetic frame failed: held frames continue without synthetic ones
     bool     skip_logged{false};              // "frame holding skipped for this present chain" was logged once
-    VkQueue  last_queue{};                    // the queue the game presents on (for flushing a held frame from vkWaitForPresentKHR)
+    std::atomic<VkQueue> last_queue{};        // the queue the game presents on (for flushing a held frame from vkWaitForPresentKHR); written by the game thread, read by the presenter thread's idle flush
     bool     hold_failed{false};              // a GPU step failed: back to passthrough for this swapchain
     VkExtent2D extent{};
     VkFormat   format{VK_FORMAT_UNDEFINED};
-    struct GpuState* gpu{nullptr};            // created at the first present (needs the queue family)
+    AtomicPtr<GpuState> gpu;                  // created at the first present (needs the queue family); written by the game thread, read by the presenter thread's idle flush
     uint64_t frames{0};
     uint64_t last_log_ns{0};
     // statistics, windowed over the log interval except for the totals
