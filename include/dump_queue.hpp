@@ -13,7 +13,7 @@ struct DumpQueue {
     int               pairs_queued{0};       // native frames A queued so far
     int               synth_left{0};         // synthetic frames still to read back
 
-    bool Add(const std::string& path, const uint8_t* p, size_t n) noexcept;     // false when out of memory
+    bool Add(const char* path, const uint8_t* p, size_t n) noexcept;     // false when out of memory
     bool AddTime(int k, int64_t ns) noexcept;
     // Writes every queued file (0600, no symlinks) and times.txt into dir, logs "capture complete, X of Y files written" (FAILED when X != Y), clears.
     void Flush(const char* dir);

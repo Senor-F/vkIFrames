@@ -4,10 +4,11 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <new>
+#include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
 
-bool DumpQueue::Add(const std::string& path, const uint8_t* p, size_t n) noexcept {
+bool DumpQueue::Add(const char* path, const uint8_t* p, size_t n) noexcept {
     try { items.push_back({path, std::vector<uint8_t>(p, p + n)}); return true; }
     catch (const std::bad_alloc&) { return false; }
     catch (const std::length_error&) { return false; }
@@ -22,7 +23,8 @@ bool DumpQueue::AddTime(int k, int64_t ns) noexcept {
 void DumpQueue::Flush(const char* dir) {
     size_t written = 0, total = items.size();
     if (!times.empty()) {
-        if (Add(std::string(dir) + "/times.txt", reinterpret_cast<const uint8_t*>(times.data()), times.size())) ++total;
+        char tp[512]; std::snprintf(tp, sizeof tp, "%s/times.txt", dir);
+        if (Add(tp, reinterpret_cast<const uint8_t*>(times.data()), times.size())) ++total;
         else FG_LOG("dump: times.txt FAILED (out of memory)");
         times.clear();
     }
