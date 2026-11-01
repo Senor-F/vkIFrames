@@ -133,6 +133,14 @@ int main() {
             CHECK(L.target_fps == 90.0f);                                                  // the cut line is not TARGET_FPS=8 (clamped to 30), not 88: the startup value stands
             CHECK(L.enabled == 1);                                                         // after the limit: ignored
         }
+        // the swapchain capacity request at game start follows the live parser: a MAX_SYNTHETIC line it ignores (5x, 0x4, nan) sets nothing, the last valid line counts
+        Put("MAX_SYNTHETIC=5x\n");                 CHECK(LiveRequestedMaxSynthetic() == 0);
+        Put("MAX_SYNTHETIC=0x4\n");                CHECK(LiveRequestedMaxSynthetic() == 0);
+        Put("MAX_SYNTHETIC=nan\n");                CHECK(LiveRequestedMaxSynthetic() == 0);
+        Put("MAX_SYNTHETIC=7\n");                  CHECK(LiveRequestedMaxSynthetic() == 7);
+        Put("MAX_SYNTHETIC=8\nMAX_SYNTHETIC=5x\n"); CHECK(LiveRequestedMaxSynthetic() == 8);
+        Put("MAX_SYNTHETIC=99\n");                 CHECK(LiveRequestedMaxSynthetic() == 10);
+        Put("REV=40\n");
         // a FIFO (or any special file) in the place of live.conf must not block the game: it is refused
         unlink(conf.c_str());
         CHECK(mkfifo(conf.c_str(), 0600) == 0);

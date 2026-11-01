@@ -238,12 +238,39 @@ inline bool ParseFiniteNumber(const char* v, double& out) {
     if (*end || errno == ERANGE || !(x - x == 0.0)) return false;           // trailing text, out of range, inf or nan
     out = x; return true;
 }
+// The text of a rejected setting for the log: at most 40 characters, control characters replaced (the value may come from live.conf: a start-of-game key).
+inline std::string ShownValue(const char* v) {
+    std::string t(v ? v : "", v ? std::min<size_t>(std::strlen(v), 40) : 0);
+    for (char& c : t) if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) c = '?';
+    return t;
+}
 inline void EnvNumberValue(const char* name, const char* v, double lo, double hi, float& dst) {
     double x;
     if (ParseFiniteNumber(v, x)) dst = float(std::clamp(x, lo, hi));
-    else FG_LOG("VKIFRAME_%s=\"%.40s\" is not a usable number: ignored, the default stays", name, v);
+    else FG_LOG("VKIFRAME_%s=\"%s\" is not a usable number: ignored, the default stays", name, ShownValue(v).c_str());
 }
 inline void EnvNumber(const char* name, double lo, double hi, float& dst) { if (const char* v = EnvVar(name)) EnvNumberValue(name, v, lo, hi, dst); }
+// Whole-number settings: the same rule as the other numbers (nan, inf, hex, text after the number are not numbers: ignored and logged), a fraction is cut off, the
+// result stays inside lo..hi.
+inline void EnvIntValue(const char* name, const char* v, int lo, int hi, int& dst) {
+    double x;
+    if (ParseFiniteNumber(v, x)) dst = int(std::clamp(std::trunc(x), double(lo), double(hi)));
+    else FG_LOG("VKIFRAME_%s=\"%s\" is not a usable number: ignored, the default stays", name, ShownValue(v).c_str());
+}
+inline void EnvInt(const char* name, int lo, int hi, int& dst) { if (const char* v = EnvVar(name)) EnvIntValue(name, v, lo, hi, dst); }
+// On/off settings: a number (non-zero = on) or true/on/yes, false/off/no, as in live.conf. False when the text is neither.
+inline bool ParseFlag(const char* v, bool& out) {
+    double x;
+    if (ParseFiniteNumber(v, x)) { out = x != 0.0; return true; }
+    if (!v) return false;
+    if (!std::strcmp(v, "true") || !std::strcmp(v, "on") || !std::strcmp(v, "yes")) { out = true; return true; }
+    if (!std::strcmp(v, "false") || !std::strcmp(v, "off") || !std::strcmp(v, "no")) { out = false; return true; }
+    return false;
+}
+inline void EnvFlagValue(const char* name, const char* v, bool& dst) {
+    if (!ParseFlag(v, dst)) FG_LOG("VKIFRAME_%s=\"%s\" is not a usable value (a number, or true/false, on/off, yes/no): ignored, the default stays", name, ShownValue(v).c_str());
+}
+inline void EnvFlag(const char* name, bool& dst) { if (const char* v = EnvVar(name)) EnvFlagValue(name, v, dst); }
 inline const Config& GetConfig() {
     static const Config c = [] {
         Config c;
@@ -254,45 +281,45 @@ inline const Config& GetConfig() {
         EnvNumber("TARGET_FPS", 1.0, 1000.0, c.target_fps);
         EnvNumber("SYNTH_MARGIN", 0.0, 0.45, c.synth_margin);
         EnvNumber("PHASE_OFFSET", 0.0, 0.999, c.phase_offset);
-        if (const char* v = EnvVar("PHASE_LOCK"))     c.phase_lock    = std::atoi(v) != 0;
+        EnvFlag("PHASE_LOCK", c.phase_lock);
         EnvNumber("MIN_GAIN", 1.01, 2.0, c.min_gain);
-        if (const char* v = EnvVar("MAX_SYNTHETIC"))  c.max_synthetic = std::clamp(std::atoi(v), 1, 10);
+        EnvInt("MAX_SYNTHETIC", 1, 10, c.max_synthetic);
         EnvNumber("BASE_FPS_CAP", 0.0, 90.0, c.base_fps_cap);
         if (c.base_fps_cap < 1.0f) c.base_fps_cap = 0.0f;                      // below 1 fps is not a cap anybody means: off (a 1/x second sleep per frame would freeze the game)
-        if (const char* v = EnvVar("HOLD"))             c.hold          = std::atoi(v) != 0;
-        if (const char* v = EnvVar("SYNTH"))            c.synth         = std::atoi(v) != 0;
-        if (const char* v = EnvVar("PACE_SLEEP"))       c.pace_sleep    = std::atoi(v) != 0;
-        if (const char* v = EnvVar("PRESENTER"))        c.presenter     = std::atoi(v) != 0;
-        if (const char* v = EnvVar("CMD_BUFFERS"))      c.cmd_buffers = std::clamp(std::atoi(v), 4, 32);
-        if (const char* v = EnvVar("ACQUIRE_WAIT_US"))  c.acquire_wait_us = std::clamp(std::atoi(v), 0, 20000);
-        if (const char* v = EnvVar("PACE_LEAD_US"))     c.pace_lead_us  = std::clamp(std::atoi(v), 0, 20000);
-        if (const char* v = EnvVar("ABSOLUTE"))         c.absolute      = std::atoi(v) != 0;
-        if (const char* v = EnvVar("FLOW"))             c.flow          = std::atoi(v) != 0;
-        if (const char* v = EnvVar("DEBUG_FLOW"))       c.debug_flow    = std::atoi(v) != 0;
-        if (const char* v = EnvVar("TICKMARK"))         c.tickmark      = std::atoi(v);
-        if (const char* v = EnvVar("FLOW_LEVEL"))       c.flow_level    = std::clamp(std::atoi(v), 1, 3);
+        EnvFlag("HOLD", c.hold);
+        EnvFlag("SYNTH", c.synth);
+        EnvFlag("PACE_SLEEP", c.pace_sleep);
+        EnvFlag("PRESENTER", c.presenter);
+        EnvInt("CMD_BUFFERS", 4, 32, c.cmd_buffers);
+        EnvInt("ACQUIRE_WAIT_US", 0, 20000, c.acquire_wait_us);
+        EnvInt("PACE_LEAD_US", 0, 20000, c.pace_lead_us);
+        EnvFlag("ABSOLUTE", c.absolute);
+        EnvFlag("FLOW", c.flow);
+        EnvFlag("DEBUG_FLOW", c.debug_flow);
+        EnvInt("TICKMARK", 0, 3, c.tickmark);
+        EnvInt("FLOW_LEVEL", 1, 3, c.flow_level);
         if (const char* v = EnvVar2("INTERP_GUIDE", "WARP_GUIDE")) EnvNumberValue("INTERP_GUIDE", v, 0.0, 1.0, c.interp_guide);
         EnvNumber("CONF_LO", 0.0, 10.0, c.conf_lo);
         EnvNumber("CONF_HI", 0.0, 10.0, c.conf_hi);
         EnvNumber("PAN_LO", 0.0, 1.0, c.pan_lo);
         EnvNumber("PAN_HI", 0.0, 1.0, c.pan_hi);
         EnvNumber("UI_MASK_THRESHOLD", 0.0, 0.5, c.ui_mask);
-        if (const char* v = EnvVar("CAP_EARLY"))        c.cap_early     = std::atoi(v) != 0;
-        if (const char* v = EnvVar("EXTRAPOLATE"))      c.extrapolate   = std::atoi(v) != 0;
-        if (const char* v = EnvVar2("INTERP_BIDIR", "WARP_BIDIR"))     c.interp_bidir    = std::atoi(v) != 0;
+        EnvFlag("CAP_EARLY", c.cap_early);
+        EnvFlag("EXTRAPOLATE", c.extrapolate);
+        if (const char* v = EnvVar2("INTERP_BIDIR", "WARP_BIDIR")) EnvFlagValue("INTERP_BIDIR", v, c.interp_bidir);
         if (const char* v = EnvVar2("INTERP_CAND", "WARP_CAND")) EnvNumberValue("INTERP_CAND", v, 0.0, 1.0, c.cand_thr);
-        if (const char* v = EnvVar("FLOW_BWD_SKIP"))  c.flow_bwd_skip  = std::clamp(std::atoi(v), 0, 2);
-        if (const char* v = EnvVar("FLOW_SUBPIXEL"))    c.flow_subpixel = std::atoi(v) != 0;
+        EnvInt("FLOW_BWD_SKIP", 0, 2, c.flow_bwd_skip);
+        EnvFlag("FLOW_SUBPIXEL", c.flow_subpixel);
         if (const char* v = EnvVar("DUMP_DIR"))         { std::snprintf(c.dump_dir, sizeof c.dump_dir, "%s", v); }
-        if (const char* v = EnvVar("DUMP"))             c.dump_pair     = std::atoi(v);
-        if (const char* v = EnvVar("DUMP_FRAMES"))      c.dump_frames   = std::clamp(std::atoi(v), 5, 60);
-        if (const char* v = EnvVar2("INTERPOLATE", "WARP")) c.interpolate = std::atoi(v) != 0;
-        if (const char* v = EnvVar("ONESIDED_FILL")) c.onesided_fill = std::atoi(v) != 0;
+        EnvInt("DUMP", 0, 1000000000, c.dump_pair);
+        EnvInt("DUMP_FRAMES", 5, 60, c.dump_frames);
+        if (const char* v = EnvVar2("INTERPOLATE", "WARP")) EnvFlagValue("INTERPOLATE", v, c.interpolate);
+        EnvFlag("ONESIDED_FILL", c.onesided_fill);
         if (c.onesided_fill && LiveMaxSyntheticLimit() <= 4) { c.onesided_fill = false; FG_LOG("VKIFRAME_ONESIDED_FILL is experimental: it needs VKIFRAME_EXPERIMENTAL=1 as well; ignored"); }
         if (c.extrapolate) { c.interpolate = true; c.debug_flow = false; }
         if (c.debug_flow || c.interpolate) c.flow = true;
-        if (const char* v = EnvVar("DEBUG_RING"))       c.debug_ring    = std::atoi(v) != 0;
-        if (const char* v = EnvVar("TIMING_TEST"))  c.timing_test  = std::atoi(v) != 0;
+        EnvFlag("DEBUG_RING", c.debug_ring);
+        EnvFlag("TIMING_TEST", c.timing_test);
         return c;
     }();
     return c;
