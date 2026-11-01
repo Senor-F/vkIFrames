@@ -22,7 +22,7 @@ static PFN_vkVoidFunction VKAPI_CALL next_gipa(VkInstance inst, const char* n) {
 }
 
 int main(int, char** argv) {
-    { int* p = new int(1); delete p; }                                       // the interposition works: the test's own allocation reaches hoststd
+    { volatile int* p = new int(1); *p = 2; delete p; }                     // the interposition works: the test's own allocation reaches hoststd (volatile: the pair cannot be optimised away)
     const unsigned long c0 = hoststd_new_calls();
     CHECK(c0 > 0);
 
