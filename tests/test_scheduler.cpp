@@ -142,6 +142,83 @@ int main(int argc, char** argv) {
         good_n = std::fabs(per_native - want) < 0.03 * want;
         if (pairs < 400 || !good_n || overlap || bad_t) { std::printf("FAIL: extrapolation plan\n"); ++total_bad; }
     }
+    // TARGET_FPS changed while running (live settings). The output clock counts ticks from the start of the run; a new period used to be multiplied by
+    // that count, so every tick landed far away. Checked: no stall after a longer period (the reported case: native 30, 90 -> 60 after 277 s), no ticks
+    // in the past or bunched after a shorter one (60 -> 90), and the phase lock finds its place again after a switch while locked.
+    struct Switch { long ticks_after{0}, carrier_after{0}, dropped{0}, backwards{0}, pairs_after{0}; };
+    auto run_switch = [&](double base_fps_a, double target_a, double offset_a, double base_fps_b, double target_b, double offset_b, double secs_a, bool lock) {
+        Switch r; TimingEngine t; PairScheduler s; PairScheduler::Params p; p.min_gain = 1.01; p.k_max = 3; p.phase_lock = lock;
+        unsigned rng = 99; double now = double(kOffset), last_tick = -1;
+        auto jitter = [&] { rng = rng * 1664525u + 1013904223u; return (double((rng >> 8) % 100000) - 50000.0); };   // +-0.05 ms
+        auto frame = [&](double fps, double target, double offset, bool after) {
+            now += 1e9 / fps + jitter();
+            p.target_ns = 1e9 / target; p.phase_offset = offset;
+            t.Update(uint64_t(now));
+            auto pl = s.OnNativeFrame(now, t.SmoothedExactNs(), t.JitterExactNs(), double(t.LastRawNs()), p);
+            if (pl.kind != PairScheduler::Kind::Pair) return;
+            if (after) { ++r.pairs_after; r.carrier_after += pl.carrier_only; r.ticks_after += pl.n; r.dropped += pl.dropped; }
+            if (pl.carrier_only) return;
+            for (int k = 0; k < pl.n; ++k) {
+                if (last_tick >= 0 && pl.ticks[k].time_ns <= last_tick) ++r.backwards;
+                last_tick = pl.ticks[k].time_ns;
+            }
+        };
+        for (long i = 0; i < long(secs_a * base_fps_a); ++i) frame(base_fps_a, target_a, offset_a, false);
+        for (long i = 0; i < long(40 * base_fps_b); ++i) frame(base_fps_b, target_b, offset_b, true);
+        return r;
+    };
+    {   // 1. longer period, the reported case: native 30, target 90 -> 60 after 277 s of running at 39 fps native
+        Switch r = run_switch(39.0, 90.0, 0.5, 30.0, 60.0, 0.0, 277.0, true);
+        const double per_s = double(r.ticks_after) / 40.0;
+        std::printf("switch 90 -> 60 after 277 s: %.1f ticks/s over 40 s, carrier-only pairs %ld, backwards %ld, dropped %ld\n", per_s, r.carrier_after, r.backwards, r.dropped);
+        if (r.carrier_after > 3 || per_s < 57.0 || per_s > 61.0 || r.backwards || r.dropped) { std::printf("FAIL: longer period after a live TARGET_FPS change stalls\n"); ++total_bad; }
+    }
+    {   // 2. shorter period: native 30, target 60 -> 90 (1.5 x): ticks stay in order, none dropped in a burst, the rate follows the new target
+        Switch r = run_switch(30.0, 60.0, 0.0, 30.0, 90.0, 0.0, 277.0, false);
+        const double per_s = double(r.ticks_after) / 40.0;
+        std::printf("switch 60 -> 90 after 277 s: %.1f ticks/s over 40 s, carrier-only pairs %ld, backwards %ld, dropped %ld\n", per_s, r.carrier_after, r.backwards, r.dropped);
+        if (r.carrier_after > 3 || per_s < 87.0 || per_s > 93.0 || r.backwards || r.dropped) { std::printf("FAIL: shorter period after a live TARGET_FPS change\n"); ++total_bad; }
+    }
+    // 3. switch while phase-locked, both directions (ratio 2 -> 3 and 3 -> 2, offset 0): still locked afterwards, nothing stalls, no tick is dropped
+    for (double from : {60.0, 90.0}) {
+        const double to = from == 60.0 ? 90.0 : 60.0;
+        TimingEngine t; PairScheduler s; PairScheduler::Params p; p.min_gain = 1.01; p.phase_lock = true; p.phase_offset = 0.0;
+        unsigned rng = 5; double now = double(kOffset); long pairs = 0, aligned = 0, carrier = 0, ticks = 0, dropped = 0;
+        for (long i = 0; i < 30 * 200 + 30 * 40; ++i) {
+            rng = rng * 1664525u + 1013904223u; now += 1e9 / 30.0 + (double((rng >> 8) % 100000) - 50000.0);
+            const bool after = i >= 30 * 200;
+            p.target_ns = 1e9 / (after ? to : from);
+            t.Update(uint64_t(now));
+            auto pl = s.OnNativeFrame(now, t.SmoothedExactNs(), t.JitterExactNs(), double(t.LastRawNs()), p);
+            if (!after || pl.kind != PairScheduler::Kind::Pair) continue;
+            carrier += pl.carrier_only; ticks += pl.n; dropped += pl.dropped;
+            if (i < 30 * 200 + 30 * 20) continue;                           // after 20 s: settled
+            ++pairs; bool a = false; for (int k = 0; k < pl.n; ++k) a |= pl.ticks[k].native_a || pl.ticks[k].t > 0.98;
+            aligned += a;
+        }
+        std::printf("switch %.0f -> %.0f while phase-locked: %ld/%ld pairs aligned after 20 s, carrier-only %ld, dropped %ld, %.1f ticks/s\n", from, to, aligned, pairs, carrier, dropped, double(ticks) / 40.0);
+        if (carrier > 3 || dropped > 3 || aligned < pairs * 8 / 10 || std::fabs(double(ticks) / 40.0 - to) > 3.0) { std::printf("FAIL: phase lock after a live TARGET_FPS change\n"); ++total_bad; }
+    }
+    // Extrapolation, same live change: native 30, target 90 -> 60 and 60 -> 90 after 200 s. B must keep coming after the previous job's last tick and the
+    // slots must follow the new target (it used to wait for the old slot index to be reached under the new period).
+    for (double to : {60.0, 90.0}) {
+        const double from = to == 60.0 ? 90.0 : 60.0;
+        TimingEngine t; PairScheduler s; PairScheduler::Params p; p.k_max = 5;
+        double now = double(kOffset), prev_end = 0; long ticks = 0, late_b = 0, overlap = 0, pairs = 0;
+        for (long i = 0; i < 30 * 200 + 30 * 40; ++i) {
+            now += 1e9 / 30.0; t.Update(uint64_t(now));
+            const bool after = i >= 30 * 200;
+            p.target_ns = 1e9 / (after ? to : from);
+            auto pl = s.OnNativeFrameExtrap(now, t.SmoothedExactNs(), double(t.LastRawNs()), p);
+            if (!after || pl.kind != PairScheduler::Kind::Pair) continue;
+            ++pairs; ticks += pl.n;
+            if (pl.ticks[0].time_ns <= prev_end) ++overlap;
+            if (pl.ticks[0].time_ns - now > 3.0 * p.target_ns) ++late_b;             // B's slot far in the future: the stall
+            prev_end = pl.ticks[pl.n - 1].time_ns;
+        }
+        std::printf("extrapolation switch %.0f -> %.0f after 200 s: %.1f ticks/s over 40 s, overlaps %ld, B far ahead %ld\n", from, to, double(ticks) / 40.0, overlap, late_b);
+        if (pairs < 1000 || overlap > 1 || late_b || std::fabs(double(ticks) / 40.0 - to) > 3.0) { std::printf("FAIL: extrapolation after a live TARGET_FPS change\n"); ++total_bad; }
+    }
     if (total_bad) { std::printf("FAIL: %d mismatching frames\n", total_bad); return 1; }
     std::printf("PASS: scheduler matches clock_sim on %zu traces (%ld frames, %ld ticks)\n", files.size(), total_lines, total_ticks);
 }
