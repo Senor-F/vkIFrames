@@ -13,9 +13,9 @@
 
 ## Anonymity
 - Never write the owner's real name, email, IP address, hostnames or real home paths. Use placeholders such as /home/deck.
-- Commit timestamps stay in UTC: set TZ=UTC for every session before committing.
-- TZ=UTC is only for the shell that creates a commit. Never set or change TZ in the layer, the plugin, the scripts or the launch options: a game must see the user's own time zone.
-- Merge commits created by the GitHub merge button carry the account's own time zone. The owner accepts that; do not flag them and do not rewrite history for it.
+- Local time zone everywhere (owner decision, 2026-11-01): dates and times in the docs and commit timestamps use the machine's own time zone. Do not set TZ for a session; if the environment sets one, unset it before committing. Write the zone next to any time in a doc until the docs are switched over. Do not name the zone or the place in the repo.
+- Never set or change TZ in the layer, the plugin, the scripts or the launch options: a game must see the user's own time zone.
+- Commits made before 2026-11-01 are in UTC, and merge commits from the GitHub merge button carry the account's own time zone. The owner accepts both; do not flag them and do not rewrite history for it.
 
 ## Design decisions
 - The project stays a Vulkan layer. No DXVK fork. A proxy DLL front end is deferred.
