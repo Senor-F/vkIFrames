@@ -5,7 +5,7 @@
     "type": "toggle",
     "default": 1,
     "needsLayer": "live",
-    "desc": "Turns the layer on or off while you play. Off: frames pass through untouched and nothing is added.",
+    "desc": "Turn the layer on or off while playing. Off: frames pass through unchanged.",
     "group": "switch"
   },
   {
@@ -18,7 +18,7 @@
     "step": 5,
     "fine": 1,
     "needsLayer": "live",
-    "desc": "The frame rate the layer aims for. Set it to your screen's refresh rate (90 on the Deck OLED). The slider reaches the higher of 120 and your screen's refresh rate.",
+    "desc": "Frame rate to aim for: your screen's refresh rate (90 on the Deck OLED). The slider goes to 120 or your refresh rate, if higher.",
     "greyWhen": [
       [
         {
@@ -39,7 +39,7 @@
     "max": 4,
     "step": 1,
     "needsLayer": "live",
-    "desc": "The most extra frames it inserts between two game frames. It should be at least target FPS / game FPS - 1. Up to 10 with Experimental on; above 4, set it, then restart the game (the swapchain is built for the value at game start).",
+    "desc": "Most extra frames inserted between two game frames. Should be at least target FPS / game FPS - 1. Up to 10 with Experimental on; above 4, set it, then restart the game (the swapchain is built for the value at game start).",
     "greyWhen": [
       [
         {
@@ -61,7 +61,7 @@
     "step": 5,
     "fine": 1,
     "needsLayer": "live",
-    "desc": "Limits the game's own frame rate so the layer can fill the gap evenly, e.g. 30 or 45 for a 90 Hz screen. 0 = no limit.",
+    "desc": "Limits the game's own frame rate so frames can be added evenly, e.g. 30 or 45 fps for a 90 Hz screen. 0 = no limit.",
     "greyWhen": [
       [
         {
@@ -70,7 +70,7 @@
         }
       ]
     ],
-    "greyWhy": "Frame generation is off (no cap is applied).",
+    "greyWhy": "Frame generation is off, so no cap applies.",
     "group": "main"
   },
   {
@@ -83,7 +83,7 @@
     "step": 0.05,
     "fine": 0.01,
     "needsLayer": "live",
-    "desc": "How much faster the target must be than the game before frames are generated. Higher: the layer switches itself off sooner when the game is nearly fast enough.",
+    "desc": "Frames are added only when target FPS / game FPS is at least this value (1.01 = 1 % faster). Higher: the layer switches off sooner when the game is nearly fast enough.",
     "greyWhen": [
       [
         {
@@ -101,7 +101,7 @@
     "type": "toggle",
     "default": 1,
     "needsLayer": "live",
-    "desc": "Lines the generated frames up with the game's frames so the spacing stays even.",
+    "desc": "Aligns generated frames with the game's frames for even spacing.",
     "greyWhen": [
       [
         {
@@ -116,7 +116,7 @@
         }
       ]
     ],
-    "greyWhy": "Not used while frame generation is off or in low-latency mode.",
+    "greyWhy": "Not used when generation is off or in low-latency mode.",
     "group": "more"
   },
   {
@@ -129,7 +129,7 @@
     "step": 0.1,
     "fine": 0.05,
     "needsLayer": "live",
-    "desc": "Where generated frames sit between two game frames. 0.5 = halfway; 0 puts one on the game frame itself.",
+    "desc": "Where generated frames sit between two game frames. 0.5 = halfway; 0 = one on the game frame itself.",
     "greyWhen": [
       [
         {
@@ -159,7 +159,7 @@
     "type": "toggle",
     "default": 1,
     "needsLayer": "live",
-    "desc": "Uses the motion from both neighbouring game frames. Can cut smearing at object edges; costs more GPU time.",
+    "desc": "Uses motion from both neighbouring game frames. Can reduce smearing at object edges; costs more GPU time.",
     "greyWhen": [
       [
         {
@@ -189,7 +189,7 @@
     "type": "toggle",
     "default": 1,
     "needsLayer": "restart",
-    "desc": "Builds the in-between frames from the motion between two game frames. Off: a plain cross-fade, which ghosts on movement.",
+    "desc": "Builds in-between frames from motion. Off: a plain cross-fade, which ghosts on movement.",
     "greyWhen": [
       [
         {
@@ -207,7 +207,7 @@
     "type": "toggle",
     "default": 0,
     "needsLayer": "restart",
-    "desc": "Shows each game frame at once and predicts the frames after it, so input feels quicker. Predicted frames can look blockier.",
+    "desc": "Shows each game frame at once and predicts the next ones, so input feels quicker. Predicted frames can look blockier.",
     "group": "more"
   },
   {
@@ -216,7 +216,7 @@
     "type": "toggle",
     "default": 0,
     "needsLayer": "restart",
-    "desc": "Behind a moving object, takes the colour from the one frame that shows the background instead of blending both. Offline (five scenes, 1280x720, CPU reference flow) the best of four variants was worse than the default in 21 of 25 triplets on hard pixels (mean +6.0 %, all pixels +3.0 %) and better in 4 (-1.0 to -2.7 %). Provided for testing, not as an improvement. Needs a game restart.",
+    "desc": "Behind a moving object, takes the colour from the one frame that shows the background. Offline test (25 frame triplets, CPU flow): worse than the default in 21, better in 4, on pixels where the two frames differ (average +6 % error). For testing, not an improvement. Needs Experimental and a game restart.",
     "group": "more"
   },
   {
@@ -229,7 +229,7 @@
     "step": 0.01,
     "fine": 0.001,
     "needsLayer": "restart",
-    "desc": "Stops still parts such as the HUD from being dragged by motion. About 0.03 suits most games; too high freezes real movement.",
+    "desc": "Keeps still parts such as the HUD from being dragged by motion. Default 0.08; 0.03 suits grainy games; 0 = off. Too high freezes real movement.",
     "greyWhen": [
       [
         {
@@ -254,7 +254,7 @@
     "max": 3,
     "step": 1,
     "needsLayer": "restart",
-    "desc": "How finely motion is detected. 1 is sharpest but costs more GPU time; 3 is coarsest and cheapest.",
+    "desc": "How finely motion is detected. 1: sharpest, most GPU time. 3: coarsest, cheapest.",
     "greyWhen": [
       [
         {
@@ -279,7 +279,7 @@
     "max": 32,
     "step": 1,
     "needsLayer": "live",
-    "desc": "How far the layer may queue ahead of the GPU before the game waits. Try 16 if the game is GPU-bound and the stats show wait_fence_ms. Higher adds a little latency.",
+    "desc": "How far the layer may queue ahead of the GPU. 8 is fine; 16 showed no gain in our tests. Higher adds a little latency.",
     "greyWhen": [
       [
         {
@@ -301,7 +301,7 @@
     "step": 0.05,
     "fine": 0.01,
     "needsLayer": "live",
-    "desc": "Keeps every shown frame at least this far from the game frame, so none is shown as it is. 0 lets a frame sit on the game frame (a sharper frame now and then). It saves a pass only when phase-locked and Phase offset is 0. Applies from the next frame pair.",
+    "desc": "Least distance, as a share of the interval between two game frames, between a shown frame and a game frame. 0 lets one sit on the game frame (sharper at times); that saves a pass only with phase lock on, Phase offset 0 and steady frame times. Applies from the next pair.",
     "greyWhen": [
       [
         {
