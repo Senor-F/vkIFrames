@@ -11,7 +11,7 @@
 
 // Interpolation on/off with hysteresis and dwell, so a game hovering near the target does not flap.
 struct InterpolationGate {
-    double enter{1.12}, exit{1.03};         // enter = VKIFRAME_MIN_GAIN; exit = 1 + (enter - 1) / 4
+    double enter{1.12}, exit{1.03};         // standalone default; the clock sets enter = VKIFRAME_MIN_GAIN (layer default 1.01); exit = 1 + (enter - 1) / 4
     int    dwell{8};
     bool   active{false};
     int    streak{0};
@@ -39,7 +39,7 @@ public:
     struct Params {
         double target_ns{1e9 / 60.0};
         int    k_max{3};                    // most synthetic frames between two natives (the pair emits up to k_max + 1 ticks)
-        double min_gain{1.12};              // VKIFRAME_MIN_GAIN
+        double min_gain{1.12};              // standalone default; the layer passes VKIFRAME_MIN_GAIN (default 1.01, vk_iframes_layer.hpp)
         double phase_offset{0.0};           // VKIFRAME_PHASE_OFFSET: where the locked ticks sit, in target frames after the native frame (0 = on it, 0.5 = halfway)
         bool   phase_lock{false};           // VKIFRAME_PHASE_LOCK: slew L so one tick per pair lands on the native frame (near-integer ratios)
     };
