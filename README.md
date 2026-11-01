@@ -14,7 +14,7 @@ Unlike fixed 2x/3x frame generation, the number of generated frames changes from
 2. Or set `VKIFRAME_DISABLE=1`.
 3. Or run `scripts/uninstall.sh`. It removes the manifest (`~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json`) and the installed library (`~/.local/share/vkiframes/`). Your settings and logs in `~/.config/vkiframes` stay unless you pass `--purge`.
 
-Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `status.json`, and with `STATS` or `BENCH` set also `stats.jsonl` (and `.1`) and `bench.json`. With `VKIFRAME_DUMP` it also writes the capture folder you name. Nothing else, and it opens no network port.
+Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `status.json`, and with `STATS` or `BENCH` set also `stats.jsonl` (and `.1`) and `bench.json`. With `VKIFRAME_DUMP` it also writes the capture folder (`VKIFRAME_DUMP_DIR`, default `/tmp/vkIFrames_dump`; under Proton that is the game container's `/tmp`), and with `VKIFRAME_LOG_FILE` the log goes to the file you name. Nothing else, and it opens no network port.
 
 ## Install the alpha
 
@@ -26,22 +26,22 @@ Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `stat
 
 ## Known issues and limits (alpha)
 
-- **Cost.** In one saved-game scene on a Steam Deck at 1280x720 the layer cost about 5.1 ms per game frame (one scene, one run of six off/on pairs). A GPU-bound game loses base frame rate: 55.6 fps native became 43.3 fps while 90 fps were shown. Other games and scenes measured 1 to 6 ms so far. `VKIFRAME_INTERPOLATE` is on by default; set it to 0 for the much cheaper cross-fade.
+- **Cost.** In one saved-game scene on a Steam Deck at 1280x720 the layer cost about 5.1 ms per game frame (one scene, one run of six off/on pairs). A GPU-bound game loses base frame rate: 55.6 fps native calculates to about 43 fps (from the frame times) while 90 fps are shown. Other games and scenes measured 0 to 6 ms so far (0 when the game has GPU headroom). `VKIFRAME_INTERPOLATE` is on by default; set it to 0 for the much cheaper cross-fade.
 - **Picture quality.** Thin lines and tree trunks distort, and occlusions can ghost. In an offline check on 25 captured triplets the interpolation had the lower error than the plain cross-fade in 16; it can be slightly worse on near-static content. Not measured against any quality bar.
 - **The Decky panel rewrites the whole `live.conf`** at every change and at loader start, so edits made by hand to that file are overwritten.
 - **Input latency** is about one base frame while interpolating.
 - **Frame pacing.** The layer forces FIFO presentation, which may not suit every variable-refresh setup. Present-timing support differs between gamescope and Mesa versions.
 - **Crash on low memory.** An out-of-memory inside the layer ends the game (uncaught `bad_alloc`).
-- **Debug capture.** `VKIFRAME_DUMP` writes frames of the game to a folder; it holds about 300 to 330 MB of memory at 30 frames and writes the files in one stall of about 0.3 s at the end. Off by default.
+- **Debug capture.** `VKIFRAME_DUMP` writes frames of the game to a folder; it holds about 300 MB of memory at 30 frames and writes the files in one stall of about 0.3 s at the end. Off by default.
 - **Not tested:** NVIDIA, Intel, native 32-bit games, native Linux Vulkan games, other distributions than SteamOS.
 
 ## Tested
 
 | Where | What | Result |
 |---|---|---|
-| Steam Deck OLED, SteamOS 3.9.5, AMD VANGOGH (RADV), Mesa 26.1 | Tomb Raider (2013), 18 to 60 fps native, 90 fps shown | works, see cost above |
+| Steam Deck OLED, SteamOS 3.9.5, AMD (RADV) | Tomb Raider (2013), 18 to 60 fps native, 90 fps shown | works, see cost above |
 | same Deck | a 2D side-scrolling shooter (45 fps cap, 90 fps target) | works |
-| Radeon RX 9070 desktop (RADV, Mesa 26.2 development version), SteamOS | a test application only; no game run with the layer | works for the test application |
+| Radeon RX 9070 desktop (RADV), SteamOS | a test application only; no game run with the layer | works for the test application |
 
 All runs started from Steam in Game Mode with Proton; Desktop Mode is not verified.
 
@@ -264,7 +264,7 @@ Developed for a **Steam Deck OLED** (base machine, 90 Hz, Game Mode) and a Steam
 
 ## Roadmap
 
-Stages 1–6 (layer, present timing, hold and ring buffer, optical flow, interpolation, integration and packaging) are implemented. Known open items: smudging around trees and thin lines, slow phase-lock recovery after stalls, hiding `VK_EXT_present_timing` from games that use it themselves. Planned next: lower GPU load, an in-game menu with hotkeys, and a study of the interpolation shader. See [ROADMAP.md](ROADMAP.md) and [STATUS.md](STATUS.md).
+Stages 1–5 (layer, present timing, hold and ring buffer, optical flow, interpolation) are implemented; Stage 6 is partly done (install, packaging, settings), while swapchain resizing and the compositor test matrix are untested. Known open items: smudging around trees and thin lines, slow phase-lock recovery after stalls, hiding `VK_EXT_present_timing` from games that use it themselves. Planned next: lower GPU load, an in-game menu with hotkeys, and a study of the interpolation shader. See [ROADMAP.md](ROADMAP.md) and [STATUS.md](STATUS.md).
 
 ---
 
