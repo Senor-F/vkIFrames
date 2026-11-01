@@ -192,7 +192,7 @@ The layer re-reads `live.conf` (`$XDG_CONFIG_HOME/vkiframes/live.conf`, by defau
 | `INTERP_BIDIR` | 0 / 1 | next pair |
 | `CMD_BUFFERS` | 4..32 | next present (entries are used from then on) |
 | `SYNTH_MARGIN` | 0..0.45 | next pair |
-| `TARGET_FPS` limit | | the live target is used up to the display's refresh rate when that is fixed; a variable-refresh display (refreshInterval = UINT64_MAX in `VK_EXT_present_timing`) or an unknown rate is not limited. The log says so once (`display: refresh ...`, `TARGET_FPS ... is above the display's refresh rate`). |
+| `TARGET_FPS` limit | | *(unit-tested only; not yet verified on the Deck, which reports `refresh_hz` 0)* the live target is used up to the display's refresh rate when that is fixed; a variable-refresh display (refreshInterval = UINT64_MAX in `VK_EXT_present_timing`) or an unknown rate is not limited. The log says so once (`display: refresh ...`, `TARGET_FPS ... is above the display's refresh rate`). |
 | `STATS` | 0 / 1 | next second: one measurement record a second in `stats.jsonl` (see Measuring) |
 | `BENCH` | a number | a number that is new (not in the file when the game started) asks for one benchmark run |
 | `EXTRAPOLATE`, `UI_MASK_THRESHOLD`, `FLOW_LEVEL`, `INTERPOLATE`, `EXPERIMENTAL`, `ONESIDED_FILL` | as in the table above | read once when the game starts |
