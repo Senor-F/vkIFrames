@@ -63,7 +63,7 @@ Only the settings Stage 3 uses are listed here; the full set is in `include/vk_i
 | `VKIFRAME_DEBUG_RING` | 0 | Present the ring copy of each held frame (shows that capture works). |
 | `VKIFRAME_TICKMARK` | 0 | Diagnostic: draws a marker and a stepping bar into the output frames. |
 
-`ENABLED=0` (live) makes the whole layer a plain bypass, including no base-rate cap. The earlier draft of this page used 1.12 as the default for `MIN_GAIN`; the code's default is now 1.01, and the 1.12 value is what the simulation tuned (see the table in 4.E). DESIGN.md §2.B and STAGE6.md §4 say the same.
+`ENABLED=0` (live) makes the whole layer a plain bypass, including no base-rate cap (except during a benchmark's "off" seconds, where the cap stays in force so both states pace the game the same way). The earlier draft of this page used 1.12 as the default for `MIN_GAIN`; the code's default is now 1.01, and the 1.12 value is what the simulation tuned (see the table in 4.E). DESIGN.md §2.B and STAGE6.md §4 say the same.
 
 ---
 
