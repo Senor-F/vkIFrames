@@ -26,9 +26,9 @@ The Deck is the harder case: a small GPU shared with the game, 800p, and an immu
 ## 3. Consequences for the design
 
 1. **Both pacing paths must work.** Timed path (desktop Wayland, Mesa ≥ 26.1) and vblank fallback (Game Mode, XWayland on older Mesa). The Stage 3 output clock already uses the same `t` values for both; Stage 3 testing must cover the fallback first, not as an afterthought.
-2. **The game's frame limit.** In Game Mode the Steam frame limiter acts at the display side, below this layer. It would cap the layer's *output*, not the game's base rate. Options: cap the base rate in the game or with `DXVK_FRAME_RATE`, or add an optional base-rate limiter inside the layer (proposed `VKIFRAME_BASE_FPS_CAP`; not yet designed). Decide before Stage 3 is tested on the Deck.
-3. **Performance budget on the Deck.** The GPU is a fraction of a desktop card and is already busy with the game. The 2.5 ms / 1080p budget in STAGE6 is a desktop number. For the Deck, plan on running optical flow at half resolution by default (STAGE6 §6, lever 1) and expose it as a setting (proposed `VKIFRAME_FLOW_SCALE`). Measure with timestamp queries on the Deck before trusting any figure.
-4. **Presets.** Likely useful: Deck 30 → 60, 40 → 80 on OLED, 45 → 90; desktop 60 → 120/144 depending on the monitor. The bypass gate (`VKIFRAME_MIN_GAIN`) already stops a 55 FPS game from being interpolated to 60.
+2. **The game's frame limit.** In Game Mode the Steam frame limiter acts at the display side, below this layer. It would cap the layer's *output*, not the game's base rate. Options: cap the base rate in the game or with `DXVK_FRAME_RATE`, or the layer's own base-rate limiter, `VKIFRAME_BASE_FPS_CAP`, which is built (default 45, live; it waits after the game's present so the game samples input as late as it can, `VKIFRAME_CAP_EARLY=1` waits before). It is what the Deck runs use.
+3. **Performance budget on the Deck.** The GPU is a fraction of a desktop card and is already busy with the game. The 2.5 ms / 1080p budget in STAGE6 is a desktop number. For the Deck, the flow field is estimated at quarter resolution by default (`VKIFRAME_FLOW_LEVEL`, 1 = half, 2 = quarter, 3 = eighth; STAGE6 §6, lever 1). Measured on the Deck: about 5 ms per pair at 720p, which is more than the budget (STATUS.md). Measure with timestamp queries on the Deck before trusting any figure.
+4. **Presets.** Likely useful: Deck 30 → 60, 40 → 80 on OLED, 45 → 90; desktop 60 → 120/144 depending on the monitor. The bypass gate (`VKIFRAME_MIN_GAIN`) decides how close to the target a game must be before the layer steps aside; the shipped default is 1.01, so a 55 FPS game is interpolated to 60 unless you raise it (1.12 was the simulated choice and keeps 54 to 60 FPS in bypass). The target defaults to 90 on the Deck OLED and is limited to the display's refresh rate.
 
 ## 4. Building for SteamOS
 
@@ -45,12 +45,12 @@ Installing (no root needed): put the library and an implicit-layer manifest unde
 
 ## 5. Test plan by environment
 
-Each row needs the corresponding report from the scripts (`scripts/check_env.sh`, `scripts/test_stage1.sh`; later stages add their own).
+Rows 1 to 5 started as runs of the first repository's stage scripts (`scripts/test_stage1.sh` and its successors, with a report file each); only `scripts/check_env.sh` and `scripts/gamemode_launch.sh` were carried over, so the runs are done by hand now and the mock tests are `ctest --test-dir build`.
 
 | # | Environment | What it proves |
 | :--- | :--- | :--- |
 | 1 | Deck, Desktop Mode, native Wayland `vkcube` | Layer loads; timed pacing path if Mesa ≥ 26.1 |
-| 2 | Deck, Desktop Mode, nested gamescope (`GAMESCOPE=1 scripts/test_stage1.sh`) | Layer coexists with gamescope's WSI layer; whether the extension is exposed through it |
+| 2 | Deck, Desktop Mode, nested gamescope (`vkcube` run inside `gamescope`) | Layer coexists with gamescope's WSI layer; whether the extension is exposed through it |
 | 3 | Deck, Game Mode, a Proton game via launch options | The real use case; fallback pacing; container visibility of the layer |
 | 4 | Deck, XWayland / X11 app | Mesa < 26.2 gives the fallback; ≥ 26.2 the timed path |
 | 5 | Custom desktop, same four | Same, at higher resolution and with a bigger GPU |
@@ -92,7 +92,7 @@ Consequence: on this compositor present timing gives feedback only (when frames 
 
 ### Steam Deck
 
-Not measured yet. Run `bash scripts/check_env.sh` on it in Desktop Mode.
+The Deck (OLED) has been measured since: Game Mode results are in the next section, and the frame times, GPU costs and benchmarks are in STATUS.md. `bash scripts/check_env.sh` in Desktop Mode still gives the environment report (Mesa version, extensions, layers).
 
 
 ## Steam Deck, Game Mode (measured 2026-10-30, layer from the 9070 build, vkcube as a non-Steam game)

@@ -1,6 +1,6 @@
 # Stage 2: Precision Timing Engine (`VK_EXT_present_timing`)
 
-> **Implementation note.** The shipped code differs from the sketches below in these ways: the work is split into `include/timing_engine.hpp` (EMA, jitter, clock helpers), `src/present_timing.cpp` (swapchain setup, time-domain choice and calibration, present chain, result draining, statistics) and the hooks in `src/layer_main.cpp`. Instance level: `VK_KHR_get_surface_capabilities2` is added when the app uses `VK_KHR_surface` on Vulkan ≥ 1.1. Device level: the three extensions and the `presentTiming`, `presentAtAbsoluteTime` and `presentId2` features are enabled only when all are offered and the app has not touched them itself. Swapchain level: the surface is queried first (`VkPresentTimingSurfaceCapabilitiesEXT`, `VkSurfaceCapabilitiesPresentId2KHR`); on failure creation is retried without the flags and with the app's own present mode. A present that already carries a present id (or timing info) from the app is passed through untouched. A full result queue triggers one drain-and-retry, then a plain present. A surface that supports timing but not absolute targets (seen on the custom machine's Wayland session) is used for feedback only: targets stay 0 and pacing stays vblank-driven. Tests: `tests/test_timing.cpp` (mock driver, no GPU) and `scripts/test_stage2.sh` (real app, three runs).
+> **Implementation note.** The shipped code differs from the sketches below in these ways: the work is split into `include/timing_engine.hpp` (EMA, jitter, clock helpers), `src/present_timing.cpp` (swapchain setup, time-domain choice and calibration, present chain, result draining, statistics) and the hooks in `src/layer_main.cpp`. Instance level: `VK_KHR_get_surface_capabilities2` is added when the app uses `VK_KHR_surface` on Vulkan ≥ 1.1. Device level: the three extensions and the `presentTiming`, `presentAtAbsoluteTime` and `presentId2` features are enabled only when all are offered and the app has not touched them itself. Swapchain level: the surface is queried first (`VkPresentTimingSurfaceCapabilitiesEXT`, `VkSurfaceCapabilitiesPresentId2KHR`); on failure creation is retried without the flags and with the app's own present mode. A present that already carries a present id (or timing info) from the app is passed through untouched. A full result queue triggers one drain-and-retry, then a plain present. A surface that supports timing but not absolute targets (seen on the custom machine's Wayland session) is used for feedback only: targets stay 0 and pacing stays vblank-driven. Tests: `tests/test_timing.cpp` (mock driver, no GPU; `ctest` name `mock_timing`). The first repository's `scripts/test_stage2.sh` (real app, three runs, report file) was not carried over; the three runs below are done by hand. Since then: a game that uses present timing or present id 2 itself is detected and the layer then does not use present timing on that device; the base-rate cap `VKIFRAME_BASE_FPS_CAP` is the layer's own (default 45), which is what the 30 FPS run uses; and the timing results of the desktop Wayland session and the Deck are in TARGETS.md §7 (feedback only, no absolute target times, so pacing is vblank-driven).
 
 ## 1. Overview & Objectives
 
@@ -296,13 +296,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
 
 ## 5. Verification & Testing Procedure
 
-### Quick path: the test script
-```bash
-bash scripts/test_stage2.sh            # build + mock tests + three vkcube runs; writes build/stage2_report.txt
-BUILD_ONLY=1 bash scripts/test_stage2.sh <Vulkan-Headers>/include   # SteamOS: in the container
-SKIP_BUILD=1 bash scripts/test_stage2.sh                            # SteamOS: on the host
-```
-Run 1 is plain, run 2 aims every present two frames ahead (`VKIFRAME_TIMING_TEST=1`) and reports the error against the request, run 3 caps the base rate at 30 (`VKIFRAME_BASE_FPS_CAP=30`) and checks that the smoothed FPS converges. Paste `build/stage2_report.txt` back.
+### Quick path
+The first repository's script `scripts/test_stage2.sh` (build, mock tests, three `vkcube` runs, a report file) was not carried over. The mock tests are `ctest --test-dir build` (`mock_timing`); the three runs are done by hand with the steps below: run 1 is plain, run 2 aims every present two frames ahead (`VKIFRAME_TIMING_TEST=1`) and reports the error against the request, run 3 caps the base rate at 30 (`VKIFRAME_BASE_FPS_CAP=30`) and checks that the smoothed FPS converges. On SteamOS build in the container and run on the host.
 
 ### Step 1: Build
 ```bash

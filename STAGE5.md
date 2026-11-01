@@ -1,258 +1,109 @@
 # Stage 5: Static UI Masking & Dynamic Motion Interpolation
 
+> **Status: done for now, in one shader.** This page keeps the first Stage 5 design (the goals, the weakness notes, the format remarks, the verification) and brings it up to the code on `main`. The first design had four shaders and an `InterpolationEngine` class (UI mask, bilateral vector filter, mean-velocity reduction, interpolation). The code does the same jobs inside a single shader, `shaders/flow_interp.comp`, in a different way, and the differences are listed in section 5. Quality is still being improved: thin lines, tree trunks and occlusion strips are open items in STATUS.md. Settings use the `VKIFRAME_*` names; the old `FRAMEGEN_*` and `VKIFRAME_WARP*` names are still read as fallbacks.
+
 ## 1. Overview & Objectives
 
-Stage 5 turns the motion field into clean intermediate frames. The layer will:
+Stage 5 turns the motion field into clean intermediate frames. The layer:
 
-1. Detect static 2D elements (HUD, crosshairs, health bars) by difference-thresholding $Frame_A$ against $Frame_B$.
-2. Filter the motion vectors with a **bilateral filter** guided by the frame colors and the UI mask, so background motion never bleeds across a UI boundary.
-3. Reduce the mean flow magnitude **on the GPU** (no CPU readback) to drive the high-velocity fallback.
-4. Run the **backward-gather interpolation** with the per-tick weight $t$ from the output clock (DESIGN §2.C), replacing Stage 3's blend.
-5. Handle occlusions and fast motion by falling back to cross-fade and, smoothly, to a 50/50 alpha blend.
+1. Detects static 2D elements (HUD, crosshairs, health bars) by difference-thresholding $Frame_A$ against $Frame_B$. **Done**, per pixel, inside the interpolation shader (section 4.A).
+2. Weights the motion vectors by the frame colour so background motion does not bleed across an edge, such as a UI boundary. **Done differently**: instead of a separate bilateral filter pass, the four nearest field vectors are blended with weights guided by luma (section 4.B).
+3. Falls back to a cross-fade where the motion cannot be trusted, **without any CPU readback**. **Done differently**: the whole-frame statistic is the share of bad matches on a fixed grid, computed once per workgroup inside the shader, not a mean flow magnitude from a separate reduction pass (section 4.C).
+4. Runs the **backward-gather interpolation** with the per-tick weight $t$ from the output clock (DESIGN §2.C), replacing Stage 3's blend. **Done**, in a one-sided and a two-sided form (section 4.D).
+5. Handles occlusions and fast motion by falling back to cross-fade, smoothly. **Done**; the first design's final fallback was a 50/50 alpha blend, the code's is the time-weighted cross-fade $(1-t)A + tB$.
 
 ---
 
 ## 2. Repository Changes
 
 ```text
-include/
-└── interpolation_engine.hpp                   # new: records the Stage 5 passes
 shaders/
-├── ui_mask.comp                         # new (replaces the empty placeholder of the same name)
-├── vector_bilateral_filter.comp         # new
-├── flow_stats.comp                      # new
-└── motion_interp.comp                     # new (replaces blend.comp as the synthetic-frame shader)
+└── flow_interp.comp    # the interpolation: UI mask, guided vectors, two-sided gather, fallbacks, extrapolation (replaces blend.comp as the synthetic-frame shader)
+src/
+├── optical_flow.cpp    # builds the pipeline and the descriptor set (set 18, six storage images)
+└── gpu_frames.cpp      # GpuSynthesize binds the images and pushes the parameters per tick
+tools/interp_eval/      # offline scoring of interpolation methods; the C++ reference of the same math is include/flow_ref.hpp (InterpPixel)
 ```
+
+Not built, and no longer planned: `include/interpolation_engine.hpp`, `shaders/ui_mask.comp`, `shaders/vector_bilateral_filter.comp`, `shaders/flow_stats.comp`, `shaders/motion_interp.comp`. `shaders/blend.comp` stays as the fallback when interpolation is off or flow fails.
 
 ---
 
 ## 3. Pass Order
 
-For each native pair, once, on the compute queue after the flow (Stage 4):
+For each native pair, once, on the present queue (Stage 4, `GpuFlow`): luma pyramids, forward and backward flow, the occlusion mask. The first design put three more per-pair passes here (UI mask, bilateral filter, mean-velocity reduction); they no longer exist, so the pair's work is only the flow.
 
-1. `ui_mask`  ($A$, $B$ → UI mask)
-2. `vector_bilateral_filter` (forward flow, $B$, UI mask → filtered flow)
-3. `flow_stats` (filtered flow → mean magnitude buffer; the buffer is cleared with `vkCmdFillBuffer` first)
+Then, once per synthetic output tick ($t$ from the output clock), in `GpuSynthesize`:
 
-Then, once per synthetic output tick ($t$ from the output clock), on the graphics queue:
+1. `flow_interp` ($A$, $B$, forward flow with its match cost, mask, backward flow → synthetic image), followed by the blit into the real image of $A$ or a hidden swapchain image from Stage 3.
 
-4. `motion_interp` ($A$, $B$, filtered flow, occlusion mask, UI mask, stats buffer → synthetic image), followed by the blit into the hidden swapchain image from Stage 3.
-
-Steps 1–3 depend only on the pair, so they run once however many ticks the pair has.
+The flow images are read by every tick of the pair, so the next pair's flow waits for the previous pair's synthesis to finish reading (ordered by the barriers inside the command buffers on the one queue). With the extrapolation mode (`VKIFRAME_EXTRAPOLATE=1`) the same shader runs with `extrap` set (section 4.E).
 
 ---
 
-## 4. Shader Implementations
+## 4. Shader Implementation (`shaders/flow_interp.comp`)
 
-All images are `rgba16f` (linear) unless stated. Flow vectors are in full-resolution pixels, pointing from $A$ to $B$ (Stage 4).
+One dispatch per synthetic frame, `local_size 16x16`. Inputs: $A$ and $B$ (`rgba16f` ring images), the forward field `u_flow` (A→B, `rgba16f`: x, y, match cost, 0), the backward field `u_bwd` (B→A), the occlusion mask `u_mask` (`r32f`), and the output. Vectors are in pixels of the flow level; the shader scales them by the (power of two) ratio of output size to field size. Push constants: `t`, `sigma` (`INTERP_GUIDE`), `cost_lo` / `cost_hi` (`CONF_LO` / `CONF_HI`), `cand_thr` (`INTERP_CAND`), `pan_lo` / `pan_hi` (`PAN_LO` / `PAN_HI`), `bidir`, `ui_thr` (`UI_MASK_THRESHOLD`), `extrap`.
 
-### A. Static UI Detection Mask (`shaders/ui_mask.comp`)
+### A. Static UI detection (inside the shader, `VKIFRAME_UI_MASK_THRESHOLD`)
 
-```glsl
-#version 450
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-
-layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D u_frame_a;
-layout(set = 0, binding = 1, rgba16f) uniform readonly  image2D u_frame_b;
-layout(set = 0, binding = 2, r8)      uniform writeonly image2D u_ui_mask;
-
-layout(push_constant) uniform Params { float threshold; } u_params;   // VKIFRAME_UI_MASK_THRESHOLD
-
-void main() {
-    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (any(greaterThanEqual(pos, imageSize(u_frame_a)))) return;
-
-    float diff = distance(imageLoad(u_frame_a, pos).rgb, imageLoad(u_frame_b, pos).rgb);
-
-    // Pixels that stay the same while the scene moves are 2D overlays. Static background pixels are also
-    // flagged; copying those is the correct result anyway.
-    imageStore(u_ui_mask, pos, vec4(diff < u_params.threshold ? 1.0 : 0.0));
-}
-```
-
-**Known weakness:** because "static" is judged from one pair, very slow motion over low-contrast areas (sky, dark scenes) can fall under the threshold and be copied from $A$, so it steps instead of gliding. Mitigations to try: require the pixel to stay static over several native pairs, restrict the mask to high-contrast or edge-adjacent pixels, or keep only a coarse 2D-overlay detector (screen-edge regions and high-contrast edges).
-
-The default threshold (0.02) was chosen for 8-bit sRGB values. The comparison now happens in linear light, where dark tones are compressed, so it needs re-tuning on real content.
-
-### B. Bilateral Vector Filter (`shaders/vector_bilateral_filter.comp`)
+The first design had a separate pass writing an `r8` mask from the colour distance of one pixel. The code decides per pixel at the end of the shader: where the **3×3 mean of $|{\rm luma}(A) - {\rm luma}(B)|$** stays below the threshold, the pixel takes the plain cross-fade (for extrapolation, the pixel of $B$) instead of the moved one. The mean over nine pixels ignores film grain but not a moving edge. The weight is soft: `1 - smoothstep(thr, 2 thr, mean)`.
 
 ```glsl
-#version 450
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-
-layout(set = 0, binding = 0, rg16f)   uniform readonly  image2D u_flow_in;
-layout(set = 0, binding = 1, rgba16f) uniform readonly  image2D u_guide;       // frame B
-layout(set = 0, binding = 2, r8)      uniform readonly  image2D u_ui_mask;
-layout(set = 0, binding = 3, rg16f)   uniform writeonly image2D u_flow_out;
-
-const int   R           = 2;
-const float SIGMA_SPACE = 2.0;
-const float SIGMA_COLOR = 0.1;
-
-void main() {
-    ivec2 pos  = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(u_flow_in);
-    if (any(greaterThanEqual(pos, size))) return;
-
-    vec3  c0  = imageLoad(u_guide, pos).rgb;
-    bool  ui0 = imageLoad(u_ui_mask, pos).r > 0.5;
-
-    vec2  acc  = vec2(0.0);
-    float wsum = 0.0;
-    for (int dy = -R; dy <= R; ++dy)
-        for (int dx = -R; dx <= R; ++dx) {
-            ivec2 q  = clamp(pos + ivec2(dx, dy), ivec2(0), size - 1);
-            vec3  dc = imageLoad(u_guide, q).rgb - c0;
-            float ws = exp(-float(dx * dx + dy * dy) / (2.0 * SIGMA_SPACE * SIGMA_SPACE));
-            float wc = exp(-dot(dc, dc) / (2.0 * SIGMA_COLOR * SIGMA_COLOR));
-            // Never average UI vectors with scene vectors.
-            float wu = ((imageLoad(u_ui_mask, q).r > 0.5) == ui0) ? 1.0 : 0.0;
-            float w  = ws * wc * wu;
-            acc  += w * imageLoad(u_flow_in, q).xy;
-            wsum += w;
-        }
-
-    imageStore(u_flow_out, pos, vec4(acc / max(wsum, 1e-6), 0.0, 0.0));
-}
+float st = 1.0 - smoothstep(u_params.ui_thr, 2.0 * u_params.ui_thr, acc / 9.0);
+c = mix(c, (u_params.extrap > 0.5) ? imageLoad(u_b, p) : (1.0 - t) * imageLoad(u_a, p) + t * imageLoad(u_b, p), st);
 ```
 
-> **Format requirements.** `r8` and `rg16f` storage images (here and in Stages 4–5) need the `shaderStorageImageExtendedFormats` device feature. Check it at device creation and enable it, or fall back to `rgba16f` for these images. `motion_interp` also binds `sampler2D` inputs, so `ComputePass` (Stage 3) must support combined image samplers as well as storage images.
+**Known weakness** (from the first design, still true): because "static" is judged from one pair, very slow motion over low-contrast areas (sky, dark scenes) can fall under the threshold and be copied, so it steps instead of gliding. Offline the mask brings the HUD error down to the cross-fade level, but whole-frame error also rises at the 0.03 setting (STATUS.md). Mitigations to try: require the pixel to stay static over several native pairs, restrict the mask to high-contrast or edge-adjacent pixels, or keep only a coarse 2D-overlay detector (screen-edge regions). The first design's default threshold was 0.02, chosen for 8-bit sRGB values; the comparison is in linear light, where dark tones are compressed. The shipped default is **0.08**, and 0 switches the mask off; it still needs a look test on the Deck (STATUS.md open item 3).
 
-### C. Mean-Velocity Reduction (`shaders/flow_stats.comp`)
+### B. Colour-guided vector weighting (replaces the bilateral filter pass)
 
-The interpolation shader needs the mean flow magnitude to decide the fallback. Reading it back to the CPU would stall the pipeline, so the reduction writes a small storage buffer that the interpolation shader reads directly.
+The first design filtered the whole vector field in its own pass: a 5×5 window, spatial and colour Gaussians, and a rule that never averages UI vectors with scene vectors. The code does the smoothing only where the vector is used: the vector at output pixel $p$ is the bilinear blend of the four nearest field vectors, with each bilinear weight multiplied by `0.02 + exp(-d² / (2 σ²))`, where $d$ is the luma difference between the output pixel and the pixel at that field vector's centre (`GUIDED_FIELD` macro, σ = `VKIFRAME_INTERP_GUIDE`, default 0.08; 0 = plain bilinear). A vector from the other side of an edge gets almost no weight, so edge pixels keep the vector of their own side. The match cost (third channel) is blended with the same weights.
 
-```glsl
-#version 450
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+The field is read at its own level (quarter resolution by default) and the vector is scaled to full-resolution pixels. The sampler for $A$ and $B$ is bilinear, written by hand because GLSL cannot pass a formatted image as a parameter (`BILINEAR` macro: one function per frame).
 
-layout(set = 0, binding = 0, rg16f) uniform readonly image2D u_flow;
-layout(set = 0, binding = 1) buffer FlowStats { uint sum_fixed; } u_stats;   // cleared to 0 before dispatch
+**Format requirements** from the first design, still relevant: `r8` and `rg16f` storage images need `shaderStorageImageExtendedFormats`. The code avoids the question by using `rgba16f` for the fields and `r32f` for the mask and the luma pyramids, and it reads $A$ and $B$ with `imageLoad` and its own bilinear function instead of combined image samplers, so `ComputePass` needs nothing beyond storage images.
 
-shared uint s_sum;
+### C. Fallbacks to the cross-fade (replaces the mean-velocity reduction)
 
-void main() {
-    if (gl_LocalInvocationIndex == 0u) s_sum = 0u;
-    barrier();
+The first design reduced the mean flow magnitude into a storage buffer (`flow_stats.comp`, with fixed-point atomics) and ramped to a 50/50 blend above 32 pixels. The code has three smooth fallbacks, all in the one shader, all to the time-weighted cross-fade $(1-t)A + tB$:
 
-    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (all(lessThan(pos, imageSize(u_flow)))) {
-        float mag = min(length(imageLoad(u_flow, pos).xy), 64.0);   // clamp so the 32-bit sum cannot overflow
-        atomicAdd(s_sum, uint(mag * 16.0));                         // fixed point, 1/16 pixel
-    }
-    barrier();
+* **Per pixel, match cost:** `smoothstep(cost_lo, cost_hi, cost)`; defaults `CONF_LO` 0.06, `CONF_HI` 0.14 (`HI <= LO` turns it off).
+* **Per pixel, occlusion and speed:** the mask value, and `smoothstep(FAST_LOW, FAST_HIGH, |v|)` with 48 and 96 full-resolution pixels.
+* **Whole frame, the pan fallback:** the share of the flow field that is occluded or badly matched, read from a fixed 8×6 grid of field pixels (48 samples). One workgroup works it out once, through shared memory (48 threads read one sample each) instead of every pixel reading all 48. The share goes through `smoothstep(pan_lo, pan_hi, share)` (`PAN_LO` 0.15, `PAN_HI` 0.35; `HI <= LO` = off) and fades the whole frame to the cross-fade, because during a fast camera pan interpolation only smears. Calm scenes measured 0.04 to 0.1 on real captures.
 
-    if (gl_LocalInvocationIndex == 0u) atomicAdd(u_stats.sum_fixed, s_sum);
-}
-```
+The pan statistic is a whole-frame value; a per-tile statistic could catch local fast motion better (open question, DESIGN §6).
 
-At 64 px × 16 × 2.07 M pixels (1080p) the worst-case sum is about 2.1 G, below 2³². That still fits at 1440p (3.7 M pixels × 1024 ≈ 3.8 G, below 4.29 G) but overflows at 4K: clamp lower or accumulate per row there.
-
-### D. Dynamic Motion Interpolation (`shaders/motion_interp.comp`)
+### D. Interpolation: backward gather, one-sided and two-sided
 
 Backward gather (DESIGN §2.C). With $V$ pointing from $A$ to $B$, the content at output pixel $p$ at time $t$ came from $p - tV$ in $A$ and will be at $p + (1-t)V$ in $B$. (The earlier draft used the opposite signs, which moves content the wrong way.)
 
-```glsl
-#version 450
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+* **One-sided** (`VKIFRAME_INTERP_BIDIR=0`): `moved = (1-t) A(p - tV) + t B(p + (1-t)V)`, then `mix(moved, cross-fade, k)` where $k$ is the largest of the mask, the match-cost fade, the pan fallback and the speed fade. The optional candidate search (`VKIFRAME_INTERP_CAND`, off by default) picks, at badly matched pixels, the neighbouring vector that makes $A$ and $B$ agree; on real game footage it made ghosting worse.
+* **Two-sided** (`VKIFRAME_INTERP_BIDIR=1`, default): $A$ is moved forward by $t$ along the forward vector and $B$ is moved back by $1-t$ along the backward vector, each **trusted by its own** mask, match cost and speed, with weights $(1-t)c_f$ and $t\,c_b$. Uncovered background then comes only from $B$ and covered background only from $A$; where neither is trusted, the cross-fade carries the pixel. It needs the full-resolution backward flow, so it turns `VKIFRAME_FLOW_BWD_SKIP` off, and costs about 0.37 ms more per synthetic frame on the Deck. Offline (Cuphead dash) the error was 6 % lower than the one-sided form, with cleaner tree-trunk edges (STATUS.md).
 
-layout(set = 0, binding = 0) uniform sampler2D u_tex_a;                       // ring image A (RGBA16F, linear sampling)
-layout(set = 0, binding = 1) uniform sampler2D u_tex_b;
-layout(set = 0, binding = 2, rg16f)   uniform readonly  image2D u_flow;       // filtered, full resolution
-layout(set = 0, binding = 3, r8)      uniform readonly  image2D u_occlusion;
-layout(set = 0, binding = 4, r8)      uniform readonly  image2D u_ui_mask;
-layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D u_out;
-layout(set = 0, binding = 6) readonly buffer FlowStats { uint sum_fixed; } u_stats;
+The sampler uses clamp-to-edge. Interpolation happens in linear light.
 
-layout(push_constant) uniform Params {
-    float t;                // t of this output tick (DESIGN §2.C)
-    float max_velocity;     // VKIFRAME_MAX_VELOCITY_FALLBACK, default 32
-    float fallback_range;   // pixels over which the blend ramps in, default 16
-} u_params;
+### E. Extrapolation (`VKIFRAME_EXTRAPOLATE=1`, experimental)
 
-void main() {
-    ivec2 pos  = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(u_out);
-    if (any(greaterThanEqual(pos, size))) return;
+The same shader with `extrap` set predicts a frame beyond $B$: $B$ is moved on along its own backward flow as if the motion went on for $s$ more native intervals, `out(x) = B(x + s v_b(x))`. It falls back to plain $B$ where the backward match is poor, the pixel is uncovered, the motion is fast, the vector is too small to be more than flow noise, or the whole frame cannot be matched. It is the low-latency mode of the README; the numbers are in STATUS.md.
 
-    vec2 uv = (vec2(pos) + 0.5) / vec2(size);
+### F. Diagnostics in the shader
 
-    // Static UI: take it from A unchanged; never move it.
-    if (imageLoad(u_ui_mask, pos).r > 0.5) {
-        imageStore(u_out, pos, textureLod(u_tex_a, uv, 0.0));
-        return;
-    }
-
-    vec2  v   = imageLoad(u_flow, pos).xy;
-    float occ = imageLoad(u_occlusion, pos).r;
-
-    vec4 plain_a = textureLod(u_tex_a, uv, 0.0);
-    vec4 plain_b = textureLod(u_tex_b, uv, 0.0);
-
-    vec4 color;
-    if (occ > 0.5) {
-        color = mix(plain_a, plain_b, u_params.t);                      // no reliable motion: cross-fade
-    } else {
-        vec2 uv_a = uv - (v * u_params.t) / vec2(size);
-        vec2 uv_b = uv + (v * (1.0 - u_params.t)) / vec2(size);
-        color = mix(textureLod(u_tex_a, uv_a, 0.0), textureLod(u_tex_b, uv_b, 0.0), u_params.t);
-    }
-
-    // High-velocity fallback: ramp toward a 50/50 blend when mean motion exceeds the stability limit.
-    float mean_v = float(u_stats.sum_fixed) / (16.0 * float(size.x) * float(size.y));
-    float fallback = clamp((mean_v - u_params.max_velocity) / u_params.fallback_range, 0.0, 1.0);
-    color = mix(color, mix(plain_a, plain_b, 0.5), fallback);
-
-    imageStore(u_out, pos, color);
-}
-```
-
-The sampler uses linear filtering and clamp-to-edge. The mean is a whole-frame value; a per-tile statistic could catch local fast motion better (open question, DESIGN §6).
+With `VKIFRAME_TICKMARK` the push constant `t` carries extra information (`t >= 2`): the shader draws a 64×64 square (red for the first half of a pair, green for the second) and a bar along the bottom that steps every displayed frame, for looking at the cadence. It must stay off in normal use.
 
 ---
 
-## 5. Interpolation Engine Integration (`include/interpolation_engine.hpp`)
+## 5. Differences from the first design, in one place
 
-```cpp
-#pragma once
-
-#include "vk_iframes_layer.hpp"
-#include "compute_pass.hpp"
-
-struct InterpParams {
-    float t;
-    float max_velocity;
-    float fallback_range;
-};
-
-class InterpolationEngine {
-public:
-    bool Initialize(const DeviceDispatch& dt, VkExtent2D extent, uint32_t compute_family);
-    void Cleanup();                                       // caller guarantees the GPU is idle
-    bool RecreateForExtent(VkExtent2D extent);            // Stage 6
-
-    // Once per native pair, recorded into the compute command buffer after the optical flow.
-    void RecordPairPasses(VkCommandBuffer cmd, VkImageView a, VkImageView b,
-                          VkImageView flow, VkImageView occlusion);
-
-    // Once per synthetic frame, recorded into the graphics command buffer.
-    // The velocity fallback is computed inside the shader from the GPU-side statistics.
-    void RecordInterp(VkCommandBuffer cmd, VkImageView a, VkImageView b, VkImageView out, const InterpParams& p) {
-        m_interp_pass.Dispatch(cmd, {a, b, m_filtered_flow_view, m_occlusion_view, m_ui_mask_view, out, m_stats_buffer},
-                             &p, sizeof(p), (m_extent.width + 15) / 16, (m_extent.height + 15) / 16);
-    }
-
-private:
-    const DeviceDispatch* m_dt{};
-    VkExtent2D  m_extent{};
-    ComputePass m_ui_mask_pass, m_bilateral_pass, m_stats_pass, m_interp_pass;
-    VkImageView m_ui_mask_view{}, m_filtered_flow_view{}, m_occlusion_view{};
-    VkBuffer    m_stats_buffer{};
-    // images, buffer, sampler, memory ...
-};
-```
-
-`RecordPairPasses` clears the stats buffer with `vkCmdFillBuffer`, dispatches the three pair passes with compute-to-compute barriers in between, and a buffer barrier before the stats are read by the interpolation pass. `Hook_QueuePresentKHR`'s `PresentSynthetic` (Stage 3) calls `RecordInterp` where it used to dispatch `blend.comp`, and waits on the flow timeline before doing so.
+| First design | Code |
+| :--- | :--- |
+| `ui_mask.comp` writes an `r8` mask from the colour distance of one pixel; threshold 0.02 | In `flow_interp.comp`: 3×3 mean of the luma difference, soft threshold; default 0.08 |
+| `vector_bilateral_filter.comp`, 5×5, spatial and colour Gaussians, UI-aware | Luma-guided weights on the four nearest vectors, in the interpolation shader (`INTERP_GUIDE`) |
+| `flow_stats.comp`: mean flow magnitude with fixed-point atomics, ramp to 50/50 above 32 px (`VKIFRAME_MAX_VELOCITY_FALLBACK`) | Share of bad matches on an 8×6 grid inside the shader (`PAN_LO` / `PAN_HI`); no buffer, no atomics; fallback is the cross-fade |
+| `motion_interp.comp` with `sampler2D` inputs, `rg16f`/`r8` images, a stats buffer | `flow_interp.comp` with `rgba16f`/`r32f` storage images and its own bilinear sampler |
+| One-sided gather | One-sided and two-sided (default), match-cost fade, optional candidate search, extrapolation |
+| `InterpolationEngine` class with `RecordPairPasses` / `RecordInterp` | `GpuSynthesize` binds the images and pushes ten floats per tick; the per-pair work is the flow only |
+| Compute queue plus a flow timeline semaphore | Present queue; barriers inside the command buffers (STAGE4.md §3) |
 
 ---
 
@@ -260,7 +111,7 @@ private:
 
 ### Step 1: Build
 ```bash
-cmake --build build -j"$(nproc)"          # the shader list in CMake now also contains ui_mask, vector_bilateral_filter, flow_stats, motion_interp
+cmake --build build -j"$(nproc)"          # the shader list in CMakeLists.txt includes flow_interp
 ```
 
 ### Step 2: Run a validation target
@@ -269,13 +120,15 @@ Use a 3D game with persistent 2D UI (crosshair, health bar, chat), capped to 30 
 ```bash
 export VK_LAYER_PATH=$PWD/build
 export VK_LOADER_LAYERS_ENABLE=VK_LAYER_CUSTOM_frame_gen,VK_LAYER_KHRONOS_validation
-export VKIFRAME_TARGET_FPS=60
-DXVK_FRAME_RATE=30 <game>
+export VKIFRAME_TARGET_FPS=60 VKIFRAME_INTERPOLATE=1 VKIFRAME_BASE_FPS_CAP=30
+<game>                                    # or DXVK_FRAME_RATE=30 <game>
 ```
 
+For image quality without a GPU, dump a capture (`VKIFRAME_DUMP=N`, `VKIFRAME_DUMP_DIR`) and score the methods offline with `tools/interp_eval` (README.md, "Evaluating changes offline").
+
 ### Step 3: Success criteria
-1. **HUD integrity:** 2D interface elements stay sharp and still; they do not shift or smear into moving geometry.
-2. **Dynamic $t$:** with a 30 FPS game on a 90 FPS target the two synthetic frames sit visibly at 1/3 and 2/3 of the motion between the natives; with a 40 FPS game on 60 the synthetic frames alternate between roughly 1/3 and 2/3. Motion is in the correct direction and evenly paced.
-3. **Fallback:** rapid mouse swings fade into soft 50/50 blending rather than tearing geometry, and the transition has no visible pop.
-4. **Occlusions:** edges of moving objects show a plain cross-fade in newly revealed areas rather than stretched pixels.
-5. No GPU hangs, no validation errors, and the combined cost stays within the Stage 6 budget.
+1. **HUD integrity:** 2D interface elements stay sharp and still; they do not shift or smear into moving geometry (`VKIFRAME_UI_MASK_THRESHOLD`).
+2. **Dynamic $t$:** with a 30 FPS game on a 90 FPS target the two synthetic frames sit visibly at 1/3 and 2/3 of the motion between the natives; with a 40 FPS game on 60 the synthetic frames alternate between roughly 1/3 and 2/3. Motion is in the correct direction and evenly paced. (With the phase lock and `PHASE_OFFSET` 0.5 at 45 to 90 the ticks sit at $t = 0.25$ and $0.75$.)
+3. **Fallback:** rapid mouse swings fade into the cross-fade rather than tearing geometry, and the transition has no visible pop.
+4. **Occlusions:** edges of moving objects show a cross-fade in newly revealed areas rather than stretched pixels. A ghost behind a moving sprite is the known remaining defect (STATUS.md open item 1).
+5. No GPU hangs, no validation errors, and the combined cost stays within the Stage 6 budget (not met on the Deck today: flow about 5 ms per pair and interpolation 0.8 to 1.4 ms per synthetic frame, STATUS.md).

@@ -63,7 +63,7 @@ Only the settings Stage 3 uses are listed here; the full set is in `include/vk_i
 | `VKIFRAME_DEBUG_RING` | 0 | Present the ring copy of each held frame (shows that capture works). |
 | `VKIFRAME_TICKMARK` | 0 | Diagnostic: draws a marker and a stepping bar into the output frames. |
 
-`ENABLED=0` (live) makes the whole layer a plain bypass, including no base-rate cap. The earlier draft of this page used 1.12 as the default for `MIN_GAIN`; the code's default is now 1.01, and the 1.12 value is what the simulation tuned (see the table in 4.E). DESIGN.md (§2.B) and STAGE6.md still give 1.12 and should be brought in line.
+`ENABLED=0` (live) makes the whole layer a plain bypass, including no base-rate cap. The earlier draft of this page used 1.12 as the default for `MIN_GAIN`; the code's default is now 1.01, and the 1.12 value is what the simulation tuned (see the table in 4.E). DESIGN.md §2.B and STAGE6.md §4 say the same.
 
 ---
 
@@ -146,7 +146,7 @@ How the clock works, from the first design and still true:
 * The smoothed arrival times of A and B (`m_v_prev`, `m_v_cur`) advance on the smoothed cadence and slew 1/8 toward the real arrival, so there is no jitter and no drift.
 * The content delay $L$ is one smoothed frame time (the hold) plus a jitter buffer: `WantedDelay = smoothed + min(2 * jitter, smoothed / 2)`. Tick $j$ is presented at `anchor + j * period` and shows content time $\tau_j = T_{tick,j} - L$, which lies in $[v_{prev}, v_{cur})$ for the ticks of the current pair. The buffer makes sure a tick is almost never due before the frame that makes it possible has arrived.
 * $L$ moves toward its wanted value by at most 2 % of a target frame per pair, so a hitch cannot push the content timeline backwards.
-* $t = (\tau - v_{prev}) / (v_{cur} - v_{prev})$, clamped to $[0, 1]$. A tick within `kNativeFrac` (0.02) of A is the native frame A itself (no interpolation pass). A tick that close to B is left to the next pair, where it is $t = 0$.
+* $t = (\tau - v_{prev}) / (v_{cur} - v_{prev})$, clamped to $[0, 1]$. A tick within `kNativeFrac` (0.02) of A is the native frame A itself (no interpolation pass). A tick that close to B is left to the next pair, where it is $t = 0$, unless it would be the pair's only tick.
 
 What was added after the first design:
 
@@ -192,7 +192,7 @@ The presenter thread runs `ExecutePair` for each job, in order:
 
 **Flushing.** A held frame is presented when: the gap since the last native present exceeds the clamp (100 ms, a stall), the gate closes (`Bypass` with `flush_held`), the swapchain is destroyed or recreated, the game waits on its fence or present id (below), or no present has come for 200 ms (the presenter's idle flush; its test came with #48).
 
-**Thread safety.** Every queue has a mutex (`QueueMutex`), taken by the hooks for `vkQueueSubmit`, `vkQueueSubmit2(KHR)`, `vkQueueBindSparse`, `vkQueueWaitIdle`, `vkDeviceWaitIdle` (all queues) and by the layer's own submits and presents. The game's `vkAcquireNextImageKHR` / `vkAcquireNextImage2KHR` are polled with timeout 0 so no lock is held while waiting, and share one mutex (`acquire_mu`) with the layer's hidden acquire. Lock order: `gpu_mu`, then the queue mutex; the swapchain mutex `sc.mu` is never held across a queue operation. `gpu` and `last_queue` of the swapchain state are atomic (#48), and the global registries are never destroyed (#47).
+**Thread safety.** Every queue has a mutex (`QueueMutex`), taken by the hooks for `vkQueueSubmit`, `vkQueueSubmit2(KHR)`, `vkQueueBindSparse`, `vkQueueWaitIdle`, `vkDeviceWaitIdle` (all queues) and by the layer's own submits and presents. The game's `vkAcquireNextImageKHR` / `vkAcquireNextImage2KHR` are polled in tries of timeout 0 (`PolledAcquire` keeps retrying with short naps until the game's own timeout runs out) so no lock is held while waiting, and share one mutex (`acquire_mu`) with the layer's hidden acquire. Lock order: `gpu_mu`, then the queue mutex; the swapchain mutex `sc.mu` is never held across a queue operation. `gpu` and `last_queue` of the swapchain state are atomic (#48), and the global registries are never destroyed (#47).
 
 ### G. Placeholder synthetic-frame shader (`shaders/blend.comp`)
 

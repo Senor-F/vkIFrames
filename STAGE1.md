@@ -1,5 +1,7 @@
 # Stage 1: Vulkan Layer Skeleton & Swapchain Interception
 
+> **Implementation note (brought up to date).** Stage 1 is done and the sketches below are the first design; the shipped code differs from them in these ways. The header `include/vk_iframes_layer.hpp` now also holds the `Config` (the `VKIFRAME_*` settings), the swapchain state and the GPU-side declarations, and the logging macro `FG_LOG` writes the `[FrameGen]` lines to the layer's log file (`~/.config/vkiframes/live.log` by default, `VKIFRAME_LOG_FILE` to change it) instead of straight to stderr. The hook table in `src/layer_dispatch.cpp` has grown from the five Stage 1 entry points to: `CreateInstance`, `DestroyInstance`, `CreateDevice`, `DestroyDevice`, `CreateSwapchainKHR`, `DestroySwapchainKHR`, `QueuePresentKHR`, plus the later stages' `QueueSubmit`, `QueueSubmit2(KHR)`, `QueueBindSparse`, `QueueWaitIdle`, `DeviceWaitIdle`, `AcquireNextImageKHR`, `AcquireNextImage2KHR`, `WaitForPresentKHR`, `WaitForFences`, `GetFenceStatus`, `GetDeviceQueue` and `GetDeviceQueue2`. The registries are never destroyed (#47). The swapchain image count is raised to at least 4 as here, and further when frames are held (STAGE3.md §4.B), so the log reads `minImageCount 3 -> 8` rather than `3 -> 4` in a hold run; the `3 -> 4` of the test below is what a swapchain without holding gets. The mock-loader test is `tests/test_chain.cpp`, run by `ctest` as `mock_loader`; the shell scripts of the first repository (`scripts/test_stage1.sh` and the report file it wrote) were not carried over, `scripts/check_env.sh` was.
+
 ## 1. Overview & Objectives
 
 Stage 1 establishes a minimal, correct Vulkan layer: manifest, loader negotiation, instance/device chaining, dispatch tables, and hooks on swapchain creation and presentation. It does **not** modify pixels and must not change the behavior of the host application, other than raising the swapchain image count.
@@ -403,7 +405,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
 > ```bash
 > g++ -std=c++20 -I<Vulkan-Headers>/include tests/test_chain.cpp -o test_chain -ldl && ./test_chain build/libvkIFrames.so
 > ```
-> The steps below still need a real GPU driver and the Vulkan loader. `scripts/test_stage1.sh` automates all of them (build, mock-loader test, `vkcube` with and without the layer, optional validation run) and writes `build/stage1_report.txt`; `scripts/check_env.sh` reports what the machine is missing first.
+> The steps below still need a real GPU driver and the Vulkan loader. They are manual in this repository (`scripts/test_stage1.sh`, which automated them in the first repository, was not carried over); `scripts/check_env.sh` reports what the machine is missing first, and `ctest --test-dir build` runs the mock-loader test.
 
 ### Step 1: Compilation
 ```bash
