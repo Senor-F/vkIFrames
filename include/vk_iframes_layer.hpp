@@ -179,6 +179,7 @@ struct Config {
     int   flow_bwd_skip{1};      // VKIFRAME_FLOW_BWD_SKIP: 0 = always refine the backward flow at the finest level; 1 (default) = skip it with VKIFRAME_FLOW_LEVEL=1 (the occlusion mask reads the next coarser backward field, about 1 ms cheaper); 2 = skip it at any level (about 0.9 ms at level 2, mask from a 160x90 field)
     bool  flow_subpixel{true};   // VKIFRAME_FLOW_SUBPIXEL=0: whole-pixel vectors at the finished flow level (default: parabola fit, fractional vectors)
     char  dump_dir[256]{"/tmp/vkIFrames_dump"};   // VKIFRAME_DUMP_DIR: where VKIFRAME_DUMP writes (under Steam/Proton /tmp is private to the game's container: use a folder under the home directory)
+    int   dump_frames{5};        // VKIFRAME_DUMP_FRAMES=M (5 to 60, default 5): how many consecutive native frames VKIFRAME_DUMP keeps in memory and writes after the last one (about 7.4 MB each at 1280x720); times.txt lists their times
     int   dump_pair{0};          // VKIFRAME_DUMP=N: write A, B, the flow, the mask and the next two synthetic frames of pair N to /tmp/vkIFrames_dump (debugging)
     bool  debug_flow{false};     // VKIFRAME_DEBUG_FLOW=1: show the motion field instead of the synthetic frames (implies VKIFRAME_FLOW)
     bool  debug_ring{false};     // VKIFRAME_DEBUG_RING=1: present the ring-buffer copy of each held frame (shows that capture works)
@@ -258,6 +259,7 @@ inline const Config& GetConfig() {
         if (const char* v = EnvVar("FLOW_SUBPIXEL"))    c.flow_subpixel = std::atoi(v) != 0;
         if (const char* v = EnvVar("DUMP_DIR"))         { std::snprintf(c.dump_dir, sizeof c.dump_dir, "%s", v); }
         if (const char* v = EnvVar("DUMP"))             c.dump_pair     = std::atoi(v);
+        if (const char* v = EnvVar("DUMP_FRAMES"))      c.dump_frames   = std::clamp(std::atoi(v), 5, 60);
         if (const char* v = EnvVar2("INTERPOLATE", "WARP")) c.interpolate = std::atoi(v) != 0;
         if (c.extrapolate) { c.interpolate = true; c.debug_flow = false; }
         if (c.debug_flow || c.interpolate) c.flow = true;

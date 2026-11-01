@@ -27,6 +27,7 @@
 #include "flow_interp_spv.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <cerrno>
 #include <cstdio>
@@ -337,12 +338,18 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
             DumpImage(dt, queue, g, f.bwd[f.fin].image, f.bwd[f.fin].extent, 8, file("flow_bwd.rgba16f"));
             DumpImage(dt, queue, g, f.mask.image, f.fwd[f.fin].extent, 4, file("mask.r32f"));
         }
-        if (n >= first && n < first + 5) {           // five consecutive pairs: the native frame A of each and its synthetic frames
+        const uint64_t window = uint64_t(GetConfig().dump_frames);
+        if (n >= first && n < first + window) {      // consecutive pairs: the native frame A of each (the synthetic frames of the first five only)
             char path[512]; std::snprintf(path, sizeof path, "%s/pair%d_A.rgba16f", GetConfig().dump_dir, int(n - first));
             DumpImage(dt, queue, g, g.ring[a.slot].image, g.extent, 8, path);
             g.dump_pair_index = int(n - first);
-            g.dump_synth += 2;
+            if (n < first + 5) g.dump_synth += 2;
+            g.dump_pairs_queued = int(n - first) + 1;
+            const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            char line[96]; std::snprintf(line, sizeof line, "pair%d_A %lld\n", int(n - first), (long long)now_ns);
+            g.dump_times += line;
         }
+        MaybeFlushDump(g, n >= first + window);       // files are written after the fifth pair (or when its synthetic frames are in), never inside the five; a pair 6 forces it if some synthetic frames did not come
     }
     return true;
 }

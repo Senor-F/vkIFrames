@@ -21,6 +21,10 @@ bool CreateStorageImage(const DeviceDispatch& dt, VkFormat format, VkExtent2D ex
 void DestroyFlowImage(const DeviceDispatch& dt, FlowImage& img);
 
 // Debug: copies an image (in GENERAL layout) to a host buffer and writes it to `path` (raw texels). Caller holds g.gpu_mu.
+// VKIFRAME_DUMP: reads the image back into host memory (g.dump_items) with a short GPU wait and no file write; FlushDump writes the queued files.
 bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage image, VkExtent2D extent, uint32_t bytes_per_texel, const char* path);
+void FlushDump(GpuState& g);
+// Flushes when the five A frames and their synthetic frames are queued (or force: the synthetic frames did not come).
+void MaybeFlushDump(GpuState& g, bool force);
 
 } // namespace gpuint
