@@ -10,7 +10,7 @@ run = asyncio.run
 n_load = [0]
 
 
-def load(tmp, home_link=False):
+def load(tmp, home_link=False, settings_in_home=False):
     """A fresh copy of main.py bound to a new home folder (and a plugin folder with a bundled library)."""
     n_load[0] += 1
     real_home = os.path.join(tmp, "home")
@@ -23,7 +23,7 @@ def load(tmp, home_link=False):
     with open(os.path.join(root, "settings_schema.json")) as f, open(os.path.join(plugin, "settings_schema.json"), "w") as g: g.write(f.read())
     fake = types.ModuleType("decky")
     fake.DECKY_USER_HOME = home
-    fake.DECKY_PLUGIN_SETTINGS_DIR = os.path.join(tmp, "settings")
+    fake.DECKY_PLUGIN_SETTINGS_DIR = os.path.join(home, "homebrew", "settings", "vkIFrames") if settings_in_home else os.path.join(tmp, "settings")
     fake.DECKY_PLUGIN_DIR = plugin
     class L:
         def info(self, *a): pass
@@ -117,4 +117,20 @@ m, home = load(tmp, home_link=True)
 p = m.Plugin(); run(p._main()); run(p.install_layer("")); assert os.path.exists(m.MANIFEST) and os.path.exists(m.LIVE_CONF)
 run(p.uninstall_layer()); assert not os.path.exists(m.MANIFEST)
 print("home folder reached through a link: ok")
+# the plugin's own settings folder (~/homebrew/settings/vkIFrames on a Deck) is walked like the others: a link above it is refused, nothing is written or read there
+tmp = tempfile.mkdtemp()
+m, home = load(tmp, settings_in_home=True)
+outside = os.path.join(tmp, "outside"); os.makedirs(os.path.join(outside, "vkIFrames"))
+open(os.path.join(outside, "vkIFrames", "settings.json"), "w").write(json.dumps({"TARGET_FPS": 77}))      # planted behind the link
+open(os.path.join(outside, "vkIFrames", "display.json"), "w").write(json.dumps({"refresh_hz": 144.0}))
+os.makedirs(os.path.join(home, "homebrew")); os.symlink(outside, os.path.join(home, "homebrew", "settings"))
+before = tree(outside)
+p = m.Plugin(); run(p._main())                                                        # must not raise: live.conf is still written
+assert tree(outside) == before, "the plugin wrote into the folder behind the settings link: %s" % tree(outside)
+assert p.values["TARGET_FPS"] != 77 and p.refresh_hz != 144.0, "settings read through the link"
+assert os.path.exists(m.LIVE_CONF)
+run(p.set_value("TARGET_FPS", 61)); assert "VKIFRAME_TARGET_FPS=61" in open(m.LIVE_CONF).read() and tree(outside) == before
+os.unlink(os.path.join(home, "homebrew", "settings")); os.makedirs(os.path.join(home, "homebrew", "settings"))      # real folder: normal operation
+p = m.Plugin(); run(p._main()); run(p.set_value("TARGET_FPS", 62)); assert json.load(open(m.SETTINGS_FILE))["TARGET_FPS"] == 62
+print("settings folder behind a link: ok")
 print("ancestor symlink tests passed")

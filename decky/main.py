@@ -120,31 +120,6 @@ def _give_to_user_fd(fd):
             pass
 
 
-def _give_to_user(path):
-    own = _owner()
-    if own and os.geteuid() == 0 and path.startswith(USER_HOME.rstrip("/") + "/"):
-        try:
-            os.chown(path, own[0], own[1], follow_symlinks=False)
-        except OSError:
-            pass
-
-
-def _makedirs(path, mode=0o755):
-    """Like os.makedirs, but every folder created under the user's home belongs to that user. Only for the plugin's own settings folder (Decky's); the user's
-    folders go through _open_dir."""
-    todo = []
-    p = path
-    while p and not os.path.isdir(p):
-        todo.append(p)
-        p = os.path.dirname(p)
-    for d in reversed(todo):
-        try:
-            os.mkdir(d, mode)
-        except FileExistsError:
-            pass
-        _give_to_user(d)
-
-
 def _open_dir(path, create=False, mode=0o755, private=False):
     """An open file descriptor for the folder `path`, which must be the home folder or below it. Every component below the home folder is opened with
     O_NOFOLLOW|O_DIRECTORY relative to the one before it: a symbolic link anywhere in the path (also an ancestor such as ~/.local/share) is refused with an
@@ -187,10 +162,9 @@ def _open_dir(path, create=False, mode=0o755, private=False):
             fd = nfd
             if os.fstat(fd).st_uid not in allowed:
                 raise OSError(errno.EPERM, "folder belongs to another user: %s" % os.path.join(home, *parts[:i + 1]))
-        if private and parts:
+        if private and parts and own:
             try:
-                st = os.fstat(fd)
-                if st.st_uid in ({own[0]} if own else set()) | {os.geteuid()}:
+                if os.fstat(fd).st_uid == own[0]:                  # only a folder of the user: a root-owned folder that was already there keeps its mode
                     os.fchmod(fd, 0o700)
             except OSError:
                 pass
@@ -198,6 +172,18 @@ def _open_dir(path, create=False, mode=0o755, private=False):
     except BaseException:
         os.close(fd)
         raise
+
+
+def _open_any_dir(path, create=False):
+    """Like _open_dir for a folder under the home folder (the plugin's settings folder lives in ~/homebrew/settings on a Deck: a link anywhere on the way is
+    refused). A folder outside the home folder (only in tests) is Decky's own location and is opened as given."""
+    home = USER_HOME.rstrip("/") or "/"
+    rel = os.path.relpath(path, home)
+    if not (rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel)):
+        return _open_dir(path, create=create)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
 
 
 def _private_dir(path):
@@ -211,7 +197,7 @@ def _read_user_file(path, limit=None, tail=None):
     as is anything that is not a regular file or belongs to neither the user nor root. With a limit, a bigger file is refused (None); with a tail,
     only the last `tail` bytes are read."""
     try:
-        dfd = _open_dir(os.path.dirname(path))
+        dfd = _open_any_dir(os.path.dirname(path))
     except OSError:
         return None
     try:
@@ -270,7 +256,7 @@ def _clean_stale_tmp():
     """Temporary files an earlier version (or a crash) left next to the settings: 'name.tmp.<pid>'. Regular files only, in our own folders."""
     for d in (CONF_DIR, SETTINGS_DIR):
         try:
-            dfd = _open_dir(d) if d == CONF_DIR else os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            dfd = _open_any_dir(d)
         except OSError:
             continue
         try:
@@ -292,11 +278,7 @@ def _atomic_write(path, text, user_dir=True, dir_mode=0o700):
     reached through _open_dir: no symbolic link in the path is followed, and the temporary file, the mode, the owner and the rename are all relative to the
     folder's descriptor. Without it, `path` is in the plugin's own settings folder (Decky's)."""
     d, name = os.path.dirname(path), os.path.basename(path)
-    if user_dir:
-        dfd = _open_dir(d, create=True, mode=dir_mode)
-    else:
-        _makedirs(d)
-        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dfd = _open_dir(d, create=True, mode=dir_mode) if user_dir else _open_any_dir(d, create=True)
     try:
         # (Decky reloading the plugin while the old process still runs would share this name; unlink + O_EXCL below fail closed, no file is overwritten in place)
         tmp = name + ".tmp"                                   # one fixed name (this process is the only writer): a crash leaves at most one file, which the next write replaces
@@ -344,10 +326,10 @@ class Plugin:
     # ---- screen refresh rate -> upper end of the Target FPS slider ---------
     def _load_display(self):
         try:
-            with open(DISPLAY_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f)
+            raw = _read_user_file(DISPLAY_FILE, 65536)
+            d = json.loads(raw.decode("utf-8", errors="replace")) if raw is not None else None
             self.refresh_hz, self.refresh_src = float(d["refresh_hz"]), "saved"
-        except (OSError, ValueError, KeyError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             pass
 
     def _target_max(self):
@@ -408,9 +390,11 @@ class Plugin:
         vals = self._defaults()
         RENAMED = {"WARP": "INTERPOLATE", "WARP_BIDIR": "INTERP_BIDIR"}   # saved by an older version of the plugin
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-        except (OSError, ValueError):
+            raw = _read_user_file(SETTINGS_FILE, 1048576)             # no symbolic link on the way, only the user's own regular file
+            saved = json.loads(raw.decode("utf-8", errors="replace")) if raw is not None else None
+        except ValueError:
+            return vals
+        if saved is None:
             return vals
         if not isinstance(saved, dict):
             return vals
@@ -435,7 +419,10 @@ class Plugin:
                  "REV=%d" % self.rev]
         for item in self._schema():
             lines.append("%s%s=%s" % (PREFIX, item["key"], self.values[item["key"]]))
-        _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n", user_dir=False)    # the plugin's own folder: always
+        try:
+            _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n", user_dir=False)    # the plugin's own folder
+        except OSError as e:                                # a link on the way to it, or no write access: the settings are not kept for the next start, live.conf still is
+            decky.logger.error("settings.json not written: %s", e)
         try:
             _private_dir(CONF_DIR)
             _atomic_write(LIVE_CONF, "\n".join(lines) + "\n")
