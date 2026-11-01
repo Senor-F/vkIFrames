@@ -8,12 +8,15 @@
 #include <unordered_map>
 
 namespace {
-std::mutex g_mutex;
-std::unordered_map<void*, std::unique_ptr<InstanceDispatch>> g_instances;
-std::unordered_map<void*, std::unique_ptr<DeviceDispatch>>   g_devices;
-std::unordered_map<uint64_t, std::unique_ptr<SwapchainState>> g_swapchains;   // keyed by the swapchain handle
+// The registries are allocated on the heap and never freed. A presenter thread that is still running at exit (or was detached because it was stuck in a
+// driver call) reaches them through the hooks; destroying them in the static destruction at exit was a use after free (#41). The process is ending,
+// the system takes the memory back.
+std::mutex& g_mutex = *new std::mutex;
+auto& g_instances  = *new std::unordered_map<void*, std::unique_ptr<InstanceDispatch>>;
+auto& g_devices    = *new std::unordered_map<void*, std::unique_ptr<DeviceDispatch>>;
+auto& g_swapchains = *new std::unordered_map<uint64_t, std::unique_ptr<SwapchainState>>;   // keyed by the swapchain handle
 struct QueueInfo { uint32_t family; void* device; std::unique_ptr<std::mutex> mu; };
-std::unordered_map<void*, std::unique_ptr<QueueInfo>> g_queues;               // VkQueue -> family, owning device, mutex
+auto& g_queues     = *new std::unordered_map<void*, std::unique_ptr<QueueInfo>>;               // VkQueue -> family, owning device, mutex
 
 struct HookEntry { const char* name; PFN_vkVoidFunction fn; bool device_level; };
 
