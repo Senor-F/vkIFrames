@@ -6,7 +6,48 @@ vkIFrames is an independent Vulkan layer that sits between a game and the driver
 
 Unlike fixed 2x/3x frame generation, the number of generated frames changes from moment to moment with the game's real frame rate. When the game already reaches the target, the layer steps aside and passes native frames straight through with no added latency.
 
-> **Status: working, experimental.** Tested on a Steam Deck OLED (Game Mode, Proton) and on a Radeon RX 9070 desktop. 45 → 90 fps runs locked (90.0 fps shown, no drops). Motion-based interpolation and an opt-in extrapolation mode exist; image quality around thin or fast-moving structures is still being improved. See [STATUS.md](STATUS.md) for measurements and open items.
+> **Alpha 0.1.0-alpha.1. Expect rough edges.** vkIFrames has been tested by one developer on one Steam Deck OLED and one Radeon RX 9070 desktop, with a few Proton games. It can break a game. 45 → 90 fps ran locked in the best case (90.0 fps shown, no drops); image quality around thin or fast-moving structures is still being improved. See [STATUS.md](STATUS.md) for measurements and open items.
+
+## If something goes wrong (read this first)
+
+1. Remove `VKIFRAME_ENABLE=1` from the game's launch options. Without it the layer is not loaded.
+2. Or set `VKIFRAME_DISABLE=1`.
+3. Or run `scripts/uninstall.sh`. It removes the manifest (`~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json`) and the installed library (`~/.local/share/vkiframes/`). Your settings and logs in `~/.config/vkiframes` stay unless you pass `--purge`.
+
+Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `status.json`, and with `STATS` or `BENCH` set also `stats.jsonl` (and `.1`) and `bench.json`. With `VKIFRAME_DUMP` it also writes the capture folder (`VKIFRAME_DUMP_DIR`, default `/tmp/vkIFrames_dump`; under Proton that is the game container's `/tmp`), and with `VKIFRAME_LOG_FILE` the log goes to the file you name. Nothing else, and it opens no network port.
+
+## Install the alpha
+
+- **Layer:** download `vkIFrames-0.1.0-alpha.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the release, check with `sha256sum -c SHA256SUMS`, unpack, and run `scripts/install.sh` (no root; it refuses to run as root and is safe to run twice). The archive is unsigned: the checksums only tell you the download is intact.
+- **Steam Deck panel (optional):** install `vkIFrames-decky-0.1.0-alpha.1.zip` with Decky Loader's "install from ZIP". The panel changes settings while a game runs. It is the only live control for now: there are no in-game keys or menu yet.
+- **Turn it on per game:** Steam launch options `VKIFRAME_ENABLE=1 %command%`. The layer then runs with its default settings. The plugin never sets the launch option for you.
+- **Uninstall:** `scripts/uninstall.sh` and the panel's "Uninstall layer…" button remove the same two files (the manifest and `~/.local/share/vkiframes/libvkIFrames.so`), so either one is enough, in any order. Removing the plugin in Decky Loader removes them too (as far as we know; not yet tested on a Deck). Neither the script nor the panel removes the other's part: `uninstall.sh` leaves the plugin installed, and removing the plugin leaves `~/.config/vkiframes`. Only `scripts/uninstall.sh --purge` (or deleting that folder) removes your settings and logs. The Decky zip has no `uninstall.sh`; if you removed the plugin first and something is left, use the one from the layer archive. Installing the plugin's layer and running `install.sh` both write the same two files, so the one run last wins.
+- **Requirements:** Linux x86-64, 64-bit games only, a Vulkan 1.3 driver, glibc 2.34 or newer (SteamOS 3.x, Ubuntu 22.04+, Debian 12+).
+
+## Known issues and limits (alpha)
+
+- **Cost.** In one saved-game scene on a Steam Deck at 1280x720 the layer cost about 5.1 ms per game frame (one scene, one run of six off/on pairs). A GPU-bound game loses base frame rate: 55.6 fps native calculates to about 43 fps (from the frame times) while 90 fps are shown. Other games and scenes measured 0 to 6 ms so far (0 when the game has GPU headroom). `VKIFRAME_INTERPOLATE` is on by default; set it to 0 for the much cheaper cross-fade.
+- **Picture quality.** Thin lines and tree trunks distort, and occlusions can ghost. In an offline check on 25 captured triplets the interpolation had the lower error than the plain cross-fade in 16; it can be slightly worse on near-static content. Not measured against any quality bar.
+- **The Decky panel rewrites the whole `live.conf`** at every change and at loader start, so edits made by hand to that file are overwritten.
+- **Input latency** is about one base frame while interpolating.
+- **Frame pacing.** The layer forces FIFO presentation, which may not suit every variable-refresh setup. Present-timing support differs between gamescope and Mesa versions.
+- **Crash on low memory.** An out-of-memory inside the layer ends the game (uncaught `bad_alloc`).
+- **Debug capture.** `VKIFRAME_DUMP` writes frames of the game to a folder; it holds about 300 MB of memory at 30 frames and writes the files in one stall of about 0.3 s at the end. Off by default.
+- **Not tested:** NVIDIA, Intel, native 32-bit games, native Linux Vulkan games, other distributions than SteamOS.
+
+## Tested
+
+| Where | What | Result |
+|---|---|---|
+| Steam Deck OLED, SteamOS 3.9.5, AMD (RADV) | Tomb Raider (2013), 18 to 60 fps native, 90 fps shown | works, see cost above |
+| same Deck | a 2D side-scrolling shooter (45 fps cap, 90 fps target) | works |
+| Radeon RX 9070 desktop (RADV), SteamOS | a test application only; no game run with the layer | works for the test application |
+
+All runs started from Steam in Game Mode with Proton; Desktop Mode is not verified.
+
+## Reporting a problem
+
+Open an issue in this repository and attach `~/.config/vkiframes/live.log` (and `status.json`). They contain the process id, the local times you played and the setting values; in normal use they do not contain your user name, home folder, host name or the game's name. Say which game, which mode (Game Mode or Desktop Mode) and what you set. Do not post anything else personal.
 
 ---
 
@@ -40,7 +81,9 @@ Interpolation needs the *next* native frame before it can show anything in betwe
 
 ---
 
-## Quick start
+## Quick start (build from source)
+
+The release archives above need no build. This section is for building the layer yourself.
 
 ### 1. Build
 
@@ -59,12 +102,12 @@ This produces `build/libvkIFrames.so` and `build/VkLayer_frame_gen.json`. Requir
 
 ### 2. Install on the machine that runs the game (no root, no launch script)
 
-Copy `build/libvkIFrames.so` and the `scripts/` folder to the target machine (for a Steam Deck only these two are needed), then:
+Copy `build/libvkIFrames.so`, the `scripts/` folder and the `manifest/` folder to the target machine (`install.sh` builds the layer manifest from `manifest/VkLayer_frame_gen.json.in`), then:
 
 ```bash
 chmod +x scripts/*.sh
-scripts/install.sh          # writes ~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json
-scripts/uninstall.sh        # removes it again
+scripts/install.sh          # copies the library to ~/.local/share/vkiframes/ and writes ~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json
+scripts/uninstall.sh        # removes the manifest and that library copy again
 ```
 
 ### 3. Turn it on per game
@@ -137,7 +180,7 @@ The layer re-reads `live.conf` (`$XDG_CONFIG_HOME/vkiframes/live.conf`, by defau
 | Key | Range | When it applies |
 |---|---|---|
 | `ENABLED` | 0 / 1 (default 1) | next present (0 = plain bypass: no interpolation, no base-fps cap) |
-| `TARGET_FPS` | 30..1000 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
+| `TARGET_FPS` | 30..1000 | next present (the output clock re-anchors when the target changes while running) |
 | `MAX_SYNTHETIC` | 1..4 (up to 10 with `EXPERIMENTAL`) | next present, up to what the running game's swapchain was built for (`synth_capacity` in `status.json`); more needs a game restart |
 | `BASE_FPS_CAP` | 0..90 | next present |
 | `MIN_GAIN` | 1.01..1.5 | next present |
@@ -183,7 +226,8 @@ vkIFrames/
 ├── README.md, DESIGN.md, ROADMAP.md, STATUS.md, TARGETS.md   # overview, architecture, plan, measurements, target machines
 ├── STAGE1.md … STAGE6.md        # per-stage implementation notes
 ├── ASYNC.md                     # plan and measurements for the asynchronous layer
-├── AUDIT.md                     # Auditor findings
+├── AUDIT.md                     # review log (development record)
+├── CLAUDE.md                    # working rules of the development sessions (development record)
 ├── LICENSE, NOTICE
 ├── manifest/VkLayer_frame_gen.json.in
 ├── include/
@@ -193,6 +237,7 @@ vkIFrames/
 │   ├── present_timing.hpp       # VK_EXT_present_timing helpers
 │   ├── gpu_frames.hpp           # ring buffer, hold, flow-engine state
 │   ├── gpu_internal.hpp         # helpers shared by gpu_frames.cpp and optical_flow.cpp
+│   ├── dump_pool.hpp, dump_queue.hpp  # debug capture buffers and the write queue
 │   ├── live_config.hpp          # settings that change while a game runs (live.conf)
 │   ├── stats.hpp                # measurement records and the benchmark
 │   └── flow_ref.hpp             # CPU reference of the flow and the interpolation
@@ -200,13 +245,15 @@ vkIFrames/
 │   ├── layer_main.cpp           # hooked entry points, presenter thread
 │   ├── layer_dispatch.cpp       # registries, proc-addr tables, loader negotiation
 │   ├── gpu_frames.cpp           # capture, synthesize, present of synthetic frames
+│   ├── gpu_images.cpp           # images and buffers of the layer
+│   ├── dump_pool.cpp, dump_queue.cpp  # debug capture (VKIFRAME_DUMP)
 │   ├── optical_flow.cpp         # flow passes and GPU timers
 │   ├── present_timing.cpp
 │   ├── live_config.cpp          # live.conf, live.log, status.json
 │   └── stats.cpp                # stats.jsonl, bench.json
 ├── shaders/                     # flow_luma/down/coarse/refine/occlusion, flow_interp (interpolation, pan fallback, UI mask, extrapolation), flow_vis, blend
-├── scripts/                     # install.sh, uninstall.sh, gamemode_launch.sh, check_env.sh, vkiframes-bench.sh
-├── decky/                       # Decky Loader plugin (live settings from Game Mode), see decky/README.md
+├── scripts/                     # install.sh, uninstall.sh, gamemode_launch.sh, check_env.sh, vkiframes-bench.sh, package.sh (release archives), check_so.sh, repro_check.sh, layer.map
+├── decky/                       # Decky Loader plugin (live settings from Game Mode), its scripts and tests, see decky/README.md
 ├── tests/                       # mock-loader and mock-driver tests, scheduler replay, flow reference
 └── tools/                       # clock_sim (output-clock simulator), interp_eval (offline scoring)
 ```
@@ -217,7 +264,7 @@ Developed for a **Steam Deck OLED** (base machine, 90 Hz, Game Mode) and a Steam
 
 ## Roadmap
 
-Stages 1–5 (layer, present timing, hold and ring buffer, optical flow, interpolation) are implemented; Stage 6 (integration, packaging, resizing) is in progress. Known open items: smudging around trees and thin lines, slow phase-lock recovery after stalls, hiding `VK_EXT_present_timing` from games that use it themselves. See [ROADMAP.md](ROADMAP.md) and [STATUS.md](STATUS.md).
+Stages 1–5 (layer, present timing, hold and ring buffer, optical flow, interpolation) are implemented; Stage 6 is partly done (install, packaging, settings), while swapchain resizing and the compositor test matrix are untested. Known open items: smudging around trees and thin lines, slow phase-lock recovery after stalls, hiding `VK_EXT_present_timing` from games that use it themselves. Planned next: lower GPU load, an in-game menu with hotkeys, and a study of the interpolation shader. See [ROADMAP.md](ROADMAP.md) and [STATUS.md](STATUS.md).
 
 ---
 

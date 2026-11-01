@@ -2,7 +2,7 @@
 
 > **Status (2026-11-01, local time zone):** stage 3 is done and merged; stage 2 (per-thread command pools) and stage 1 (the compute queue, `VKIFRAME_ASYNC`) are not started. Nothing in the code reads `VKIFRAME_ASYNC`. The numbers below are from the Deck logs of the time (flow 4.84 ms per pair); later runs in STATUS.md show the flow cost drifting upward. AUDIT.md item 9 holds the async queue last in the order of work, only if the measurements show it is worth it.
 
-Request: PM ("make the layer asynchronous"). Owner order: stage 3, then 2, then 1. One actor on the code (Builder); the Auditor reviews.
+Origin: the request to make the layer asynchronous. Order: stage 3, then 2, then 1. Development note; the numbers below are the early figures (see STATUS.md for current ones).
 Nothing here is measured on the Deck yet unless a number says so.
 
 ## What the Deck log says today (60 fps game, 90 fps output, bidirectional interpolation)
@@ -27,10 +27,10 @@ One VkCommandPool and one cb/fence ring (kCmdBuffers = 8) are shared by the game
    - WAR: the next pair's flow waits for the previous pair's last synthesis s to finish reading the flow images; a ring slot is unpinned only when the CPU knows the compute work that reads it is done (timeline wait or fence), not when it was submitted.
 6. Command buffers: a separate pool/ring/fences for the compute family (a pool is per family), descriptor-set and query-pool rows per entry as today.
 7. Switch and baseline: VKIFRAME_ASYNC=0|1, default 0; the current single-queue path stays as the A/B baseline.
-8. Gate: base frame time with the layer must not get worse than the previous stage, measured on the Deck (A/B logs); the Auditor reviews queue ownership, semaphore and barrier correctness and a validation-layer run.
+8. Gate: base frame time with the layer must not get worse than the previous stage, measured on the Deck (A/B logs); review checks queue ownership, semaphore and barrier correctness and a validation-layer run.
 9. Test plan: mock tests for the new submit order and semaphore values; real runs only on the Deck (the build sandbox has no GPU). Validation: VK_LOADER_LAYERS_ENABLE=*validation* in a distrobox run, or on the Deck with the validation layer installed.
 
 ## Risks to review
-- RADV's compute queue priority is advisory; the Deck's single GPU may not overlap work, then the benefit is blocking removal, not compute (as the PM noted).
+- RADV's compute queue priority is advisory; the Deck's single GPU may not overlap work, then the benefit is blocking removal, not compute.
 - Wrong WAR handling shows up as flicker or a hang, not a crash: needs the validation layer and a long soak on the Deck.
 - Games that already create a compute queue family: we add one more queue to a family they use; the per-queue mutex covers submits, and queue count limits must be checked (queueCount).
