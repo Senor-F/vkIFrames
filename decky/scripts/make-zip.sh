@@ -76,7 +76,7 @@ cat > "$P/README.md" <<TXT
 
 A panel in the Steam Deck's quick-access menu for the vkIFrames frame interpolation layer (source: $REPO_URL).
 
-* **Install layer** (**Reinstall layer** after a plugin update) copies \`bin/libvkIFrames.so\` to \`~/.local/share/vkiframes/\` and writes the Vulkan layer manifest \`~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json\`. **Uninstall layer** (it asks for a second tap) deletes both. The plugin does not ask Decky for root (plugin.json has no root flag), and it refuses to write through a symbolic link in your folders.
+* **Install layer** (**Reinstall layer** after a plugin update) copies \`bin/libvkIFrames.so\` to \`~/.local/share/vkiframes/\` and writes the Vulkan layer manifest \`~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json\`. **Uninstall layer** (it asks for a second tap) deletes both. On Decky Loader 3.3.1 the plugin runs as your user (plugin.json has no root flag), and it refuses to write through a symbolic link in your folders, also if a setup ever starts it as root.
 * The layer only works in a game whose launch options start with \`VKIFRAME_ENABLE=1 \` (e.g. \`VKIFRAME_ENABLE=1 %command%\`). The plugin does not set it for you.
 * The panel writes your settings to \`~/.config/vkiframes/live.conf\`; the layer picks changes up while the game runs. The layer's log (\`live.log\`), status and measurements are in the same folder \`~/.config/vkiframes/\`. Removing the plugin or the layer leaves that folder; delete it by hand to remove your settings and logs.
 * Licences: \`LICENSE\` (this plugin), \`LICENSE-layer\` and \`NOTICE\` (the layer library), \`THIRD_PARTY_LICENSES.txt\` (packages bundled into the panel).

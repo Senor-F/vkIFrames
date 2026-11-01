@@ -4,10 +4,10 @@ Writes the layer's live config file and installs/uninstalls the Vulkan layer man
 Standard library only (Decky runs a frozen Python).
 Live config protocol: see LIVECONF.md.
 
-Which user this backend runs as is not verified on a live Deck: plugin.json has `"flags": []` (no root flag) and the alpha's own folders were created owned by
-the user, so it very likely runs as the user. The file code is nevertheless written for the worst case, a backend running as root: every folder the user
-controls is reached folder by folder with O_NOFOLLOW from the home folder down (see _open_dir), nothing is created, written, chmodded, chowned or removed
-through a symbolic link anywhere below the home folder, and what the backend creates is given to the user.
+Observed on a Deck (Decky Loader 3.3.1, plugin.json `"flags": []`): the backend runs as the user, and the plugin's files, live.conf and settings are owned by
+the user. A setup could still start it as root, so the file code is written for that case too: every folder the user controls is reached folder by folder with
+O_NOFOLLOW from the home folder down (see _open_dir), nothing is created, written, chmodded, chowned or removed through a symbolic link anywhere below the
+home folder, and what the backend creates is given to the user.
 """
 import asyncio
 import errno
@@ -101,9 +101,8 @@ def _layer_running():
 
 
 def _owner():
-    """uid/gid of the user whose home this is. Which user the backend itself runs as is not verified on a live Deck: plugin.json has `"flags": []` (no root
-    flag) and the alpha's folders were created owned by the user, so it very likely runs as the user. The code is written to be safe either way: as root it
-    writes only into folders the user owns, never follows a symbolic link below the home folder, and gives what it creates to the user."""
+    """uid/gid of the user whose home this is. Observed: the backend runs as that user (Decky Loader 3.3.1, flags []). The code stays safe if a setup starts
+    it as root: it then writes only into folders the user owns, never follows a symbolic link below the home folder, and gives what it creates to the user."""
     try:
         st = os.stat(USER_HOME)
         return st.st_uid, st.st_gid
