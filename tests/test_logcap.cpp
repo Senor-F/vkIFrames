@@ -3,6 +3,7 @@
 #include "live_config.hpp"
 #include "vk_iframes_layer.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,16 @@ int main(int argc, char** argv) {
     const std::string dir = xdg + "/vkiframes", log = dir + "/live.log", stats = dir + "/stats.jsonl";
     if (nofile) {
         CHECK(!LiveLogOpen() && !LiveLogIsFile());
+        // lines that repeat while the game runs: one a minute per call site when they would go to the game's stderr
+        std::atomic<uint64_t> last{0};
+        int allowed = 0;
+        for (int sec = 1; sec <= 300; ++sec) if (LiveLogAllowAt(last, uint64_t(sec) * 1'000'000'000ull)) ++allowed;      // five minutes, one call a second
+        CHECK(allowed == 5);
+        const std::string errf = root + "/stderr.txt";
+        CHECK(std::freopen(errf.c_str(), "w", stderr) != nullptr);
+        for (int i = 0; i < 300; ++i) FG_LOG_ROUTINE("routine line %d", i);                       // 300 calls from one site, within one second
+        std::fflush(stderr);
+        { FILE* f = std::fopen(errf.c_str(), "r"); int lines = 0, c; while (f && (c = std::fgetc(f)) != EOF) if (c == '\n') ++lines; if (f) std::fclose(f); CHECK(lines == 1); }
         std::string cmd = "rm -rf " + root; (void)std::system(cmd.c_str());
         std::printf(g_fail ? "logcap nofile: FAILED\n" : "logcap nofile: ok\n");
         return g_fail ? 1 : 0;
@@ -69,6 +80,17 @@ int main(int argc, char** argv) {
     // the total on disk stays below two caps (plus the check interval) for each file
     CHECK(Size(log) + Size(log + ".1") < 2 * cap + 2 * 20 * 140);
     CHECK(Size(stats) + Size(stats + ".1") < 2 * cap + 2 * 61 * 100);
+
+    // with live.log a file, repeating lines are not throttled
+    { std::atomic<uint64_t> l2{0}; int a = 0; for (int sec = 1; sec <= 300; ++sec) if (LiveLogAllowAt(l2, uint64_t(sec) * 1'000'000'000ull)) ++a; CHECK(a == 300); }
+
+    // a benchmark run does not rotate stats.jsonl: prefill just under the cap, append past it with rotation off, everything stays in one file
+    unlink((stats + ".1").c_str());
+    CHECK(truncate(stats.c_str(), cap - 300) == 0);                                              // same file, so the open append stream continues at the new end
+    for (int i = 0; i < 100; ++i) LiveStatsAppend(rec, false);
+    CHECK(Size(stats) > cap && access((stats + ".1").c_str(), F_OK) != 0);                      // over the cap, not rotated
+    for (int i = 0; i < 70; ++i) LiveStatsAppend(rec, true);                                    // after the run the cap applies again
+    CHECK(Size(stats + ".1") > cap && Size(stats) < cap);
 
     std::string cmd = "rm -rf " + root; (void)std::system(cmd.c_str());
     std::printf(g_fail ? "logcap: FAILED\n" : "logcap: ok\n");

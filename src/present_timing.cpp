@@ -1,4 +1,5 @@
 #include "present_timing.hpp"
+#include "live_config.hpp"
 
 #include <cmath>
 #include <vector>
@@ -156,7 +157,7 @@ void LogTimingStats(const DeviceDispatch& dt, SwapchainState& sc, uint64_t now_n
     if (now_ns - sc.last_log_ns < 1'000'000'000ull) return;
     sc.last_log_ns = now_ns;
 
-    FG_LOG("base FPS (smoothed) %.2f | delta %.2f ms | jitter %.2f ms", sc.timing.SmoothedFps(), sc.timing.SmoothedNs() / 1e6, sc.timing.JitterNs() / 1e6);
+    FG_LOG_ROUTINE("base FPS (smoothed) %.2f | delta %.2f ms | jitter %.2f ms", sc.timing.SmoothedFps(), sc.timing.SmoothedNs() / 1e6, sc.timing.JitterNs() / 1e6);
     if (!sc.timing_enabled) return;
 
     if (sc.refresh_ns == 0 && dt.GetSwapchainTimingPropertiesEXT) {          // may not be known until the first presents finished
@@ -171,7 +172,7 @@ void LogTimingStats(const DeviceDispatch& dt, SwapchainState& sc, uint64_t now_n
     auto& s = sc.st;
     const double int_mean = s.n_int ? s.sum_int_ms / s.n_int : 0.0;
     const double int_sd   = s.n_int ? std::sqrt(std::max(0.0, s.sum_int2_ms / s.n_int - int_mean * int_mean)) : 0.0;
-    FG_LOG("timing: results=%llu err_mean_ms=%.3f err_abs_max_ms=%.3f interval_mean_ms=%.3f interval_sd_ms=%.3f refresh_ms=%.3f queue_full=%llu domain=%s",
+    FG_LOG_ROUTINE("timing: results=%llu err_mean_ms=%.3f err_abs_max_ms=%.3f interval_mean_ms=%.3f interval_sd_ms=%.3f refresh_ms=%.3f queue_full=%llu domain=%s",
            (unsigned long long)s.results_total, s.n_err ? s.sum_err_ms / s.n_err : 0.0, s.max_abs_err_ms, int_mean, int_sd,
            sc.refresh_ns / 1e6, (unsigned long long)s.queue_full_total, DomainName(sc.time_domain));
     s.n_err = 0; s.sum_err_ms = 0; s.max_abs_err_ms = 0; s.n_int = 0; s.sum_int_ms = 0; s.sum_int2_ms = 0;   // window; totals stay

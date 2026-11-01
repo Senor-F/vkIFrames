@@ -204,4 +204,10 @@ keep = os.path.join(os.path.dirname(main.LIVE_CONF), "notes.tmp.txt"); open(keep
 p3 = main.Plugin(); run(p3._main())
 assert not any(os.path.exists(f) for f in stale) and os.path.exists(keep) and os.path.exists(main.LIVE_CONF)
 assert not any(".tmp" in n for n in os.listdir(os.path.dirname(main.LIVE_CONF)) if n != "notes.tmp.txt"), os.listdir(os.path.dirname(main.LIVE_CONF))
+# while the layer's status.json is fresh the layer rotates live.log, not the plugin
+open(main.STATUS_JSON, "w").write("{}")
+main.LOG_CAP_BYTES = 100
+before = os.path.getsize(main.LIVE_LOG); os.unlink(main.LIVE_LOG + ".1") if os.path.exists(main.LIVE_LOG + ".1") else None
+main._log("one more line while the layer runs"); assert os.path.getsize(main.LIVE_LOG) > before and not os.path.exists(main.LIVE_LOG + ".1")
+os.unlink(main.STATUS_JSON)
 print("log caps: ok")

@@ -86,6 +86,14 @@ def _clamp(item, value):
     return int(round(v)) if float(step).is_integer() and float(lo).is_integer() else round(v, 4)
 
 
+def _layer_running():
+    """status.json is rewritten about once a second while a game runs with the layer: when it is fresh the layer rotates live.log itself (two rotations at once could drop lines)."""
+    try:
+        return time.time() - os.lstat(STATUS_JSON).st_mtime < 10
+    except OSError:
+        return False
+
+
 def _log(msg):
     """One line in live.log (the layer writes there too): wall-clock time, 'plugin', the message."""
     try:
@@ -94,7 +102,7 @@ def _log(msg):
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
         try:                                                   # live.log is capped like the layer's copy of it: past 8 MiB it becomes live.log.1 (one old file is kept)
             st0 = os.lstat(LIVE_LOG)
-            if stat.S_ISREG(st0.st_mode) and st0.st_size > LOG_CAP_BYTES:
+            if stat.S_ISREG(st0.st_mode) and st0.st_size > LOG_CAP_BYTES and not _layer_running():
                 os.replace(LIVE_LOG, LIVE_LOG + ".1")
         except FileNotFoundError:
             pass
@@ -215,6 +223,7 @@ def _atomic_write(path, text, user_dir=True):
     _makedirs(os.path.dirname(path))
     if user_dir:
         _real_dir(os.path.dirname(path))                  # a symlink in place of the folder is refused, nothing is written
+    # (Decky reloading the plugin while the old process still runs would share this name; unlink + O_EXCL below fail closed, no file is overwritten in place)
     tmp = path + ".tmp"                                   # one fixed name (this process is the only writer): a crash leaves at most one file, which the next write replaces
     try:
         os.unlink(tmp)                                    # a leftover or planted file (or symlink) at the temporary name goes; unlink never follows

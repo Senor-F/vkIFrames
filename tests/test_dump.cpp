@@ -39,7 +39,8 @@ int main() {
         for (int k = 0; k < 5; ++k) CHECK(Slurp(dir + "/pair" + std::to_string(k) + "_A.rgba16f") == std::string((const char*)px, 8));
         CHECK(Slurp(dir + "/times.txt") == "pair0_A 1000\npair1_A 1001\npair2_A 1002\npair3_A 1003\npair4_A 1004\n");
         struct stat st; CHECK(stat((dir + "/times.txt").c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
-        CHECK(log().find("capture complete, 6 of 6 files written") != std::string::npos);
+        CHECK(log().find("capture complete, 6 of 6 files written in ") != std::string::npos);
+        CHECK(log().find("dump: window over at ") != std::string::npos && log().find(", writing 6 files") != std::string::npos);
         CHECK(q.items.empty() && q.pairs_queued == 0);
     }
     {   // forced flush when the synthetic frames never came
