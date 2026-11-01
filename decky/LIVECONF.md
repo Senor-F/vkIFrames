@@ -5,7 +5,7 @@ The Decky plugin changes layer settings while a game runs. The layer implements 
 **The plugin is the only writer today, and it is one-way.** It rewrites the whole file from its saved `settings.json` at every loader start and at every panel change, and never reads `live.conf` back. An edit from outside (a script, `vkiframes-ctl`, the planned overlay) is overwritten at the next loader restart or panel change and is not shown in the panel. Do not restart the loader or save in the panel during a benchmark or a capture. The intended fix (the plugin merges the file at start, or the file becomes the source of truth) is an open decision for the owner; it must be settled before the overlay and `vkiframes-ctl` write the same file.
 
 ## File
-`$XDG_CONFIG_HOME/vkiframes/live.conf` (default `~/.config/vkiframes/live.conf`). Written atomically by the plugin (temp file, then rename).
+`$XDG_CONFIG_HOME/vkiframes/live.conf` (default `~/.config/vkiframes/live.conf`; the environment variables `VKIFRAME_LIVE_CONF` and `VKIFRAME_LIVE_LOG` override the paths of `live.conf` and `live.log`). Written atomically by the plugin (temp file, then rename).
 
 ```
 # written by the vkIFrames Decky plugin; do not edit while a game runs

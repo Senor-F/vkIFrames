@@ -131,7 +131,7 @@ More settings are documented next to their definitions in `include/vk_iframes_la
 
 ## Live settings (Decky plugin)
 
-The layer re-reads `~/.config/vkiframes/live.conf` about once a second (one `stat()` on the present path), so settings can change while a game runs. The Decky plugin in `decky/` writes that file; it can also be edited by hand (`KEY=VALUE` per line, `#` comments, `VKIFRAME_` or `FRAMEGEN_` prefix optional). The environment gives the startup values, a key in the file overrides them, and removing the file goes back to the environment.
+The layer re-reads `live.conf` (`$XDG_CONFIG_HOME/vkiframes/live.conf`, by default `~/.config/vkiframes/live.conf`; `VKIFRAME_LIVE_CONF` and `VKIFRAME_LIVE_LOG` change the paths) about once a second (one `stat()` on the present path), so settings can change while a game runs. The Decky plugin in `decky/` writes that file; it can also be edited by hand (`KEY=VALUE` per line, `#` comments, `VKIFRAME_` or `FRAMEGEN_` prefix optional). The environment gives the startup values, a key in the file overrides them, and removing the file goes back to the environment.
 
 | Key | Range | When it applies |
 |---|---|---|
