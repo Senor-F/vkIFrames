@@ -72,7 +72,13 @@ add_library(vkIFrames SHARED
 target_include_directories(vkIFrames PRIVATE include ${FRAMEGEN_GENERATED_DIR})
 add_dependencies(vkIFrames layer_shaders)
 target_link_libraries(vkIFrames PRIVATE Vulkan::Headers Threads::Threads)
-target_link_options(vkIFrames PRIVATE -Wl,--no-undefined)
+target_link_options(vkIFrames PRIVATE -Wl,--no-undefined -Wl,--version-script=${CMAKE_SOURCE_DIR}/scripts/layer.map -Wl,--exclude-libs,ALL)   # only the three entry points are exported
+# The C++ runtime is linked statically (release): the layer then needs no libstdc++/libgcc_s from the host or the game's container, and its runtime
+# symbols stay hidden. Only glibc is a dependency (floor GLIBC_2.34). Turn it off for sanitizer builds (ASan wants the shared runtime).
+option(FRAMEGEN_STATIC_RUNTIME "Link libstdc++ and libgcc statically" ON)
+if(FRAMEGEN_STATIC_RUNTIME)
+    target_link_options(vkIFrames PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # Manifest next to the library. The path is relative to the manifest file.
 # (configure_file does not evaluate generator expressions, so use a plain name.)
@@ -142,6 +148,16 @@ if(FRAMEGEN_BUILD_TESTS)
     target_include_directories(test_dump_pool PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_dump_pool PRIVATE Vulkan::Headers)
     add_test(NAME dump_pool COMMAND test_dump_pool)
+    if(FRAMEGEN_STATIC_RUNTIME)
+        add_test(NAME so_checks COMMAND ${CMAKE_SOURCE_DIR}/scripts/check_so.sh $<TARGET_FILE:vkIFrames>)
+        # The host process already has its own C++ runtime (here a library that replaces operator new/delete and counts the calls, linked before libstdc++):
+        # the layer's allocations must not reach it.
+        add_library(hoststd SHARED tests/hoststd.cpp)
+        set_target_properties(hoststd PROPERTIES CXX_VISIBILITY_PRESET default)
+        add_executable(test_hostlib tests/test_hostlib.cpp)
+        target_link_libraries(test_hostlib PRIVATE hoststd Vulkan::Headers ${CMAKE_DL_LIBS})
+        add_test(NAME static_runtime_isolated COMMAND test_hostlib $<TARGET_FILE:vkIFrames>)
+    endif()
     # keep the tests out of the user's ~/.config/vkiframes/live.log
     set_tests_properties(live_config mock_loader mock_timing mock_hold mock_synth mock_extrap mock_pacer PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg")
     set_tests_properties(stats_bench PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg-stats")

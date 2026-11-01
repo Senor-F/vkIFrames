@@ -55,6 +55,8 @@ ctest --test-dir build          # mock-driver tests, no GPU needed
 
 This produces `build/libvkIFrames.so` and `build/VkLayer_frame_gen.json`. Requirements: Linux x86_64 (64-bit games), a Vulkan 1.3 driver, CMake ≥ 3.21, a C++20 compiler, Vulkan-Headers and `glslangValidator` (compiles the shaders). A GPU with a separate compute queue is not required.
 
+**What the library needs at run time:** 64-bit x86-64 Linux only (no 32-bit build) and glibc 2.34 or newer (SteamOS 3.x, Ubuntu 22.04+, Debian 12+); nothing else. The C++ runtime and libgcc are linked into the library (`-static-libstdc++ -static-libgcc`, option `FRAMEGEN_STATIC_RUNTIME`, on by default), so it needs no `libstdc++.so.6` or `libgcc_s.so.1` from the host or from a game's container, and the runtime's symbols are hidden: the library exports exactly three symbols, `FrameGen_NegotiateLoaderLayerInterfaceVersion`, `FrameGen_GetInstanceProcAddr` and `FrameGen_GetDeviceProcAddr` (`scripts/check_so.sh` checks the exports, the imported symbol versions, the glibc floor, the dependencies and that no home folder, user name or host name is in the library; it runs as a test). Sanitizer builds need `-DFRAMEGEN_STATIC_RUNTIME=OFF`. Exceptions: the layer's entry points and hooks are C functions and contain no `throw`; the only `try/catch` blocks are around out-of-memory in the debug dump; an out-of-memory elsewhere in the layer throws `std::bad_alloc`, nobody catches it, and `std::terminate` aborts the game (as before; nothing in the layer tries to survive running out of memory).
+
 ### 2. Install on the machine that runs the game (no root, no launch script)
 
 Copy `build/libvkIFrames.so` and the `scripts/` folder to the target machine (for a Steam Deck only these two are needed), then:
