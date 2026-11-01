@@ -366,6 +366,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
     if (r != VK_SUCCESS && try_timing) {
         FG_LOG("present timing: swapchain creation failed with the flags (%d), retrying without", int(r));
         ci.flags = pCreateInfo->flags; ci.presentMode = app_mode;
+        ci.oldSwapchain = VK_NULL_HANDLE;     // the failed call already retired the game's oldSwapchain (Vulkan: "even if creation of the new swapchain fails"), and VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933 wants a non-retired one
         try_timing = false;
         r = dt->CreateSwapchainKHR(device, &ci, pAllocator, pSwapchain);
     }
@@ -373,14 +374,19 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
         // Whatever we changed (usage bits, image count, timing flags, present mode) may be what the driver refuses: the game's own request is tried as it is, and that
         // swapchain is not touched by the layer at all (no state is registered: its presents pass straight through).
         FG_LOG("vkCreateSwapchainKHR failed with the layer's changes (%d): creating the game's swapchain unmodified", int(r));
-        r = dt->CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+        VkSwapchainCreateInfoKHR as_asked = *pCreateInfo;
+        as_asked.oldSwapchain = VK_NULL_HANDLE;                      // already retired by the failed attempts above (see there), so it is not passed again
+        r = dt->CreateSwapchainKHR(device, &as_asked, pAllocator, pSwapchain);
         if (r == VK_SUCCESS) LiveSetSynthCapacity(0);
         return r;
     }
     if (r != VK_SUCCESS) return r;
 
     // A replacement for the swapchain just created: made from `info` with the first one as oldSwapchain (the game's own oldSwapchain is already retired by the first
-    // creation and must not be used twice), the first one is destroyed. False when the driver refuses: the first swapchain then stays.
+    // creation and must not be used twice), the first one is destroyed. False when the driver refuses: the first swapchain then stays. Creating the replacement
+    // retires the first one even when it fails (Vulkan retires oldSwapchain whether or not creation succeeds), so the game then gets a retired swapchain: its next
+    // acquire or present returns VK_ERROR_OUT_OF_DATE_KHR and it recreates its swapchain, which is the path every game has for a resize. A driver that refuses a
+    // swapchain made exactly as the game asked is unusual enough that nothing better is done here.
     auto replace_with = [&](const VkSwapchainCreateInfoKHR& info) {
         VkSwapchainCreateInfoKHR again = info;
         again.oldSwapchain = *pSwapchain;
