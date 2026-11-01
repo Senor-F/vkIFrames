@@ -103,7 +103,7 @@ except ValueError: pass
 try: run(p.install_layer()); raise SystemExit("installed without bundled lib")
 except ValueError: pass
 assert not run(p.uninstall_layer())["installed"]
-st = run(p.get_state()); assert st["status"] is None and len(st["schema"]) == 15
+st = run(p.get_state()); assert st["status"] is None and len(st["schema"]) == len(json.load(open(os.path.join(root, "settings_schema.json"))))
 # benchmark request: BENCH=<number> in live.conf, kept by later writes; the result is read back from bench.json
 r1 = run(p.start_bench())["token"]
 conf = open(main.LIVE_CONF).read(); assert "VKIFRAME_BENCH=%d" % r1 in conf, conf

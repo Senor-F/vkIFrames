@@ -123,6 +123,8 @@ void Set(LiveSettings& s, int k, double v) {
 }
 std::string Show(int k, double v) { char b[40]; if (k == kBench) std::snprintf(b, sizeof b, "%lld", (long long)v); else if (kInfo[k].toggle || k == kMaxSynthetic || k == kCmdBuffers) std::snprintf(b, sizeof b, "%d", int(v)); else std::snprintf(b, sizeof b, "%g", v); return b; }
 
+std::atomic<int> g_synth_cap{0};   // what the swapchain can hold (0 = unknown): the live MAX_SYNTHETIC never goes above it
+std::atomic<int> g_cap_note_value{0}, g_cap_note_cap{0};     // the last "above the capacity" note that was logged: logged once per (value, capacity)
 double g_startup[kKeys];            // values from the environment (what removing the file goes back to)
 bool   g_have_file = false;
 long long g_mtime_ns = 0; long long g_size = -1; unsigned long long g_rev = 0;
@@ -144,9 +146,19 @@ bool ParseValue(int k, const std::string& raw, double& out, std::string& note) {
     }
     if (kInfo[k].toggle) { out = v != 0.0 ? 1 : 0; if (v != 0.0 && v != 1.0) note = "any non-zero value counts as 1"; return true; }
     if (k == kMaxSynthetic || k == kBench || k == kCmdBuffers) v = std::round(v);
-    const double hi = (k == kMaxSynthetic) ? double(LiveMaxSyntheticLimit()) : kInfo[k].hi;   // experimental mode (set at game start) allows up to 10
+    double hi = (k == kMaxSynthetic) ? double(LiveMaxSyntheticLimit()) : kInfo[k].hi;   // experimental mode (set at game start) allows up to 10
+    bool over_capacity = false;
+    if (k == kMaxSynthetic && g_synth_cap.load() > 0 && v > g_synth_cap.load() && v <= hi) {   // more than this game's swapchain was built for
+        const int cap = g_synth_cap.load();
+        over_capacity = true;
+        if (g_cap_note_value.load() != int(v) || g_cap_note_cap.load() != cap) {
+            g_cap_note_value = int(v); g_cap_note_cap = cap;
+            char b[160]; std::snprintf(b, sizeof b, "is above the %d this game's swapchain was built for: using %d until the game is restarted", cap, cap); note = b;
+        }
+        hi = double(cap);
+    } else if (k == kMaxSynthetic && g_synth_cap.load() > 0) hi = std::min(hi, double(g_synth_cap.load()));
     const double c = std::clamp(v, kInfo[k].lo, hi);
-    if (c != v) { char b[120]; std::snprintf(b, sizeof b, "clamped to the range %g..%g", kInfo[k].lo, hi); note = b; }
+    if (c != v && !over_capacity) { char b[120]; std::snprintf(b, sizeof b, "clamped to the range %g..%g", kInfo[k].lo, hi); note = b; }
     out = (k == kMaxSynthetic || k == kBench || k == kCmdBuffers) ? c : double(float(c));      // the settings are floats: compare as floats, or 1.12 reads as a change from 1.12f
     return true;
 }
@@ -291,6 +303,43 @@ void LiveLogCap() {
     g_retired_log = cur;
 }
 
+int LiveRequestedMaxSynthetic() {
+    std::string text;
+    if (!ReadOwnFile(ConfPath(), text)) return 0;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t nl = text.find('\n', pos); if (nl == std::string::npos) nl = text.size();
+        std::string line = text.substr(pos, nl - pos); pos = nl + 1;
+        Trim(line);
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
+        for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
+        if (key != "MAX_SYNTHETIC") continue;
+        char* end = nullptr; const long v = std::strtol(val.c_str(), &end, 10);
+        if (end == val.c_str()) return 0;
+        return int(std::clamp<long>(v, 1, kLiveMaxSynthetic));
+    }
+    return 0;
+}
+
+int LiveSynthCapacityFor(int env_request) {
+    const int file = LiveRequestedMaxSynthetic();
+    const int request = file > 0 ? file : env_request;
+    return std::min(LiveMaxSyntheticLimit(), std::max(request, kLiveMaxSyntheticNormal));
+}
+
+void LiveSetSynthCapacity(int c_eff) {
+    g_synth_cap = c_eff;
+    if (c_eff <= 0) return;
+    LiveSettings& live = Live();
+    if (live.max_synthetic.load() > c_eff) {
+        LogLine("MAX_SYNTHETIC %d is above the %d this game's swapchain was built for: using %d until the game is restarted", live.max_synthetic.load(), c_eff, c_eff);
+        live.max_synthetic = c_eff;
+    }
+}
+int LiveSynthCapacity() { return g_synth_cap.load(); }
+
 int LiveMaxSyntheticLimit() {
     static const int limit = [] {
         const char* v = StartupFileValue("EXPERIMENTAL");     // live.conf wins over the environment, like the other start-of-game keys
@@ -407,7 +456,7 @@ void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mod
     if (fd < 0) return;
     FILE* f = ::fdopen(fd, "w");
     if (!f) { ::close(fd); return; }
-    std::fprintf(f, "{\"native_fps\":%.1f,\"output_fps\":%.1f,\"k\":%d,\"mode\":\"%s\",\"enabled\":%d,\"refresh_hz\":%.2f,\"bench\":\"%s\"}\n", native_fps, shown_fps, k, mode, Live().enabled.load(), refresh_hz, bench ? bench : "");
+    std::fprintf(f, "{\"native_fps\":%.1f,\"output_fps\":%.1f,\"k\":%d,\"mode\":\"%s\",\"enabled\":%d,\"refresh_hz\":%.2f,\"bench\":\"%s\",\"synth_capacity\":%d}\n", native_fps, shown_fps, k, mode, Live().enabled.load(), refresh_hz, bench ? bench : "", g_synth_cap.load());
     std::fclose(f);
     (void)std::rename(tmp.c_str(), fin.c_str());
 }

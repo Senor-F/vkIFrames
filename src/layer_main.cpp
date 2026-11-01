@@ -300,10 +300,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
         else if ((rp.optimalTilingFeatures & ring) != ring)         { FG_LOG("hold: ring format cannot be used here"); hold = false; }
     } else if (hold) hold = false;
 
+    int synth_capacity = kLiveMaxSyntheticNormal;                  // C for this swapchain (set below when the surface is known)
     if (have_caps) {
         // Images that exist at once beyond what the game expects: 1 held + up to k_max queued synthetic + 1 hidden acquire.
         uint32_t wanted = std::max(ci.minImageCount, kMinImageCount);
-        if (hold) wanted = std::max(wanted, app_min_images + uint32_t(std::max(cfg.max_synthetic, LiveMaxSyntheticLimit())) + 2);
+        synth_capacity = LiveSynthCapacityFor(cfg.max_synthetic);          // C: MAX_SYNTHETIC at game start (live.conf over the environment), at least 4, at most the limit EXPERIMENTAL allows
+        if (hold) wanted = std::max(wanted, app_min_images + uint32_t(synth_capacity) + 2);
         if (caps.maxImageCount != 0) wanted = std::min(wanted, caps.maxImageCount);
         if (wanted != ci.minImageCount) {
             FG_LOG("vkCreateSwapchainKHR: minImageCount %u -> %u", ci.minImageCount, wanted);
@@ -362,6 +364,26 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
 
     SwapchainState* sc = RegisterSwapchain(*pSwapchain);
     sc->hold_candidate = hold; sc->extent = ci.imageExtent; sc->format = ci.imageFormat;
+    if (hold) {
+        // What this swapchain can really hold: C limited by the images the driver granted (1 held + C queued synthetic + 1 hidden acquire beyond the app's own).
+        uint32_t granted = 0;
+        if (dt->GetSwapchainImagesKHR && dt->GetSwapchainImagesKHR(device, *pSwapchain, &granted, nullptr) >= 0 && granted > 0) {
+            const int fit = int(granted) - int(app_min_images) - 2;
+            if (fit < 1) {
+                // Not even one synthetic frame has an image (held frame + one queued + one spare for the acquire): holding would only add a frame of latency and the first
+                // synthetic tick would wait for an image that cannot be released. Pass-through for this swapchain: hold_candidate is read only by the present path
+                // (before any GpuInit, capture or presenter thread exist), so turning it off here is safe.
+                FG_LOG("synthetic frames: swapchain built for %d, but only %u images granted (the app asked for %u): not even one synthetic frame fits, frame holding is off for this swapchain", synth_capacity, granted, app_min_images);
+                sc->hold_candidate = false; sc->synth_capacity = 0;
+                LiveSetSynthCapacity(0);
+                return VK_SUCCESS;
+            }
+            sc->synth_capacity = std::clamp(std::min(synth_capacity, fit), 1, kLiveMaxSynthetic);
+            FG_LOG("synthetic frames: swapchain built for %d, %u images granted (the app asked for %u): capacity %d%s", synth_capacity, granted, app_min_images, sc->synth_capacity,
+                   sc->synth_capacity < synth_capacity ? " (fewer than wanted: a higher MAX_SYNTHETIC is clamped to it)" : "");
+        } else sc->synth_capacity = synth_capacity;
+        LiveSetSynthCapacity(sc->synth_capacity);
+    }
     if (try_timing) {
         if (!SetupSwapchainTiming(*dt, *sc, stage_mask, ci.minImageCount * 4))
             FG_LOG("present timing: setup failed, presenting without timing");
@@ -411,7 +433,7 @@ PairScheduler::Plan PlanAndCount(SwapchainState& sc, uint64_t now) {
     const double want_fps = double(live.target_fps.load()), use_fps = EffectiveTargetFps(want_fps, sc.refresh_ns, sc.refresh_vrr);
     if (use_fps != want_fps && sc.clamp_logged_fps != float(want_fps)) { sc.clamp_logged_fps = float(want_fps); FG_LOG("TARGET_FPS %.1f is above the display's refresh rate: using %.2f fps (frames above it would only wait in the present queue)", want_fps, use_fps); }
     else if (use_fps == want_fps) sc.clamp_logged_fps = 0.0f;
-    p.target_ns = 1e9 / use_fps; p.k_max = live.max_synthetic.load(); p.phase_lock = live.phase_lock.load() != 0; p.phase_offset = live.phase_offset.load();
+    p.target_ns = 1e9 / use_fps; p.k_max = std::min(live.max_synthetic.load(), sc.synth_capacity); p.phase_lock = live.phase_lock.load() != 0; p.phase_offset = live.phase_offset.load();
     p.min_gain = live.enabled.load() ? live.min_gain.load() : 1e6f;   // disabled: the gain gate never opens, so every frame is a plain bypass (a held frame is flushed first)
     auto plan = cfg.extrapolate ? sc.sched.OnNativeFrameExtrap(double(now), sc.timing.SmoothedExactNs(), double(sc.timing.LastRawNs()), p)
                                 : sc.sched.OnNativeFrame(double(now), sc.timing.SmoothedExactNs(), sc.timing.JitterExactNs(), double(sc.timing.LastRawNs()), p);

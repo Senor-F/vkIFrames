@@ -39,7 +39,7 @@
     "max": 4,
     "step": 1,
     "needsLayer": "live",
-    "desc": "The most extra frames it inserts between two game frames. It should be at least target FPS / game FPS - 1. Up to 10 with Experimental on.",
+    "desc": "The most extra frames it inserts between two game frames. It should be at least target FPS / game FPS - 1. Up to 10 with Experimental on; above 4, set it, then restart the game (the swapchain is built for the value at game start).",
     "greyWhen": [
       [
         {
@@ -326,6 +326,6 @@
     "default": 0,
     "needsLayer": "restart",
     "group": "gate",
-    "desc": "Unlocks the settings below and lets Most generated frames go up to 10 (4 otherwise). Not tested: it can add latency, glitches or crashes. Values above 4 need a game restart."
+    "desc": "Unlocks the settings below and lets Most generated frames reach 10 (4 otherwise). Read at game start: turn it on, then restart the game. Untested: can add latency, glitches or crashes."
   }
 ]
