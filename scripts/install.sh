@@ -21,10 +21,11 @@ case "${1:-}" in
 esac
 
 [ "$(id -u)" -ne 0 ] || { echo "$ME: do not run this as root: the files belong in your own home folder" >&2; exit 2; }
-[ -n "${HOME:-}" ] && [ "${HOME#/}" != "$HOME" ] || { echo "$ME: HOME is not set to an absolute path" >&2; exit 2; }
+if [ -z "${HOME:-}" ] || [ "${HOME#/}" = "$HOME" ]; then echo "$ME: HOME is not set to an absolute path" >&2; exit 2; fi
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 [ "${DATA_HOME#/}" != "$DATA_HOME" ] || fail "XDG_DATA_HOME is not an absolute path"
+[ -z "${XDG_CONFIG_HOME:-}" ] || [ "${XDG_CONFIG_HOME#/}" != "$XDG_CONFIG_HOME" ] || fail "XDG_CONFIG_HOME is not an absolute path"
 LIB_DIR="$DATA_HOME/vkiframes"
 LAYER_DIR="$DATA_HOME/vulkan/implicit_layer.d"
 MANIFEST="$LAYER_DIR/VkLayer_frame_gen.json"
@@ -57,6 +58,7 @@ have_ctrl "$TARGET" && fail "the library path contains control characters"
 
 # --- the library: copied beside the data, replaced by rename so a running game that has the old file mapped keeps a valid one -----------------
 if [ -z "$USE" ]; then
+    # shellcheck disable=SC2174  # -m applies to the deepest folder only, which is intended: ~/.local/share and its parents keep their own modes
     mkdir -p -m 0700 "$LIB_DIR"                         # only a folder we create is 0700; an existing one is checked, not changed
     own_dir "$LIB_DIR" || fail "cannot use $LIB_DIR"
     if [ -f "$LIB_DST" ] && [ ! -L "$LIB_DST" ] && cmp -s "$SRC" "$LIB_DST"; then
@@ -79,8 +81,13 @@ own_dir "$LAYER_DIR" || fail "cannot use $LAYER_DIR"
 TMPM=$(mktemp "$LAYER_DIR/.VkLayer_frame_gen.json.XXXXXX")
 trap 'rm -f "$TMPM"' EXIT
 ESC=$(json_escape "$TARGET")
+# The placeholder is replaced by splitting the line around it, not with ${line//pattern/replacement}: since bash 5.2 an unquoted "&" in a replacement
+# stands for the matched text, which breaks a library path that contains one.
+PH='@FRAMEGEN_LIBRARY_PATH@'
 while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "${line//@FRAMEGEN_LIBRARY_PATH@/$ESC}"
+    out=""
+    while [[ $line == *"$PH"* ]]; do out+="${line%%"$PH"*}$ESC"; line=${line#*"$PH"}; done
+    printf '%s\n' "$out$line"
 done < "$TEMPLATE" > "$TMPM"
 chmod 0644 "$TMPM"                                       # the Vulkan loader reads it
 mv -f -- "$TMPM" "$MANIFEST"

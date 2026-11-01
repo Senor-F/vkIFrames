@@ -16,10 +16,14 @@ for a in "$@"; do
     esac
 done
 [ "$(id -u)" -ne 0 ] || { echo "$ME: do not run this as root: the files are in your own home folder" >&2; exit 2; }
-[ -n "${HOME:-}" ] && [ "${HOME#/}" != "$HOME" ] || { echo "$ME: HOME is not set to an absolute path" >&2; exit 2; }
+if [ -z "${HOME:-}" ] || [ "${HOME#/}" = "$HOME" ]; then echo "$ME: HOME is not set to an absolute path" >&2; exit 2; fi
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vkiframes"
+CONF_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+# the same check as install.sh, before anything is removed: a relative folder would be taken relative to wherever the script was started
+[ "${DATA_HOME#/}" != "$DATA_HOME" ] || { echo "$ME: XDG_DATA_HOME is not an absolute path" >&2; exit 1; }
+[ "${CONF_HOME#/}" != "$CONF_HOME" ] || { echo "$ME: XDG_CONFIG_HOME is not an absolute path" >&2; exit 1; }
+CONF_DIR="$CONF_HOME/vkiframes"
 MANIFEST="$DATA_HOME/vulkan/implicit_layer.d/VkLayer_frame_gen.json"
 LIB_DIR="$DATA_HOME/vkiframes"
 rc=0
@@ -32,11 +36,14 @@ rm_file() {   # a regular file or a symlink at that path (unlink never follows)
 rm_file "$MANIFEST"
 rm_file "$LIB_DIR/libvkIFrames.so"
 rm -f -- "$LIB_DIR"/.libvkIFrames.so.* 2>/dev/null || true       # a temporary copy left by an interrupted install
-[ -d "$LIB_DIR" ] && [ ! -L "$LIB_DIR" ] && rmdir "$LIB_DIR" 2>/dev/null && echo "removed $LIB_DIR" || true
+if [ -d "$LIB_DIR" ] && [ ! -L "$LIB_DIR" ] && rmdir "$LIB_DIR" 2>/dev/null; then echo "removed $LIB_DIR"; fi
 
 echo "left in place:"
 left=0
-if [ -d "$LIB_DIR" ]; then echo "  $LIB_DIR (not empty: $(ls -A "$LIB_DIR" | wc -l) item(s))"; left=1; fi
+if [ -d "$LIB_DIR" ]; then
+    n=0; for f in "$LIB_DIR"/* "$LIB_DIR"/.[!.]*; do if [ -e "$f" ] || [ -L "$f" ]; then n=$((n + 1)); fi; done
+    echo "  $LIB_DIR (not empty: $n item(s))"; left=1
+fi
 if [ -d "$CONF_DIR" ]; then echo "  $CONF_DIR (your settings, logs and measurements; remove with --purge)"; left=1; fi
 [ "$left" -eq 1 ] || echo "  nothing"
 
@@ -48,7 +55,8 @@ if [ "$PURGE" -eq 1 ]; then
             read -r ans || ans=n
             case "$ans" in y|Y|yes|YES) ok=1 ;; esac
         fi
-        if [ "$ok" -eq 1 ]; then rm -rf -- "$CONF_DIR" && echo "removed $CONF_DIR" || { echo "$ME: could not remove $CONF_DIR" >&2; rc=1; }
+        if [ "$ok" -eq 1 ]; then
+            if rm -rf -- "$CONF_DIR"; then echo "removed $CONF_DIR"; else echo "$ME: could not remove $CONF_DIR" >&2; rc=1; fi
         else echo "kept $CONF_DIR"; fi
     else echo "not present: $CONF_DIR"; fi
 fi
