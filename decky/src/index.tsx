@@ -92,10 +92,10 @@ async function copyText(text: string): Promise<boolean> {
 function statusLine(status: Record<string, unknown> | null): string {
   if (!status) return "No status yet. Start a game with VKIFRAME_ENABLE=1 in its launch options.";
   const age = Number(status["age_s"] ?? 0);
-  if (age > 5) return "No recent status (the game is not running, or the layer is not loaded).";
+  if (age > 5) return "No recent status: no game running, or the layer is not loaded.";
   const mode = String(status["mode"] ?? "?");
   const k = Number(status["k"] ?? 0);
-  return `${status["native_fps"]} fps from the game  →  ${status["output_fps"]} fps shown   |   ${k} generated per game frame   |   mode: ${mode}`;
+  return `${status["native_fps"]} fps from the game → ${status["output_fps"]} fps shown | ${k} generated per game frame | mode: ${mode}`;
 }
 
 function Content() {
@@ -236,7 +236,7 @@ function Content() {
         {!layer.installed && !layer.bundled_available && (
           <PanelSectionRow>
             <div style={{ fontSize: 11, opacity: 0.7 }}>
-              No library in the plugin's bin/ folder. Use scripts/link-build.sh to point at a local build.
+              No library in the plugin's bin/ folder (scripts/link-build.sh points at a local build).
             </div>
           </PanelSectionRow>
         )}
@@ -254,7 +254,7 @@ function Content() {
       <PanelSection title="Launch options">
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            To use it in a game, put this in the game's launch options (Properties → General). Settings below are changed here, not there.
+            Put this in the game's launch options (Properties → General). The plugin does not set it for you. Settings are changed here, not there.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -274,12 +274,12 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            A 32-bit game (the layer is 64-bit and cannot load into it) needs the third one: PROTON_USE_WOW64=1 makes Proton run it inside a 64-bit process. It needs a Proton that supports WoW64 (Proton 10 or Experimental). The layer loaded in Tomb Raider (2013) this way; not every 32-bit game works with it.
+            32-bit games need the third one: the layer is 64-bit, and PROTON_USE_WOW64=1 runs the game in a 64-bit process (Proton 10 or Experimental). Tested in one game only (Tomb Raider (2013)); not every 32-bit game works.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            No other launch options? Copy the second one. Already have some (for example MANGOHUD=1 %command%)? Copy the first one and put it in front of %command%: MANGOHUD=1 VKIFRAME_ENABLE=1 %command%
+            No other launch options? Copy the second one. Already have some, e.g. MANGOHUD=1 %command%? Copy the first and put it before %command%: MANGOHUD=1 VKIFRAME_ENABLE=1 %command%
           </div>
         </PanelSectionRow>
       </PanelSection>
@@ -300,7 +300,7 @@ function Content() {
                 onChange={(on: boolean) => setFine(on)}
                 description={
                   <div style={{ fontSize: 11, opacity: 0.75 }}>
-                    Smaller steps on the sliders. With a slider selected, the button named at the bottom of the screen switches it too.
+                    Smaller slider steps. With a slider selected, the button named at the bottom of the screen switches it too.
                   </div>
                 }
               />
@@ -319,7 +319,7 @@ function Content() {
               <>
                 <PanelSectionRow>
                   <div style={{ fontSize: 11, opacity: 0.85 }}>
-                    Experimental: these settings are untested and can add latency, glitches or crashes. They can only be changed while Experimental is on.
+                    Untested: these can add latency, glitches or crashes. They can only be changed while Experimental is on.
                   </div>
                 </PanelSectionRow>
                 {schema.filter((i) => i.group === "gate").map(renderItem)}
@@ -328,7 +328,7 @@ function Content() {
                   <div style={{ marginTop: 12, padding: "6px 8px", borderLeft: "3px solid #e8a33d", background: "rgba(232, 163, 61, 0.12)" }}>
                     <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>⚠ NEEDS RESTART</div>
                     <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.3 }}>
-                      The settings below are only read when a game starts. Change them, then close and start the game again.
+                      Read only when a game starts. Change them, then restart the game.
                     </div>
                   </div>
                 </PanelSectionRow>
@@ -362,7 +362,7 @@ function Content() {
       <PanelSection title="Benchmark">
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            Measures what the layer costs the game: 30 s warm-up, then 6 times (60 s layer off, 60 s on), about 13 minutes in the same scene. Start a game first and stay in a demanding scene. The run stops if you change a setting or leave the game. The numbers go to bench.json in the vkiframes config folder.
+            Measures what the layer costs: 30 s warm-up, then 6 x (60 s off, 60 s on), about 13 min. Stay in one demanding scene; it stops if you change a setting or leave the game. Result: bench.json in the vkiframes config folder.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -402,7 +402,7 @@ function Content() {
           <PanelSection title="Layer maintenance">
             <PanelSectionRow>
               <div style={{ fontSize: 11, opacity: 0.75 }}>
-                Reinstall copies the layer bundled with this plugin over the installed one (after a plugin update). Uninstall removes the layer: games run without it until you install it again.
+                Reinstall copies this plugin's layer over the installed one (after a plugin update). Uninstall removes the layer; games run without it until you install it again.
               </div>
             </PanelSectionRow>
             <PanelSectionRow>
@@ -417,14 +417,14 @@ function Content() {
             {!layer.bundled_available && (
               <PanelSectionRow>
                 <div style={{ fontSize: 11, opacity: 0.7 }}>
-                  No library in the plugin's bin/ folder, so it cannot be reinstalled. Use scripts/link-build.sh to point at a local build.
+                  No library in the plugin's bin/ folder, so it cannot be reinstalled (scripts/link-build.sh points at a local build).
                 </div>
               </PanelSectionRow>
             )}
             {confirmUninstall ? (
               <>
                 <PanelSectionRow>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>Remove the layer? Games will run without frame generation until you install it again.</div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>Remove the layer? Games run without frame generation until you install it again.</div>
                 </PanelSectionRow>
                 <PanelSectionRow>
                   <ButtonItem layout="below" onClick={() => { setConfirmUninstall(false); act(() => uninstallLayer(), "Layer removed"); }}>

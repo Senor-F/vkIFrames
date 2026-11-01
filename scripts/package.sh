@@ -117,6 +117,8 @@ cat > "$ST/README.md" <<TXT
 
 A Vulkan layer that adds in-between frames to games (frame interpolation) on Linux and the Steam Deck. Source and full documentation: $REPO_URL
 
+This is an alpha release; known issues are listed in the README in the repository.
+
 ## What is in this folder
 * \`libvkIFrames.so\`: the layer (x86-64, needs glibc 2.34 or newer; a 64-bit game process).
 * \`scripts/install.sh\`, \`scripts/uninstall.sh\`, \`scripts/check_env.sh\`: install, remove, and a check of the environment.
