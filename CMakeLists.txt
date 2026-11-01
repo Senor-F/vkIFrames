@@ -63,6 +63,7 @@ add_library(vkIFrames SHARED
     src/present_timing.cpp
     src/gpu_frames.cpp
     src/optical_flow.cpp
+    src/dump_queue.cpp
     src/live_config.cpp
     src/stats.cpp
 )
@@ -124,6 +125,10 @@ if(FRAMEGEN_BUILD_TESTS)
     target_include_directories(test_stats PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_stats PRIVATE Vulkan::Headers)
     add_test(NAME stats_bench COMMAND test_stats)
+    add_executable(test_dump tests/test_dump.cpp src/dump_queue.cpp)
+    target_include_directories(test_dump PRIVATE include ${FRAMEGEN_GENERATED_DIR})
+    target_link_libraries(test_dump PRIVATE Vulkan::Headers)
+    add_test(NAME dump_queue COMMAND test_dump)
     # keep the tests out of the user's ~/.config/vkiframes/live.log
     set_tests_properties(live_config mock_loader mock_timing mock_hold mock_synth mock_extrap mock_pacer PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg")
     set_tests_properties(stats_bench PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg-stats")

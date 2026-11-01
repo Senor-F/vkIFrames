@@ -127,8 +127,7 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
     if (ok) {
         void* p = nullptr;
         if (dt.MapMemory(dt.device, mem, 0, bytes, 0, &p) == VK_SUCCESS) {
-            const int dfd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);     // screenshots: owner only, no symlinks
-            if (FILE* f = dfd >= 0 ? ::fdopen(dfd, "wb") : nullptr) { std::fwrite(p, 1, size_t(bytes), f); std::fclose(f); } else { if (dfd >= 0) ::close(dfd); ok = false; }
+            ok = g.dump.Add(path, static_cast<const uint8_t*>(p), size_t(bytes));
             dt.UnmapMemory(dt.device, mem);
         } else ok = false;
     }
@@ -137,7 +136,7 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
         if (buf) dt.DestroyBuffer(dt.device, buf, nullptr);
         if (mem) dt.FreeMemory(dt.device, mem, nullptr);
     }
-    FG_LOG("dump: %s (%ux%u, %u bytes per texel): %s", path, extent.width, extent.height, bpt, ok ? "written" : "FAILED");
+    FG_LOG("dump: %s (%ux%u, %u bytes per texel): %s", path, extent.width, extent.height, bpt, ok ? "read back" : "FAILED");
     return ok;
 }
 
@@ -353,6 +352,7 @@ bool GpuPrepareHeldPresent(const DeviceDispatch& dt, VkQueue queue, GpuState& g,
 void GpuDestroy(const DeviceDispatch& dt, GpuState* g) {
     if (!g) return;
     dt.DeviceWaitIdle(dt.device);
+    g->dump.Drop("the game ended, the engine went off or the swapchain was recreated inside the window");
     FlowDestroy(dt, *g);
     for (auto* v : {&g->captured, &g->staged, &g->acquire}) for (auto s : *v) if (s) dt.DestroySemaphore(dt.device, s, nullptr);
     if (g->pipeline)    dt.DestroyPipeline(dt.device, g->pipeline, nullptr);
@@ -537,10 +537,11 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         return VK_ERROR_UNKNOWN;
     }
     g.synth.initialized = true;
-    if (g.dump_synth > 0) {
+    if (g.dump.synth_left > 0) {
         char path[512]; std::snprintf(path, sizeof path, "%s/synth%02d_t%.3f.rgba16f", GetConfig().dump_dir, g.dump_tick++, double(t));
-        --g.dump_synth;
+        --g.dump.synth_left;
         DumpImage(dt, queue, g, g.synth.image, g.extent, 8, path);
+        g.dump.MaybeFlush(GetConfig().dump_dir, GetConfig().dump_frames, false);
     }
     out_image_index = idx; wait_sem = g.staged[idx];
     return VK_SUCCESS;

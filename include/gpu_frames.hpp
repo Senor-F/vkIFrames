@@ -5,10 +5,13 @@
 // the real image is held back (acquired, not presented) and presented one native frame later. Every Vulkan call
 // goes through the DeviceDispatch table. All ring images stay in VK_IMAGE_LAYOUT_GENERAL.
 
+#include "dump_queue.hpp"
 #include "vk_iframes_layer.hpp"
 
 #include <condition_variable>
 #include <mutex>
+#include <string>
+#include <vector>
 
 struct HeldFrame {
     bool     valid{false};
@@ -94,7 +97,7 @@ struct GpuState {
     int                      dump_pair_index{0}, dump_tick{0};   // VKIFRAME_DUMP naming
     uint64_t                 mark_tick{0}, mark_pair{0};   // VKIFRAME_TICKMARK bar position counters (ticks are synthesized one at a time)
     float                    mark_last_t{-1.0f};
-    int                      dump_synth{0};          // synthetic frames still to dump after the dumped pair
+    DumpQueue                dump;                   // VKIFRAME_DUMP: images read back during the window, written to files after it (a file write inside a pair stalls the game and skews the frame gaps). Guarded by gpu_mu
     HeldFrame                held;
     HeldFrame                last;                   // VKIFRAME_EXTRAPOLATE: the previous native frame (ring copy only, its real image has been presented); one ring reference
     // where the game thread waits (ns, window totals; read and reset by LogRates): gpu_mu, a free ring slot, a command buffer's fence
