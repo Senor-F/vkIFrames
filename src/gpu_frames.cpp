@@ -99,45 +99,64 @@ bool EndAndSubmit(const DeviceDispatch& dt, VkQueue queue, GpuState& g, uint32_t
     return true;
 }
 
-bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage image, VkExtent2D extent, uint32_t bpt, const char* path) {
-    if (!dt.CreateBuffer || !dt.DestroyBuffer || !dt.GetBufferMemoryRequirements || !dt.BindBufferMemory || !dt.MapMemory || !dt.UnmapMemory || !dt.CmdCopyImageToBuffer) return false;
+void DumpInit(const DeviceDispatch& dt, GpuState& g) {
+    if (GetConfig().dump_pair <= 0 || !g.flow.ready) return;
+    const FlowImage& fin = g.flow.fwd[g.flow.fin];
+    DumpLayout l;
+    l.a_bytes = size_t(g.extent.width) * g.extent.height * 8;
+    l.b_bytes = l.a_bytes;
+    l.fwd_bytes = l.bwd_bytes = size_t(fin.extent.width) * fin.extent.height * 8;
+    l.mask_bytes = size_t(fin.extent.width) * fin.extent.height * 4;
+    l.synth = 10;                                            // two for each of the first five pairs
+    if (g.dump_pool.Create(dt, l, GetConfig().dump_frames)) g.dump.frames = g.dump_pool.frames;
+    else FG_LOG("dump: VKIFRAME_DUMP is off for this swapchain");
+}
+
+DumpPool::Buf* DumpRecord(const DeviceDispatch& dt, VkCommandBuffer cb, VkImage image, VkExtent2D extent, uint32_t bpt, DumpPool::Buf* buf, const char* name) {
     const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * bpt;
-    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = bytes; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer buf{}; VkDeviceMemory mem{};
-    bool ok = dt.CreateBuffer(dt.device, &bi, nullptr, &buf) == VK_SUCCESS;
-    if (ok) {
-        VkMemoryRequirements req; dt.GetBufferMemoryRequirements(dt.device, buf, &req);
-        const uint32_t type = FindMemoryType(dt, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size, type};
-        ok = type != UINT32_MAX && dt.AllocateMemory(dt.device, &ai, nullptr, &mem) == VK_SUCCESS && dt.BindBufferMemory(dt.device, buf, mem, 0) == VK_SUCCESS;
+    if (!buf || buf->recorded || !buf->ptr || buf->bytes < bytes) { FG_LOG("dump: %s: no buffer for this image, skipped", name); return nullptr; }
+    MemBarrier(dt, cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy rg{}; rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; rg.imageExtent = {extent.width, extent.height, 1};
+    dt.CmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_GENERAL, buf->buf, 1, &rg);
+    MemBarrier(dt, cb, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    buf->bytes = size_t(bytes);                                                                // the file is exactly the image
+    try { buf->name = name; } catch (const std::bad_alloc&) { return nullptr; }
+    buf->recorded = true;
+    return buf;
+}
+
+// One wait after the window: every copy was recorded into a command buffer of this swapchain, so all fences covering them signal when they finished.
+void DumpFlush(const DeviceDispatch& dt, GpuState& g) {
+    if (!g.dump_pool.ready) { FG_LOG("dump: capture FAILED, the buffer pool is not available"); g.dump.Drop(""); return; }
+    for (uint32_t i = 0; i < g.n_cmd; ++i) {
+        if (g.fences[i] == VK_NULL_HANDLE) continue;
+        if (dt.WaitForFences(dt.device, 1, &g.fences[i], VK_TRUE, 2'000'000'000ull) != VK_SUCCESS) {
+            FG_LOG("dump: capture FAILED, a GPU copy did not finish in 2 s; nothing is written");
+            g.dump.Drop("");
+            g.dump_pool.ready = false;                                                    // no more copies; the buffers stay allocated (a copy may still run) until GpuDestroy, which waits for the device first
+            return;
+        }
     }
-    uint32_t e = 0;
-    bool submitted = false, copy_pending = false;
-    if (ok) ok = BeginCmd(dt, g, e);
-    if (ok) {
-        VkCommandBuffer cb = g.cbs[e];
-        MemBarrier(dt, cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        VkBufferImageCopy rg{}; rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; rg.imageExtent = {extent.width, extent.height, 1};
-        dt.CmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &rg);
-        MemBarrier(dt, cb, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-        submitted = EndAndSubmit(dt, queue, g, e, {}, VK_NULL_HANDLE);
-        ok = submitted && dt.WaitForFences(dt.device, 1, &g.fences[e], VK_TRUE, 2'000'000'000ull) == VK_SUCCESS;
-        copy_pending = submitted && !ok;                                   // the copy was queued but the wait timed out or failed: it may still be running
+    const char* dir = GetConfig().dump_dir;
+    for (auto& b : g.dump_pool.bufs) {
+        if (!b.recorded) continue;
+        char path[512]; std::snprintf(path, sizeof path, "%s/%s", dir, b.name.c_str());
+        if (!g.dump.AddView(path, b.ptr, b.bytes)) FG_LOG("dump: %s: not queued (out of memory)", path);
     }
-    if (ok) {
-        void* p = nullptr;
-        if (dt.MapMemory(dt.device, mem, 0, bytes, 0, &p) == VK_SUCCESS) {
-            ok = g.dump.Add(path, static_cast<const uint8_t*>(p), size_t(bytes));
-            dt.UnmapMemory(dt.device, mem);
-        } else ok = false;
-    }
-    if (copy_pending) FG_LOG("dump: the copy did not finish in 2 s; its buffer is left allocated rather than freed under a copy that may still run");   // debug path: a small, one-off leak
-    else {
-        if (buf) dt.DestroyBuffer(dt.device, buf, nullptr);
-        if (mem) dt.FreeMemory(dt.device, mem, nullptr);
-    }
-    FG_LOG("dump: %s (%ux%u, %u bytes per texel): %s", path, extent.width, extent.height, bpt, ok ? "read back" : "FAILED");
-    return ok;
+    g.dump.Flush(dir);
+    g.dump_pool.Destroy(dt);                                                                  // one capture per game start: give the memory back
+}
+
+void DumpMaybeFlush(const DeviceDispatch& dt, GpuState& g, bool force) {
+    if (!g.dump_pool.ready) return;
+    if (force || g.dump.Ready()) DumpFlush(dt, g);
+}
+
+void DumpTeardown(const DeviceDispatch& dt, GpuState& g) {
+    size_t n = 0; for (const auto& b : g.dump_pool.bufs) n += b.recorded ? 1 : 0;
+    if (n) FG_LOG("dump: %zu queued images not written (the game ended, the engine went off or the swapchain was recreated inside the window)", n);
+    g.dump.Drop("");
+    g.dump_pool.Destroy(dt);
 }
 
 bool CreateSlot(const DeviceDispatch& dt, GpuState& g, GpuState::Slot& s) {
@@ -271,6 +290,7 @@ GpuState* GpuInit(const DeviceDispatch& dt, SwapchainState& sc, uint32_t family)
     g->synth_ready = GetConfig().synth && CreateBlendPass(dt, *g);
     FG_LOG("synth: synthetic frames %s", g->synth_ready ? "ready (blend.comp)" : "off");
     if (g->synth_ready && GetConfig().flow && !FlowCreate(dt, *g)) { FG_LOG("flow: the optical-flow engine could not be built, it stays off"); FlowDestroy(dt, *g); }
+    DumpInit(dt, *g);
     FG_LOG("hold: ring %u x RGBA16F %ux%u, %zu swapchain images, queue family %u", GpuState::kRingCapacity, g->extent.width, g->extent.height, g->swap_images.size(), family);
     return g;
 }
@@ -352,7 +372,7 @@ bool GpuPrepareHeldPresent(const DeviceDispatch& dt, VkQueue queue, GpuState& g,
 void GpuDestroy(const DeviceDispatch& dt, GpuState* g) {
     if (!g) return;
     dt.DeviceWaitIdle(dt.device);
-    g->dump.Drop("the game ended, the engine went off or the swapchain was recreated inside the window");
+    DumpTeardown(dt, *g);
     FlowDestroy(dt, *g);
     for (auto* v : {&g->captured, &g->staged, &g->acquire}) for (auto s : *v) if (s) dt.DestroySemaphore(dt.device, s, nullptr);
     if (g->pipeline)    dt.DestroyPipeline(dt.device, g->pipeline, nullptr);
@@ -520,6 +540,12 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     }
     dt.CmdDispatch(cb, (g.extent.width + 15) / 16, (g.extent.height + 15) / 16, 1);
     Barrier(dt, cb, g.synth.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, XFER, VK_ACCESS_2_TRANSFER_READ_BIT);
+    DumpPool::Buf* dump_buf = nullptr;                                             // VKIFRAME_DUMP: the synthetic frame is copied out in this same command buffer
+    if (g.dump.synth_left > 0 && g.dump_pool.ready && g.dump_tick < 10) {
+        char name[64]; std::snprintf(name, sizeof name, "synth%02d_t%.3f.rgba16f", g.dump_tick, double(t));
+        dump_buf = DumpRecord(dt, cb, g.synth.image, g.extent, 8, &g.dump_pool.Synth(g.dump_tick), name);
+        if (dump_buf) { ++g.dump_tick; --g.dump.synth_left; }
+    }
     if (time_interp) {
         dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + 9);
         fs.interp_pending[e] = true;
@@ -533,16 +559,12 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
 
     if (!EndAndSubmit(dt, queue, g, e, waits, g.staged[idx])) {
         // Synthetic frames are switched off for this swapchain after a failure (the caller); the acquired image is presented, not kept.
+        if (dump_buf) { dump_buf->recorded = false; --g.dump_tick; ++g.dump.synth_left; }     // the copy never ran
         if (acquired) { FG_LOG("synth: submit failed after acquiring swapchain image %u", idx); GiveBackAcquired(dt, queue, g, idx, g.acquire[e], true); }
         return VK_ERROR_UNKNOWN;
     }
     g.synth.initialized = true;
-    if (g.dump.synth_left > 0) {
-        char path[512]; std::snprintf(path, sizeof path, "%s/synth%02d_t%.3f.rgba16f", GetConfig().dump_dir, g.dump_tick++, double(t));
-        --g.dump.synth_left;
-        DumpImage(dt, queue, g, g.synth.image, g.extent, 8, path);
-        g.dump.MaybeFlush(GetConfig().dump_dir, GetConfig().dump_frames, false);
-    }
+    DumpMaybeFlush(dt, g, false);
     out_image_index = idx; wait_sem = g.staged[idx];
     return VK_SUCCESS;
 }

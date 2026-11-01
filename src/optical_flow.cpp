@@ -321,34 +321,39 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
         f.ts_n = nstamp;
         f.ts_pending[e] = true;
     }
-    if (!EndAndSubmit(dt, queue, g, e, {}, VK_NULL_HANDLE)) { f.failed = true; FG_LOG("flow: submit failed, the engine is off"); return false; }
-    f.pair_valid = true;
-    if (GetConfig().dump_pair > 0) {
-        const uint64_t n = ++g.pairs_flowed, first = uint64_t(GetConfig().dump_pair);
+    // VKIFRAME_DUMP: the copies into the pool are recorded in this command buffer, which is submitted anyway: no extra submit, wait or CPU copy
+    const bool dumping = GetConfig().dump_pair > 0;
+    const uint64_t n = g.pairs_flowed + 1, first = uint64_t(GetConfig().dump_pair), window = uint64_t(g.dump.frames);
+    const bool in_window = dumping && g.dump_pool.ready && n >= first && n < first + window;
+    if (in_window) {
+        const char* dir = GetConfig().dump_dir;
         if (n == first) {
-            const char* dir = GetConfig().dump_dir;
             struct stat dst;
             if (::mkdir(dir, 0700) != 0 && errno != EEXIST) FG_LOG("dump: cannot create %s (%s); set VKIFRAME_DUMP_DIR to a folder the game can write", dir, std::strerror(errno));
             else if (::lstat(dir, &dst) != 0 || !S_ISDIR(dst.st_mode) || dst.st_uid != ::geteuid()) FG_LOG("dump: %s is not a folder of this user, nothing written", dir);
-            else { (void)::chmod(dir, 0700); FG_LOG("dump: pair %llu, writing the capture to %s (private: these are screenshots)", (unsigned long long)n, dir); }
-            char path[512];
-            auto file = [&](const char* name) { std::snprintf(path, sizeof path, "%s/%s", dir, name); return path; };
-            DumpImage(dt, queue, g, g.ring[b.slot].image, g.extent, 8, file("B.rgba16f"));
-            DumpImage(dt, queue, g, f.fwd[f.fin].image, f.fwd[f.fin].extent, 8, file("flow_fwd.rgba16f"));
-            DumpImage(dt, queue, g, f.bwd[f.fin].image, f.bwd[f.fin].extent, 8, file("flow_bwd.rgba16f"));
-            DumpImage(dt, queue, g, f.mask.image, f.fwd[f.fin].extent, 4, file("mask.r32f"));
+            else { (void)::chmod(dir, 0700); FG_LOG("dump: pair %llu, capturing %llu frames into memory, the files are written after the last one (private: these are screenshots)", (unsigned long long)n, (unsigned long long)window); }
+            DumpRecord(dt, cb, g.ring[b.slot].image, g.extent, 8, &g.dump_pool.B(), "B.rgba16f");
+            DumpRecord(dt, cb, f.fwd[f.fin].image, f.fwd[f.fin].extent, 8, &g.dump_pool.Fwd(), "flow_fwd.rgba16f");
+            DumpRecord(dt, cb, f.bwd[f.fin].image, f.bwd[f.fin].extent, 8, &g.dump_pool.Bwd(), "flow_bwd.rgba16f");
+            DumpRecord(dt, cb, f.mask.image, f.fwd[f.fin].extent, 4, &g.dump_pool.Mask(), "mask.r32f");
         }
-        const uint64_t window = uint64_t(GetConfig().dump_frames);
-        if (n >= first && n < first + window) {      // consecutive pairs: the native frame A of each (the synthetic frames of the first five only)
-            char path[512]; std::snprintf(path, sizeof path, "%s/pair%d_A.rgba16f", GetConfig().dump_dir, int(n - first));
-            DumpImage(dt, queue, g, g.ring[a.slot].image, g.extent, 8, path);
-            g.dump_pair_index = int(n - first);
-            if (n < first + 5) g.dump.synth_left += 2;
+        char name[64]; std::snprintf(name, sizeof name, "pair%d_A.rgba16f", int(n - first));
+        DumpRecord(dt, cb, g.ring[a.slot].image, g.extent, 8, &g.dump_pool.A(int(n - first)), name);
+    }
+    if (!EndAndSubmit(dt, queue, g, e, {}, VK_NULL_HANDLE)) {
+        if (in_window) g.dump_pool.ClearRecorded();                                        // the copies never ran; teardown logs the drop
+        f.failed = true; FG_LOG("flow: submit failed, the engine is off"); return false;
+    }
+    f.pair_valid = true;
+    if (dumping) {
+        ++g.pairs_flowed;                                                                  // VKIFRAME_DUMP counts the pairs that went through GpuFlow
+        if (in_window) {
+            if (n < first + 5) g.dump.synth_left += 2;                                     // the synthetic frames of the first five pairs
             g.dump.pairs_queued = int(n - first) + 1;
             const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             if (!g.dump.AddTime(int(n - first), now_ns)) FG_LOG("dump: times.txt line for pair %d lost (out of memory)", int(n - first));
         }
-        g.dump.MaybeFlush(GetConfig().dump_dir, GetConfig().dump_frames, n >= first + window);       // files are written after the fifth pair (or when its synthetic frames are in), never inside the five; a pair 6 forces it if some synthetic frames did not come
+        DumpMaybeFlush(dt, g, n >= first + window);          // the files are written after the last pair (or when the synthetic frames are in), never inside the window; the next pair forces it if some synthetic frames did not come
     }
     return true;
 }
