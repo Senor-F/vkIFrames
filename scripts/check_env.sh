@@ -3,6 +3,7 @@
 echo "== system"; uname -srm; grep PRETTY_NAME /etc/os-release 2>/dev/null
 echo "session: ${XDG_SESSION_TYPE:-unknown}  display: ${WAYLAND_DISPLAY:-${DISPLAY:-none}}"
 echo "== steamos / hardware"
+# shellcheck source=/dev/null
 . /etc/os-release 2>/dev/null; echo "os id: ${ID:-?} ${VARIANT_ID:+(variant $VARIANT_ID)} build: ${BUILD_ID:-?}"
 b=$(cat /sys/devices/virtual/dmi/id/board_name 2>/dev/null); echo "board: ${b:-unknown} (Jupiter = Deck LCD, Galileo = Deck OLED)"
 (lspci 2>/dev/null | grep -iE "vga|display" | head -2) || true
@@ -28,4 +29,6 @@ if command -v vulkaninfo >/dev/null; then
   echo -n "present timing on this driver: "; vulkaninfo 2>/dev/null | grep -qi "VK_EXT_present_timing" && echo yes || echo no
   echo -n "present_id2 on this driver:    "; vulkaninfo 2>/dev/null | grep -qi "VK_KHR_present_id2" && echo yes || echo no
 fi
-echo "== validation layer"; ls /usr/share/vulkan/explicit_layer.d 2>/dev/null | grep -i validation || echo "VK_LAYER_KHRONOS_validation: not found (optional)"
+echo "== validation layer"
+found=""; for f in /usr/share/vulkan/explicit_layer.d/*[Vv]alidation*; do [ -e "$f" ] && { basename "$f"; found=1; }; done
+[ -n "$found" ] || echo "VK_LAYER_KHRONOS_validation: not found (optional)"

@@ -3,7 +3,7 @@
 # usage: scripts/check_so.sh path/to/libvkIFrames.so      exit 0 = all checks pass, 1 = at least one failed, 2 = usage / tool missing
 set -u
 LIB=${1:-}
-[ -n "$LIB" ] && [ -f "$LIB" ] || { echo "usage: $0 path/to/libvkIFrames.so" >&2; exit 2; }
+if [ -z "$LIB" ] || [ ! -f "$LIB" ]; then echo "usage: $0 path/to/libvkIFrames.so" >&2; exit 2; fi
 for t in nm objdump readelf strings sort; do command -v "$t" >/dev/null 2>&1 || { echo "check_so: $t not found" >&2; exit 2; }; done
 FLOOR=2.34
 fail=0
@@ -18,7 +18,7 @@ have=$(nm -D --defined-only "$LIB" | awk '$2 ~ /^[TtDdBbRrWwVv]$/ {print $3}' | 
 
 # 2. imports: no versions from the C++ runtime or libgcc, glibc not above the floor
 ver=$(objdump -T "$LIB" | grep -oE '(GLIBCXX|CXXABI|GCC)_[0-9.]+' | sort -u)
-[ -z "$ver" ] || bad "imports versioned symbols of the C++ runtime or libgcc: $(echo $ver)"
+[ -z "$ver" ] || bad "imports versioned symbols of the C++ runtime or libgcc: $(printf '%s' "$ver" | tr '\n' ' ')"
 maxg=$(objdump -T "$LIB" | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -V | tail -1)
 if [ -n "$maxg" ]; then
     top=$(printf '%s\n%s\n' "$FLOOR" "$maxg" | sort -V | tail -1)
@@ -29,7 +29,7 @@ if nm -D --undefined-only "$LIB" | awk '$1 == "U" {print $2}' | grep -E '^_Z' >/
 
 # 3. dynamic section: no C++ runtime / libgcc library, no run path
 needed=$(readelf -d "$LIB" | awk '/NEEDED/ {gsub(/[][]/,"",$NF); print $NF}')
-echo "$needed" | grep -E 'libstdc\+\+|libgcc_s' >/dev/null && bad "NEEDED lists the C++ runtime or libgcc_s: $(echo $needed)"
+echo "$needed" | grep -E 'libstdc\+\+|libgcc_s' >/dev/null && bad "NEEDED lists the C++ runtime or libgcc_s: $(printf '%s' "$needed" | tr '\n' ' ')"
 readelf -d "$LIB" | grep -E 'RPATH|RUNPATH' >/dev/null && bad "RPATH or RUNPATH is set"
 
 # 4. no personal strings: home folders, the user name, the host name
