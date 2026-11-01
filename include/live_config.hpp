@@ -26,6 +26,10 @@ int LiveMaxSyntheticLimit();
 
 // Without VKIFRAME_LOG_FILE the layer's own output goes to live.log (0600, in a 0700 folder; the game's stderr is not touched). Returns false on failure.
 bool LiveLogOpen();
+// live.log and stats.jsonl are capped at 8 MiB each (one old file, .1, is kept): checked when they are opened and while they grow. LiveLogCap() is called about once a second.
+void LiveLogCap();
+bool LiveLogIsFile();                         // false when live.log could not be opened and the layer's lines go to stderr (the game's log): the caller then keeps routine per-second lines to one a minute
+void LiveLogSetCap(long long bytes);          // for tests; the default is 8 MiB
 LiveSettings& Live();                         // initialised from the environment on first use
 void LivePoll(uint64_t now_ns);               // cheap: one stat() per second; re-reads the file when it changed
 // About once a second: native fps, shown fps, generated frames per native frame and the mode; written to status.json next to live.conf

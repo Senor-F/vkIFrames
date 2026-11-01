@@ -434,13 +434,17 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     if (r.last_ns == 0) { r = {.last_ns = now}; return; }
     if (now - r.last_ns < 1'000'000'000ull) return;
     const double secs = double(now - r.last_ns) / 1e9;
+    LiveLogCap();                                                  // live.log stays under its cap while the game runs
+    // When live.log could not be opened these lines would go to the game's stderr (and from there into Steam's log): keep them to one second in a minute
+    static uint64_t quiet_n = 0;
+    const bool routine = LiveLogIsFile() || (quiet_n++ % 60) == 0;
     const bool want_stats = StatsWantsSecond();
     stats::Record rec;
     {
         const double nat = double(r.native) / secs, shown = double(r.shown) / secs;
         LiveWriteStatus(nat, shown, nat > 0.5 ? std::max(0, int(std::lround(shown / nat)) - 1) : 0, !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass", sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0, StatsBenchLabel());
     }
-    FG_LOG("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
+    if (routine) FG_LOG("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
            double(r.native) / secs, double(r.output) / secs, double(r.shown) / secs, sc.gpu ? (GetConfig().extrapolate ? " (extrapolating)" : " (frame holding on)") : "",
            sc.sched.GateActive() ? "interpolating" : "bypass",
            (unsigned long long)r.pair, (unsigned long long)r.synthetic, (unsigned long long)r.bypass, (unsigned long long)r.carrier, (unsigned long long)r.dropped,
@@ -458,8 +462,8 @@ void LogRates(SwapchainState& sc, uint64_t now) {
         double w_lock = 0, w_ring = 0, w_fence = 0;
         if (sc.gpu) {
             w_lock = double(sc.gpu->wait_lock_ns.exchange(0)) / 1e6 / n; w_ring = double(sc.gpu->wait_ring_ns.exchange(0)) / 1e6 / n; w_fence = double(sc.gpu->wait_fence_ns.exchange(0)) / 1e6 / n;
-            FG_LOG("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
-            FG_LOG("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
+            if (routine) FG_LOG("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
+            if (routine) FG_LOG("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
         }
         double flow_ms = 0, pairs_s = 0, interp_ms = 0, gen_s = 0;       // GPU time of the flow and of the interpolation in this second (copied while the readback runs)
         if (sc.gpu) {

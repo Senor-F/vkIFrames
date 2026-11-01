@@ -19,8 +19,8 @@
 
 #define FRAMEGEN_EXPORT extern "C" __attribute__((visibility("default")))
 bool LiveLogOpen();   // live_config.cpp
-inline FILE* g_fg_log = nullptr;                          // the layer's log stream (live.log), null = stderr
-inline FILE* FgLog() { return g_fg_log ? g_fg_log : stderr; }
+inline std::atomic<FILE*> g_fg_log{nullptr};              // the layer's log stream (live.log), null = stderr; swapped when live.log is rotated while the layer runs
+inline FILE* FgLog() { FILE* f = g_fg_log.load(std::memory_order_acquire); return f ? f : stderr; }
 #define FG_LOG(...) do { FILE* fg_f_ = FgLog(); std::fprintf(fg_f_, "[FrameGen] " __VA_ARGS__); std::fputc('\n', fg_f_); } while (0)
 
 // The loader's dispatch pointer is the first word of every dispatchable handle.

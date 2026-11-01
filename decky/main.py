@@ -25,6 +25,7 @@ CONF_DIR = os.path.join(USER_HOME, ".config", "vkiframes")
 LIVE_CONF = os.path.join(CONF_DIR, "live.conf")      # plugin -> layer
 STATUS_JSON = os.path.join(CONF_DIR, "status.json")  # layer -> plugin (optional)
 BENCH_JSON = os.path.join(CONF_DIR, "bench.json")    # layer -> plugin: result of a benchmark run (numbers only)
+LOG_CAP_BYTES = 8 * 1024 * 1024                        # live.log is rotated past this size (the layer does the same)
 LIVE_LOG = os.path.join(CONF_DIR, "live.log")        # verbose log of every change; the layer appends to the same file
 DATA_DIR = os.path.join(USER_HOME, ".local", "share", "vkiframes")
 LAYER_DIR = os.path.join(USER_HOME, ".local", "share", "vulkan", "implicit_layer.d")
@@ -91,6 +92,12 @@ def _log(msg):
         _private_dir(CONF_DIR)
         t = time.time()
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
+        try:                                                   # live.log is capped like the layer's copy of it: past 8 MiB it becomes live.log.1 (one old file is kept)
+            st0 = os.lstat(LIVE_LOG)
+            if stat.S_ISREG(st0.st_mode) and st0.st_size > LOG_CAP_BYTES:
+                os.replace(LIVE_LOG, LIVE_LOG + ".1")
+        except FileNotFoundError:
+            pass
         fd = os.open(LIVE_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             st = os.fstat(fd)
@@ -187,11 +194,28 @@ def _read_user_file(path, limit=None, tail=None):
         os.close(fd)
 
 
+def _clean_stale_tmp():
+    """Temporary files an earlier version (or a crash) left next to the settings: 'name.tmp.<pid>'. Regular files only, in our own folders."""
+    for d in (CONF_DIR, SETTINGS_DIR):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            if ".tmp." in n and n.rsplit(".", 1)[-1].isdigit():
+                p = os.path.join(d, n)
+                try:
+                    if stat.S_ISREG(os.lstat(p).st_mode):
+                        os.unlink(p)
+                except OSError:
+                    pass
+
+
 def _atomic_write(path, text, user_dir=True):
     _makedirs(os.path.dirname(path))
     if user_dir:
         _real_dir(os.path.dirname(path))                  # a symlink in place of the folder is refused, nothing is written
-    tmp = "%s.tmp.%d" % (path, os.getpid())
+    tmp = path + ".tmp"                                   # one fixed name (this process is the only writer): a crash leaves at most one file, which the next write replaces
     try:
         os.unlink(tmp)                                    # a leftover or planted file (or symlink) at the temporary name goes; unlink never follows
     except FileNotFoundError:
@@ -268,6 +292,7 @@ class Plugin:
             _log("display: refresh rate %.1f Hz (%s); Target FPS slider now reaches %d (was %d)" % (hz, src, self._target_max(), old))
 
     async def _main(self):
+        _clean_stale_tmp()
         self._load_display()
         self.values = self._read_settings()
         self.rev = int(time.time())
