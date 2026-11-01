@@ -87,7 +87,7 @@ Value bookkeeping: the graphics queue signals the *capture timeline*, the comput
 
 ## 4. Configuration
 
-Runtime configuration through environment variables (read once per process), plus the live settings. README.md has the complete tables with defaults; this page keeps the Stage 6 view. All of them are read by `Config` in `include/vk_iframes_layer.hpp` through `EnvVar("NAME")`, which tries `VKIFRAME_NAME`, then `FRAMEGEN_NAME`.
+Runtime configuration through environment variables (read once per process), plus the live settings. README.md has the complete tables with defaults; this page keeps the Stage 6 view. All of them are read by `Config` in `include/vk_iframes_layer.hpp` through `EnvVar("NAME")`, which tries `VKIFRAME_NAME`, then `FRAMEGEN_NAME` (for the five startup-only keys `EXTRAPOLATE`, `UI_MASK_THRESHOLD`, `FLOW_LEVEL`, `INTERPOLATE` and `EXPERIMENTAL`, `live.conf` is looked at first and wins over the environment).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
