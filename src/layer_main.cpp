@@ -403,10 +403,22 @@ VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchain
     const uint64_t t0 = NowNs();
     if (swapchain) {
         if (SwapchainState* sc = FindSwapchain(swapchain)) {
-            if (sc->timing_enabled) DrainPastTimings(*dt, *sc);
-            const bool detached = StopPresenter(*sc);                             // no job may touch the swapchain while it is destroyed
-            FG_LOG("shutdown: presenter stopped (%.0f ms)", (NowNs() - t0) / 1e6);
-            HeldFencesDrop(*dt, sc);                                              // a later wait on the held frame's fence must not reach this state
+            if (sc->timing_enabled) { std::lock_guard<std::mutex> l(sc->mu); DrainPastTimings(*dt, *sc); }   // under mu like every other caller: the presenter thread may be in its own drain
+            bool detached;
+            {   // flow_mu: a thread that flushes the held frame for a fence or a present id (Hook_WaitForFences, Hook_GetFenceStatus, Hook_WaitForPresentKHR) holds it for the whole
+                // flush. Destroy waits for that flush here; after it those threads find no GPU state (sc->gpu is null) and do nothing. The state itself stays allocated
+                // for as long as a flush holds a reference to it (FlushForFences).
+                std::lock_guard<std::mutex> fl(sc->flow_mu);
+                detached = StopPresenter(*sc);                                    // no job may touch the swapchain while it is destroyed
+                FG_LOG("shutdown: presenter stopped (%.0f ms)", (NowNs() - t0) / 1e6);
+                HeldFencesDrop(*dt, sc);                                          // a later wait on the held frame's fence must not reach this state
+                if (!detached && sc->gpu) {
+                    GpuState* g = sc->gpu;
+                    sc->gpu = nullptr;                                            // the held frame is simply dropped with its swapchain
+                    GpuDestroy(*dt, g);
+                    FG_LOG("shutdown: GPU resources destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
+                }
+            }
             if (detached) {
                 // The presenter thread is stuck in a driver call and still holds the swapchain state, its GPU state and the device dispatch table:
                 // none of them is freed (this is shutdown, a small leak); vkDestroyDevice leaves the dispatch table alone too.
@@ -414,8 +426,6 @@ VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchain
                 g_presenter_detached = true;
                 LeakSwapchainState(swapchain);
             } else {
-                if (sc->gpu) { GpuDestroy(*dt, sc->gpu); sc->gpu = nullptr; }  // the held frame is simply dropped with its swapchain
-                FG_LOG("shutdown: GPU resources destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
                 DestroySwapchainState(swapchain);
             }
         } else DestroySwapchainState(swapchain);
@@ -603,11 +613,11 @@ struct CarriedExt {
 void HeldFenceAdd(DeviceDispatch& dt, SwapchainState& sc, const HeldFrame& h) {
     if (!h.fence) return;
     std::lock_guard<std::mutex> l(dt.fence_mu);
-    dt.held_fences.emplace_back(uint64_t(reinterpret_cast<uintptr_t>(h.fence)), &sc);
+    dt.held_fences.emplace_back(uint64_t(reinterpret_cast<uintptr_t>(h.fence)), sc.weak_from_this());
 }
 void HeldFencesDrop(DeviceDispatch& dt, SwapchainState* sc) {      // every held fence that belongs to a swapchain that is being destroyed
     std::lock_guard<std::mutex> l(dt.fence_mu);
-    dt.held_fences.erase(std::remove_if(dt.held_fences.begin(), dt.held_fences.end(), [&](auto& e) { return e.second == sc; }), dt.held_fences.end());
+    dt.held_fences.erase(std::remove_if(dt.held_fences.begin(), dt.held_fences.end(), [&](auto& e) { auto s = e.second.lock(); return !s || s.get() == sc; }), dt.held_fences.end());
 }
 void HeldFenceRemove(DeviceDispatch& dt, const HeldFrame& h) {
     if (!h.fence) return;
@@ -1113,16 +1123,16 @@ VkResult FlushHeld(DeviceDispatch& dt, SwapchainState& sc, uint64_t present_id, 
 
 // Swapchains with a held frame whose application fence is among fences[]
 void FlushForFences(DeviceDispatch& dt, uint32_t n, const VkFence* fences, const char* why) {
-    std::vector<SwapchainState*> hit;
+    std::vector<std::shared_ptr<SwapchainState>> hit;       // owning references: a swapchain destroyed on another thread while we flush stays allocated until we are done
     {
         std::lock_guard<std::mutex> l(dt.fence_mu);
         if (dt.held_fences.empty()) return;
         for (uint32_t i = 0; i < n; ++i)
             for (auto& e : dt.held_fences)
-                if (e.first == uint64_t(reinterpret_cast<uintptr_t>(fences[i]))) hit.push_back(e.second);
+                if (e.first == uint64_t(reinterpret_cast<uintptr_t>(fences[i]))) if (auto s = e.second.lock()) hit.push_back(std::move(s));
     }
     for (uint32_t i = 0; i < n; ++i)
-        for (SwapchainState* sc : hit) (void)FlushHeld(dt, *sc, 0, fences[i], why);
+        for (auto& sc : hit) (void)FlushHeld(dt, *sc, 0, fences[i], why);
 }
 } // namespace
 

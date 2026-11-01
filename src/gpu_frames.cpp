@@ -337,7 +337,12 @@ bool GpuPrepareHeldPresent(const DeviceDispatch& dt, VkQueue queue, GpuState& g,
 
 void GpuDestroy(const DeviceDispatch& dt, GpuState* g) {
     if (!g) return;
-    dt.DeviceWaitIdle(dt.device);
+    {   // vkDeviceWaitIdle needs every queue of the device to be externally synchronized: take the same mutexes as Hook_DeviceWaitIdle (sorted order), so the game's
+        // other threads cannot be inside vkQueueSubmit/Present while it runs. No caller holds a queue mutex here.
+        std::vector<std::unique_lock<std::mutex>> locks;
+        for (std::mutex* m : DeviceQueueMutexes(GetKey(dt.device))) locks.emplace_back(*m);
+        dt.DeviceWaitIdle(dt.device);
+    }
     DumpTeardown(dt, *g);
     FlowDestroy(dt, *g);
     for (auto* v : {&g->captured, &g->staged, &g->acquire}) for (auto s : *v) if (s) dt.DestroySemaphore(dt.device, s, nullptr);
