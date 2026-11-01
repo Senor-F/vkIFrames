@@ -218,6 +218,39 @@ static void Bidirectional(const Ctx& c, float t, Rgb& out) {
         }
 }
 
+// One-sided fill (VKIFRAME_ONESIDED_FILL, experimental; mirrors apply_fill in shaders/flow_interp.comp; the "fill_consist" variant of the offline experiment).
+// Where the forward/backward check says a pixel is occluded, it is taken from the one frame that shows the background, along the best consistent vector of
+// that frame's flow within kFillR field pixels, and blended into the bidirectional result by the occlusion weight.
+constexpr int   kFillR = 6;
+constexpr float kFillOccLo = 0.1f, kFillOccHi = 0.5f, kFillMaskMax = 0.3f, kFillCostMax = 0.10f;
+static bool FillBgVector(const Flow& f, const std::vector<float>& mask, int qx, int qy, float& vx, float& vy, float& bad) {
+    float best = 1e9f; bool found = false; vx = vy = 0.0f; bad = 9.0f;
+    for (int dy = -kFillR; dy <= kFillR; ++dy) for (int dx = -kFillR; dx <= kFillR; ++dx) {
+        const int x = qx + dx, y = qy + dy; if (x < 0 || y < 0 || x >= f.w || y >= f.h) continue;
+        const size_t i = f.idx(x, y); if (mask[i] > kFillMaskMax || f.cost[i] > kFillCostMax) continue;
+        const float score = mask[i] * 4.0f + f.cost[i] * 10.0f + 0.01f * std::hypot(f.x[i], f.y[i]);
+        if (score < best) { best = score; vx = f.x[i]; vy = f.y[i]; bad = mask[i] + f.cost[i]; found = true; }
+    }
+    return found;
+}
+static void FillConsistRef(const Ctx& c, float t, Rgb& out) {
+    Bidirectional(c, t, out);
+    for (int y = 0; y < out.h; ++y) for (int x = 0; x < out.w; ++x) {
+        const int qx = std::clamp(int(std::floor((float(x) + 0.5f) / c.scale)), 0, c.fwd.w - 1), qy = std::clamp(int(std::floor((float(y) + 0.5f) / c.scale)), 0, c.fwd.h - 1);
+        const float occ_f = c.mask_f[c.fwd.idx(qx, qy)], occ_b = c.mask_b[c.bwd.idx(qx, qy)];
+        const float occ = Smoothstep(kFillOccLo, kFillOccHi, std::max(occ_f, occ_b));
+        if (occ <= 0.0f) continue;
+        float ax, ay, ab, bx, by, bb;
+        const bool fa = FillBgVector(c.fwd, c.mask_f, qx, qy, ax, ay, ab), fb = FillBgVector(c.bwd, c.mask_b, qx, qy, bx, by, bb);
+        if (!fa && !fb) continue;
+        const bool use_b = fb && (!fa || bb < ab - 1e-3f || (std::fabs(bb - ab) <= 1e-3f && occ_b >= occ_f));
+        float col[3];
+        if (use_b) Sample(c.b, float(x) - (1 - t) * bx * c.scale, float(y) - (1 - t) * by * c.scale, col);
+        else       Sample(c.a, float(x) - t * ax * c.scale, float(y) - t * ay * c.scale, col);
+        for (int ch = 0; ch < 3; ++ch) out.px(x, y)[ch] += (col[ch] - out.px(x, y)[ch]) * occ;
+    }
+}
+
 // Auditor question 1: the trust of the strongest side alone, so a pixel only B can explain is a full B interpolation at t = 0.25 too
 static void BidirectionalOneSided(const Ctx& c, float t, Rgb& out) {
     for (int y = 0; y < out.h; ++y)
@@ -340,7 +373,7 @@ int main(int argc, char** argv) {
 
     const float eval_t = std::getenv("EVAL_T") ? float(std::atof(std::getenv("EVAL_T"))) : 0.5f;   // time of TRUTH between A (0) and B (1)
     struct M { const char* name; Method fn; } methods[] = {
-        {"fade", Fade}, {"current", Current}, {"bidirectional", Bidirectional}, {"bidir_onesided", BidirectionalOneSided}, {"splat", Splat}, {"adaptive", Adaptive}, {"near_A", NearA}, {"near_B", NearB}, {"lean_A", LeanA}, {"lean_B", LeanB},
+        {"fade", Fade}, {"current", Current}, {"bidirectional", Bidirectional}, {"bidir_onesided", BidirectionalOneSided}, {"bidir_fill", FillConsistRef}, {"splat", Splat}, {"adaptive", Adaptive}, {"near_A", NearA}, {"near_B", NearB}, {"lean_A", LeanA}, {"lean_B", LeanB},
         {"extrap", [](const Ctx& c, float t, Rgb& o) { Extrapolate(c, t, o, true, false); }}, {"extrap_pan", [](const Ctx& c, float t, Rgb& o) { Extrapolate(c, t, o, true, true); }}, {"extrap_nomask", [](const Ctx& c, float t, Rgb& o) { Extrapolate(c, t, o, false, false); }},
         {"ui_0.03", [](const Ctx& c, float t, Rgb& o) { UiMask(c, t, o, 0.03f); }}, {"ui_0.06", [](const Ctx& c, float t, Rgb& o) { UiMask(c, t, o, 0.06f); }}, {"ui_0.10", [](const Ctx& c, float t, Rgb& o) { UiMask(c, t, o, 0.10f); }},
     };

@@ -211,6 +211,15 @@
     "group": "more"
   },
   {
+    "key": "ONESIDED_FILL",
+    "label": "One-sided fill (experimental)",
+    "type": "toggle",
+    "default": 0,
+    "needsLayer": "restart",
+    "desc": "Behind a moving object, takes the colour from the one frame that shows the background instead of blending both. Offline (five scenes, 1280x720, CPU reference flow) the best of four variants was worse than the default in 21 of 25 triplets on hard pixels (mean +6.0 %, all pixels +3.0 %) and better in 4 (-1.0 to -2.7 %). Provided for testing, not as an improvement. Needs a game restart.",
+    "group": "more"
+  },
+  {
     "key": "UI_MASK_THRESHOLD",
     "label": "Keep HUD still (0 = off)",
     "type": "slider",

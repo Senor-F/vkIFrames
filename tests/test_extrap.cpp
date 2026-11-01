@@ -121,8 +121,8 @@ static VkResult VKAPI_CALL m_AllocSets(VkDevice, const VkDescriptorSetAllocateIn
 static void VKAPI_CALL m_UpdateSets(VkDevice, uint32_t n, const VkWriteDescriptorSet*, uint32_t, const VkCopyDescriptorSet*) { ++r_desc_updates; }
 static void VKAPI_CALL m_BindPipe(VkCommandBuffer, VkPipelineBindPoint, VkPipeline) {}
 static void VKAPI_CALL m_BindSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet*, uint32_t, const uint32_t*) {}
-static std::vector<float> r_extrap_flags;
-static void VKAPI_CALL m_PushConst(VkCommandBuffer, VkPipelineLayout, VkShaderStageFlags, uint32_t, uint32_t size, const void* v) { if (size == 40) { float f[10]; std::memcpy(f, v, 40); r_t.push_back(f[0]); r_extrap_flags.push_back(f[9]); } }
+static std::vector<float> r_extrap_flags, r_fill_flags;
+static void VKAPI_CALL m_PushConst(VkCommandBuffer, VkPipelineLayout, VkShaderStageFlags, uint32_t, uint32_t size, const void* v) { if (size == 44) { float f[11]; std::memcpy(f, v, 44); r_t.push_back(f[0]); r_extrap_flags.push_back(f[9]); r_fill_flags.push_back(f[10]); } }   // the interpolation push block: 11 floats, extrap at [9], the one-sided fill at [10]
 static void VKAPI_CALL m_Dispatch(VkCommandBuffer, uint32_t x, uint32_t y, uint32_t) { (void)x; (void)y; ++r_dispatches; }       // 640x480 / 16x16
 static VkResult VKAPI_CALL m_Acquire(VkDevice, VkSwapchainKHR, uint64_t timeout, VkSemaphore sem, VkFence, uint32_t* idx) {
     CHECK(timeout <= 1'000'000);   // the game's acquire polls with 0; the presenter waits at most ACQUIRE_WAIT_US (1 ms) outside the capture mutex
@@ -179,6 +179,8 @@ static Env Bring(void* lib, bool loader_callback = true) {
 int main(int, char** argv) {
     ClearFramegenEnv();
     setenv("VKIFRAME_EXTRAPOLATE", "1", 1);
+    setenv("VKIFRAME_EXPERIMENTAL", "1", 1);             // the push block carries the one-sided fill flag at offset 40: asked for with the gate open it must arrive as 1
+    setenv("VKIFRAME_ONESIDED_FILL", "1", 1);
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
     Env e = Bring(lib);
     VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
@@ -207,7 +209,7 @@ int main(int, char** argv) {
     CHECK(r_presents.size() > ids.size());                                              // plus the predicted frames
     for (size_t i = 1; i < ids.size(); ++i) CHECK(ids[i] == ids[i - 1] + 1);           // in order, none skipped or repeated
     CHECK(!r_t.empty());                                                                // predicted frames were made (the mock runs the flow passes as no-ops)
-    for (size_t i = 0; i < r_t.size(); ++i) { CHECK(r_extrap_flags[i] == 1.0f); CHECK(r_t[i] > 0.0f && r_t[i] <= 1.0f); }   // every interpolation push is an extrapolation with s in (0, 1]
+    for (size_t i = 0; i < r_t.size(); ++i) { CHECK(r_extrap_flags[i] == 1.0f); CHECK(r_fill_flags[i] == 1.0f); CHECK(r_t[i] > 0.0f && r_t[i] <= 1.0f); }   // every interpolation push is an extrapolation with s in (0, 1]
     CHECK(r_acquires > 0);                                                              // predicted frames use hidden images
 
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);

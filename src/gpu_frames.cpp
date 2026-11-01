@@ -492,7 +492,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     } else if (interp) {
         dt.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.flow.interp.pipeline);
         dt.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.flow.interp.layout, 0, 1, &g.flow.sets[e][18], 0, nullptr);
-        const float interp_pc[10] = {t_push, GetConfig().interp_guide, GetConfig().conf_lo, GetConfig().conf_hi, GetConfig().cand_thr, GetConfig().pan_lo, GetConfig().pan_hi, g.flow.pair_bidir ? 1.0f : 0.0f, GetConfig().ui_mask, extrap ? 1.0f : 0.0f};
+        const float interp_pc[11] = {t_push, GetConfig().interp_guide, GetConfig().conf_lo, GetConfig().conf_hi, GetConfig().cand_thr, GetConfig().pan_lo, GetConfig().pan_hi, g.flow.pair_bidir ? 1.0f : 0.0f, GetConfig().ui_mask, extrap ? 1.0f : 0.0f, GetConfig().onesided_fill ? 1.0f : 0.0f};
         dt.CmdPushConstants(cb, g.flow.interp.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(interp_pc), interp_pc);
     } else {
         dt.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipeline);

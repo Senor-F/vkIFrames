@@ -183,7 +183,7 @@ void Apply(const char* why, const std::string& text, bool present) {
             for (int i = 0; i < kKeys; ++i) if (key == kInfo[i].name) k = i;
             if (k < 0) {
                 bool startup_only = false;
-                for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL"}) if (key == sk) startup_only = true;
+                for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL", "ONESIDED_FILL"}) if (key == sk) startup_only = true;
                 if (startup_only) { ++startup; continue; }     // read once when the game starts (logged then), not an error
                 ++unknown; LogLine("line %d: unknown key \"%.40s\" ignored", lineno, key.c_str()); continue;
             }
@@ -214,7 +214,7 @@ void Apply(const char* why, const std::string& text, bool present) {
 
 // Settings that cannot change while a game runs (they size buffers or pick shaders) are read from live.conf once, when the game starts.
 const char* StartupFileValue(const char* name) {
-    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL"};
+    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL", "ONESIDED_FILL"};
     bool allowed = false;
     for (const char* k : kStartupKeys) if (std::strcmp(name, k) == 0) allowed = true;
     if (!allowed) return nullptr;                       // also keeps LIVE_CONF / LIVE_LOG lookups out of the loader below

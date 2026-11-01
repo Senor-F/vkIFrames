@@ -10,7 +10,7 @@ layout(set = 0, binding = 3, r32f)    uniform readonly  image2D u_mask;     // f
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D u_out;
 layout(set = 0, binding = 5, rgba16f) uniform readonly  image2D u_bwd;      // B -> A, same level as u_flow
 
-layout(push_constant) uniform Params { float t; float sigma; float cost_lo; float cost_hi; float cand_thr; float pan_lo; float pan_hi; float bidir; float ui_thr; float extrap; } u_params;   // pan_hi <= pan_lo: no pan fallback; sigma <= 0: no colour guidance; cost_hi <= cost_lo: no cost fade; cand_thr <= 0: no candidate search; ui_thr <= 0: no static-UI mask; extrap > 0.5: t is the fraction of one native interval AFTER B and the frame is predicted from B alone
+layout(push_constant) uniform Params { float t; float sigma; float cost_lo; float cost_hi; float cand_thr; float pan_lo; float pan_hi; float bidir; float ui_thr; float extrap; float fill; } u_params;   // pan_hi <= pan_lo: no pan fallback; sigma <= 0: no colour guidance; cost_hi <= cost_lo: no cost fade; cand_thr <= 0: no candidate search; ui_thr <= 0: no static-UI mask; extrap > 0.5: t is the fraction of one native interval AFTER B and the frame is predicted from B alone
 
 const float FAST_LOW  = 48.0;
 const float FAST_HIGH = 96.0;
@@ -108,6 +108,50 @@ vec4 interp_bidir(ivec2 p, float t, float scale, vec2 fp, ivec2 i0, vec2 w, floa
     return mix(fd, moved, trust);
 }
 
+// ---- one-sided fill (VKIFRAME_ONESIDED_FILL, experimental; mirrors FillConsistRef in tools/interp_eval, the "fill_consist" variant of the offline experiment) ----
+// Where the forward/backward check says a pixel is occluded, the frame that shows the background supplies it by itself: the background vector is the best
+// consistent (not occluded, good match) vector of that frame's flow within FILL_R field pixels, and the pixel is taken from that frame alone along it
+// instead of the blend of both. Offline it was worse than the bidirectional interpolation in 21 of 25 triplets on hard pixels, so it is off by default.
+const int   FILL_R         = 6;
+const float FILL_OCC_LO    = 0.1;
+const float FILL_OCC_HI    = 0.5;
+const float FILL_MASK_MAX  = 0.3;    // a field pixel with more disagreement than this is not a background candidate
+const float FILL_COST_MAX  = 0.10;   // ... nor one with a worse match cost than this
+
+// among the field pixels within FILL_R of q, the most consistent one: score = 4 * mask + 10 * cost + 0.01 * |v| (field pixels); BWD selects the B -> A field
+bool fill_bg_vector(ivec2 q, bool bwd, out vec2 v, out float bad) {
+    ivec2 fs = imageSize(u_flow);
+    float best = 1e9;
+    bool found = false;
+    v = vec2(0.0); bad = 9.0;
+    for (int dy = -FILL_R; dy <= FILL_R; ++dy)
+        for (int dx = -FILL_R; dx <= FILL_R; ++dx) {
+            ivec2 pos = q + ivec2(dx, dy);
+            if (any(lessThan(pos, ivec2(0))) || any(greaterThanEqual(pos, fs))) continue;
+            vec4 f = bwd ? imageLoad(u_bwd, pos) : imageLoad(u_flow, pos);
+            float m = bwd ? mask_bwd(pos) : imageLoad(u_mask, pos).r;
+            if (m > FILL_MASK_MAX || f.z > FILL_COST_MAX) continue;
+            float score = m * 4.0 + f.z * 10.0 + 0.01 * length(f.xy);
+            if (score < best) { best = score; v = f.xy; bad = m + f.z; found = true; }
+        }
+    return found;
+}
+
+vec4 apply_fill(vec4 c, ivec2 p, float t, float scale, vec2 fp) {
+    ivec2 q = clamp(ivec2(floor(fp + 0.5)), ivec2(0), imageSize(u_flow) - 1);
+    float occ_f = imageLoad(u_mask, q).r;
+    float occ_b = mask_bwd(q);
+    float occ = smoothstep(FILL_OCC_LO, FILL_OCC_HI, max(occ_f, occ_b));
+    if (occ <= 0.0) return c;
+    vec2 va, vb; float ba, bb;
+    bool fa = fill_bg_vector(q, false, va, ba);
+    bool fb = fill_bg_vector(q, true,  vb, bb);
+    if (!fa && !fb) return c;
+    bool use_b = fb && (!fa || bb < ba - 1e-3 || (abs(bb - ba) <= 1e-3 && occ_b >= occ_f));
+    vec4 col = use_b ? sample_b(vec2(p) - (1.0 - t) * vb * scale) : sample_a(vec2(p) - t * va * scale);
+    return c + (col - c) * occ;
+}
+
 // ---- extrapolation (VKIFRAME_EXTRAPOLATE; mirrors Extrapolate in tools/interp_eval) ----
 // B moved on along its own backward flow as if the motion A -> B went on for s more intervals: out(x) = B(x + s * v_b(x)). Plain B where B's backward match is
 // poor, the pixel is uncovered, the motion is fast, the vector is too small to be more than flow noise, or the whole frame cannot be matched.
@@ -174,6 +218,7 @@ void main() {
         c = predict_frame(p, t, scale, fp, i0, w, pan_k);
     } else if (u_params.bidir > 0.5) {
         c = interp_bidir(p, t, scale, fp, i0, w, pan_k);
+        if (u_params.fill > 0.5) c = apply_fill(c, p, t, scale, fp);
     } else {
     vec4 f00 = imageLoad(u_flow, c00);
     vec4 f10 = imageLoad(u_flow, c10);
