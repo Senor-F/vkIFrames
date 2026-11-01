@@ -5,9 +5,6 @@
 #include <chrono>
 #include <cstdio>
 #include <fcntl.h>
-#include <new>
-#include <string>
-#include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <initializer_list>
@@ -130,8 +127,7 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
     if (ok) {
         void* p = nullptr;
         if (dt.MapMemory(dt.device, mem, 0, bytes, 0, &p) == VK_SUCCESS) {
-            try { g.dump_items.push_back({path, std::vector<uint8_t>(static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + bytes)}); }
-            catch (const std::bad_alloc&) { ok = false; }
+            ok = g.dump.Add(path, static_cast<const uint8_t*>(p), size_t(bytes));
             dt.UnmapMemory(dt.device, mem);
         } else ok = false;
     }
@@ -142,31 +138,6 @@ bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage ima
     }
     FG_LOG("dump: %s (%ux%u, %u bytes per texel): %s", path, extent.width, extent.height, bpt, ok ? "read back" : "FAILED");
     return ok;
-}
-
-void FlushDump(GpuState& g) {
-    size_t written = 0;
-    if (!g.dump_times.empty()) {
-        char tp[512]; std::snprintf(tp, sizeof tp, "%s/times.txt", GetConfig().dump_dir);
-        g.dump_items.push_back({tp, std::vector<uint8_t>(g.dump_times.begin(), g.dump_times.end())});
-        g.dump_times.clear();
-    }
-    for (const auto& it : g.dump_items) {
-        const int dfd = ::open(it.path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);     // screenshots: owner only, no symlinks
-        FILE* f = dfd >= 0 ? ::fdopen(dfd, "wb") : nullptr;
-        if (!f) { if (dfd >= 0) ::close(dfd); FG_LOG("dump: %s: FAILED to open", it.path.c_str()); continue; }
-        const bool full = std::fwrite(it.data.data(), 1, it.data.size(), f) == it.data.size();
-        std::fclose(f);
-        if (full) ++written; else FG_LOG("dump: %s: FAILED to write", it.path.c_str());
-    }
-    FG_LOG("dump: capture complete, %zu of %zu files written", written, g.dump_items.size());
-    g.dump_items.clear(); g.dump_items.shrink_to_fit();
-    g.dump_synth = 0;
-}
-
-void MaybeFlushDump(GpuState& g, bool force) {
-    if (g.dump_items.empty()) return;
-    if (force || (g.dump_pairs_queued >= GetConfig().dump_frames && g.dump_synth == 0)) FlushDump(g);
 }
 
 bool CreateSlot(const DeviceDispatch& dt, GpuState& g, GpuState::Slot& s) {
@@ -381,6 +352,7 @@ bool GpuPrepareHeldPresent(const DeviceDispatch& dt, VkQueue queue, GpuState& g,
 void GpuDestroy(const DeviceDispatch& dt, GpuState* g) {
     if (!g) return;
     dt.DeviceWaitIdle(dt.device);
+    g->dump.Drop("the game ended, the engine went off or the swapchain was recreated inside the window");
     FlowDestroy(dt, *g);
     for (auto* v : {&g->captured, &g->staged, &g->acquire}) for (auto s : *v) if (s) dt.DestroySemaphore(dt.device, s, nullptr);
     if (g->pipeline)    dt.DestroyPipeline(dt.device, g->pipeline, nullptr);
@@ -565,11 +537,11 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         return VK_ERROR_UNKNOWN;
     }
     g.synth.initialized = true;
-    if (g.dump_synth > 0) {
+    if (g.dump.synth_left > 0) {
         char path[512]; std::snprintf(path, sizeof path, "%s/synth%02d_t%.3f.rgba16f", GetConfig().dump_dir, g.dump_tick++, double(t));
-        --g.dump_synth;
+        --g.dump.synth_left;
         DumpImage(dt, queue, g, g.synth.image, g.extent, 8, path);
-        MaybeFlushDump(g, false);
+        g.dump.MaybeFlush(GetConfig().dump_dir, GetConfig().dump_frames, false);
     }
     out_image_index = idx; wait_sem = g.staged[idx];
     return VK_SUCCESS;

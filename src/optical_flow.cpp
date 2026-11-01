@@ -343,13 +343,12 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
             char path[512]; std::snprintf(path, sizeof path, "%s/pair%d_A.rgba16f", GetConfig().dump_dir, int(n - first));
             DumpImage(dt, queue, g, g.ring[a.slot].image, g.extent, 8, path);
             g.dump_pair_index = int(n - first);
-            if (n < first + 5) g.dump_synth += 2;
-            g.dump_pairs_queued = int(n - first) + 1;
+            if (n < first + 5) g.dump.synth_left += 2;
+            g.dump.pairs_queued = int(n - first) + 1;
             const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            char line[96]; std::snprintf(line, sizeof line, "pair%d_A %lld\n", int(n - first), (long long)now_ns);
-            g.dump_times += line;
+            if (!g.dump.AddTime(int(n - first), now_ns)) FG_LOG("dump: times.txt line for pair %d lost (out of memory)", int(n - first));
         }
-        MaybeFlushDump(g, n >= first + window);       // files are written after the fifth pair (or when its synthetic frames are in), never inside the five; a pair 6 forces it if some synthetic frames did not come
+        g.dump.MaybeFlush(GetConfig().dump_dir, GetConfig().dump_frames, n >= first + window);       // files are written after the fifth pair (or when its synthetic frames are in), never inside the five; a pair 6 forces it if some synthetic frames did not come
     }
     return true;
 }
