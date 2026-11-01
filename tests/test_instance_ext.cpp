@@ -19,7 +19,16 @@ static std::vector<std::vector<std::string>> g_attempts;        // the extension
 static VkResult g_force_error = VK_SUCCESS;
 static bool g_force_only_with_extras = false;                    // g_force_error only for requests that carry an extension the app did not ask for
 
+static int g_link_errors = 0;                                    // attempts that reached the mock with the loader chain not at its node
+static VkLayerInstanceLink g_node_below{nullptr, nullptr, nullptr};   // the node of the mock layer below ours (reset for every run)
 static VkResult VKAPI_CALL m_CreateInstance(const VkInstanceCreateInfo* ci, const VkAllocationCallbacks*, VkInstance* p) {
+    // the mock stands for the next layer: like a real one it takes its node from the shared chain and advances the chain past it (a real layer then
+    // calls the node's vkGetInstanceProcAddr; here that is next_gipa). Our layer must hand every attempt the chain at this node.
+    {
+        auto* l = reinterpret_cast<VkLayerInstanceCreateInfo*>(const_cast<void*>(ci->pNext));
+        while (l && !(l->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO && l->function == VK_LAYER_LINK_INFO)) l = reinterpret_cast<VkLayerInstanceCreateInfo*>(const_cast<void*>(l->pNext));
+        if (!l || l->u.pLayerInfo != &g_node_below) ++g_link_errors; else l->u.pLayerInfo = l->u.pLayerInfo->pNext;
+    }
     std::vector<std::string> names;
     for (uint32_t i = 0; i < ci->enabledExtensionCount; ++i) names.push_back(ci->ppEnabledExtensionNames[i]);
     g_attempts.push_back(names);
@@ -52,13 +61,17 @@ int main(int, char** argv) {
     const char* SURF = VK_KHR_SURFACE_EXTENSION_NAME;
     auto run = [&](uint32_t api, std::vector<const char*> app_exts, std::set<std::string> supported, VkResult force = VK_SUCCESS) {
         g_supported = std::move(supported); g_attempts.clear(); g_force_error = force;
-        VkLayerInstanceLink ilink{nullptr, next_gipa, nullptr};
+        // the loader's chain: our node, then the node of the layer below (its pNext is the end of the chain)
+        g_node_below = {nullptr, nullptr, nullptr};
+        VkLayerInstanceLink ilink{&g_node_below, next_gipa, nullptr};
         VkLayerInstanceCreateInfo lici{}; lici.sType = VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO; lici.function = VK_LAYER_LINK_INFO; lici.u.pLayerInfo = &ilink;
+        g_link_errors = 0;
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO}; ai.apiVersion = api;
         VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, &lici}; ici.pApplicationInfo = &ai;
         ici.enabledExtensionCount = uint32_t(app_exts.size()); ici.ppEnabledExtensionNames = app_exts.data();
         VkInstance inst{}; VkResult r = create_instance(&ici, nullptr, &inst);
         if (r == VK_SUCCESS) destroy((VkInstance)&g_inst, nullptr);
+        CHECK(g_link_errors == 0);                                  // every attempt, first or retry, saw the chain at the node of the layer below
         return r;
     };
 

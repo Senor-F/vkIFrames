@@ -68,6 +68,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* p
 
     PFN_vkGetInstanceProcAddr gipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     link->u.pLayerInfo = link->u.pLayerInfo->pNext;               // advance the chain for the next layer
+    VkLayerInstanceLink* const next_link = link->u.pLayerInfo;    // every layer below advances this shared struct again in its own vkCreateInstance: each attempt below starts from this node
 
     auto create = reinterpret_cast<PFN_vkCreateInstance>(gipa(VK_NULL_HANDLE, "vkCreateInstance"));
     if (!create) return VK_ERROR_INITIALIZATION_FAILED;
@@ -103,6 +104,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* p
         VkInstanceCreateInfo ci = *pCreateInfo;
         ci.enabledExtensionCount = uint32_t(names.size());
         ci.ppEnabledExtensionNames = names.data();
+        link->u.pLayerInfo = next_link;                          // a failed attempt left the chain advanced past the layers below: put it back
         r = create(&ci, pAllocator, pInstance);
         if (r == VK_SUCCESS) { got_props2 = props2 || t.props2_ext; got_caps2 = surface_caps2 || caps2_ok; break; }
         // Any failure of a request that carries our extras (a layer or driver below may answer an unwanted extension with another code) is tried again with
