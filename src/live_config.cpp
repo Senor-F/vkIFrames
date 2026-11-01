@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdarg>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -29,6 +31,9 @@ constexpr KeyInfo kInfo[kKeys] = {
     {"STATS", true, 0, 1}, {"BENCH", false, 0, 4e12},     // BENCH: a request token (any new number starts one benchmark run), see stats.hpp
 };
 
+enum Src { kSrcDefault, kSrcEnv, kSrcLive, kSrcOverrides };
+constexpr const char* kSrcName[] = {"default", "env", "live.conf", "overrides.conf"};
+
 // Empty when neither XDG_CONFIG_HOME nor HOME is set: then there are no live settings and no live.log (no shared /tmp fallback).
 std::string ConfDir() {
     if (const char* x = secure_getenv("XDG_CONFIG_HOME"); x && *x == '/') return std::string(x) + "/vkiframes";
@@ -36,6 +41,14 @@ std::string ConfDir() {
     return "";
 }
 std::string ConfPath() { if (const char* v = EnvVar("LIVE_CONF"); v && *v) return v; const std::string d = ConfDir(); return d.empty() ? d : d + "/live.conf"; }
+// overrides.conf lives next to live.conf (so VKIFRAME_LIVE_CONF moves both); VKIFRAME_OVERRIDES_CONF names it explicitly.
+std::string OvPath() {
+    if (const char* v = EnvVar("OVERRIDES_CONF"); v && *v) return v;
+    const std::string c = ConfPath();
+    if (c.empty()) return c;
+    const size_t slash = c.rfind('/');
+    return slash == std::string::npos ? std::string("overrides.conf") : c.substr(0, slash) + "/overrides.conf";
+}
 std::string LogPath()  { if (const char* v = EnvVar("LIVE_LOG");  v && *v) return v; const std::string d = ConfDir(); return d.empty() ? d : d + "/live.log"; }
 
 // Reads a small settings file: no symlink, a regular file owned by this user. Empty string when it cannot be used.
@@ -122,8 +135,15 @@ void Set(LiveSettings& s, int k, double v) {
 std::string Show(int k, double v) { char b[40]; if (k == kBench) std::snprintf(b, sizeof b, "%lld", (long long)v); else if (kInfo[k].toggle || k == kMaxSynthetic || k == kCmdBuffers) std::snprintf(b, sizeof b, "%d", int(v)); else std::snprintf(b, sizeof b, "%g", v); return b; }
 
 double g_startup[kKeys];            // values from the environment (what removing the file goes back to)
+std::atomic<int> g_src[kKeys];      // where each key's value in use comes from (Src)
+Src    g_src_startup[kKeys];        // env or default, for a key neither file sets
 bool   g_have_file = false;
 long long g_mtime_ns = 0; long long g_size = -1; unsigned long long g_rev = 0;
+bool   g_have_ov = false; long long g_ov_mtime_ns = 0; long long g_ov_size = -1; unsigned long long g_ov_rev = 0;
+std::string g_ov_problem;           // the reason overrides.conf is ignored, logged once per change of this text
+bool   g_baseline_done = false;     // the first-load live.conf values (the base of a hand-written override line without ;base)
+bool   g_first_has[kKeys] = {}; double g_first_v[kKeys] = {};
+bool   g_superseded[kKeys] = {};    // an override line exists for the key and live.conf has changed the key since it was set
 unsigned long long g_gen = 0;      // counts the loads that changed a setting (the benchmark stops when it moves)
 long long g_bench_seen = 0;        // the BENCH token already handled (or present when the game started)
 uint64_t g_next_poll = 0;
@@ -157,50 +177,99 @@ void NormalizeKey(std::string& key) {
 
 void Trim(std::string& s) { while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) s.pop_back(); size_t i = 0; while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i; s.erase(0, i); }
 
-void Apply(const char* why, const std::string& text, bool present) {
-    LiveSettings& live = Live();
-    double want[kKeys];
-    for (int k = 0; k < kKeys; ++k) want[k] = g_startup[k];
-    bool from_file[kKeys] = {};
+struct Parsed {
+    bool has[kKeys] = {}; double v[kKeys] = {};
+    bool has_base[kKeys] = {}; double base[kKeys] = {}; bool base_absent[kKeys] = {};      // overrides.conf only: the live.conf value of the key when the line was set (base=absent: live.conf had no such key)
     unsigned lines = 0, comments = 0, bad = 0, unknown = 0, startup = 0;
-    if (present) {
-        size_t pos = 0; int lineno = 0;
-        while (pos <= text.size()) {
-            size_t nl = text.find('\n', pos); if (nl == std::string::npos) nl = text.size();
-            std::string line = text.substr(pos, nl - pos); pos = nl + 1; ++lineno;
-            Trim(line);
-            if (line.empty() || line[0] == '#') { ++comments; continue; }
-            ++lines;
-            const size_t eq = line.find('=');
-            if (eq == std::string::npos) { ++bad; LogLine("line %d ignored (no '='): \"%.60s\"", lineno, line.c_str()); continue; }
-            std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
-            if (key == "REV") { g_rev = std::strtoull(val.c_str(), nullptr, 10); continue; }
-            for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
-            NormalizeKey(key);
-            int k = -1;
-            for (int i = 0; i < kKeys; ++i) if (key == kInfo[i].name) k = i;
-            if (k < 0) {
-                bool startup_only = false;
-                for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL"}) if (key == sk) startup_only = true;
-                if (startup_only) { ++startup; continue; }     // read once when the game starts (logged then), not an error
-                ++unknown; LogLine("line %d: unknown key \"%.40s\" ignored", lineno, key.c_str()); continue;
+};
+
+// Parses one settings file into P. LABEL prefixes the log lines of overrides.conf (empty for live.conf, whose messages are unchanged).
+void ParseFile(const std::string& text, bool overrides, Parsed& P) {
+    const char* label = overrides ? "overrides.conf " : "";
+    size_t pos = 0; int lineno = 0;
+    while (pos <= text.size()) {
+        size_t nl = text.find('\n', pos); if (nl == std::string::npos) nl = text.size();
+        std::string line = text.substr(pos, nl - pos); pos = nl + 1; ++lineno;
+        Trim(line);
+        if (line.empty() || line[0] == '#') { ++P.comments; continue; }
+        ++P.lines;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) { ++P.bad; LogLine("%sline %d ignored (no '='): \"%.60s\"", label, lineno, line.c_str()); continue; }
+        std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
+        if (key == "REV") { (overrides ? g_ov_rev : g_rev) = std::strtoull(val.c_str(), nullptr, 10); continue; }
+        std::vector<std::string> notes;                          // overrides.conf: "KEY=VALUE ;base=X ;t=ms"
+        if (overrides) {
+            size_t semi = val.find(';');
+            while (semi != std::string::npos) {
+                size_t nx = val.find(';', semi + 1);
+                std::string tok = val.substr(semi + 1, nx == std::string::npos ? std::string::npos : nx - semi - 1); Trim(tok);
+                notes.push_back(tok);
+                semi = nx;
             }
-            double v; std::string note;
-            if (!ParseValue(k, val, v, note)) { ++bad; LogLine("line %d: %s=\"%.40s\" is not a valid value, keeping %s", lineno, kInfo[k].name, val.c_str(), Show(k, Get(live, k)).c_str()); continue; }
-            if (!note.empty()) LogLine("line %d: %s=%s %s -> %s", lineno, kInfo[k].name, val.c_str(), note.c_str(), Show(k, v).c_str());
-            want[k] = v; from_file[k] = true;
+            const size_t first = val.find(';'); if (first != std::string::npos) val.erase(first);
+            Trim(val);
         }
+        for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
+        NormalizeKey(key);
+        int k = -1;
+        for (int i = 0; i < kKeys; ++i) if (key == kInfo[i].name) k = i;
+        if (k < 0) {
+            bool startup_only = false;
+            for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL"}) if (key == sk) startup_only = true;
+            if (startup_only) { ++P.startup; continue; }     // read once when the game starts (logged then), not an error
+            ++P.unknown; LogLine("%sline %d: unknown key \"%.40s\" ignored", label, lineno, key.c_str()); continue;
+        }
+        if (overrides && k == kBench) { ++P.bad; LogLine("overrides.conf line %d: BENCH is read from live.conf only, ignored", lineno); continue; }
+        double v; std::string note;
+        if (!ParseValue(k, val, v, note)) { ++P.bad; LogLine("%sline %d: %s=\"%.40s\" is not a valid value, keeping %s", label, lineno, kInfo[k].name, val.c_str(), Show(k, Get(Live(), k)).c_str()); continue; }
+        if (!note.empty()) LogLine("%sline %d: %s=%s %s -> %s", label, lineno, kInfo[k].name, val.c_str(), note.c_str(), Show(k, v).c_str());
+        P.has[k] = true; P.v[k] = v;
+        for (const std::string& tok : notes) {
+            if (tok.rfind("base=", 0) != 0) continue;
+            double bv; std::string bn;
+            if (tok.substr(5) == "absent") { P.has_base[k] = true; P.base_absent[k] = true; }
+            else if (ParseValue(k, tok.substr(5), bv, bn)) { P.has_base[k] = true; P.base[k] = bv; }
+        }
+    }
+}
+
+// live.conf (when present) over the startup values, then overrides.conf over that, except for a key whose line was set against another live.conf value
+// (the panel changed the key since: the panel wins). Records where each value comes from.
+void Apply(const char* why, const std::string& live_text, bool live_present, const std::string& ov_text, bool ov_present) {
+    LiveSettings& live = Live();
+    Parsed pl, po;
+    if (live_present) ParseFile(live_text, false, pl);
+    if (ov_present) ParseFile(ov_text, true, po);
+    if (!g_baseline_done) {                                    // the first load of this run is the base of a hand-written line
+        g_baseline_done = true;
+        for (int k = 0; k < kKeys; ++k) { g_first_has[k] = pl.has[k]; g_first_v[k] = pl.v[k]; }
+    }
+    double want[kKeys]; Src src[kKeys];
+    for (int k = 0; k < kKeys; ++k) { want[k] = g_startup[k]; src[k] = g_src_startup[k]; }
+    for (int k = 0; k < kKeys; ++k) {
+        if (pl.has[k]) { want[k] = pl.v[k]; src[k] = kSrcLive; }
+        if (!po.has[k]) { g_superseded[k] = false; continue; }
+        // base=absent compares with the layer's own lower-precedence value (environment or default), which ctl does not know
+        const double base = po.base_absent[k] ? g_startup[k] : po.base[k];
+        const bool superseded = pl.has[k] && (po.has_base[k] ? pl.v[k] != base : (!g_first_has[k] || pl.v[k] != g_first_v[k]));
+        if (superseded != g_superseded[k]) {
+            g_superseded[k] = superseded;
+            LogLine(superseded ? "override %s superseded by live.conf (panel)" : "override %s applies again", kInfo[k].name);
+        }
+        if (!superseded) { want[k] = po.v[k]; src[k] = kSrcOverrides; }
     }
     int changed = 0;
     for (int k = 0; k < kKeys; ++k) {
         const double old = Get(live, k);
+        g_src[k] = int(src[k]);
         if (old == want[k]) continue;
         ++changed;
-        LogLine("CHANGE %s: %s -> %s (%s)", kInfo[k].name, Show(k, old).c_str(), Show(k, want[k]).c_str(), from_file[k] ? "live.conf" : "back to the startup value");
+        LogLine("CHANGE %s: %s -> %s (%s)", kInfo[k].name, Show(k, old).c_str(), Show(k, want[k]).c_str(), src[k] == kSrcLive ? "live.conf" : src[k] == kSrcOverrides ? "overrides.conf" : "back to the startup value");
         Set(live, k, want[k]);
     }
     if (changed) ++g_gen;
-    LogLine("%s: REV %llu, %u setting line(s), %u comment/blank, %u invalid, %u unknown, %u start-of-game only (not applied now); %d value(s) changed", why, g_rev, lines, comments, bad, unknown, startup, changed);
+    LogLine("%s: REV %llu, %u setting line(s), %u comment/blank, %u invalid, %u unknown, %u start-of-game only (not applied now); %d value(s) changed", why, g_rev, pl.lines, pl.comments, pl.bad, pl.unknown, pl.startup, changed);
+    if (ov_present) LogLine("overrides.conf: REV %llu, %u setting line(s), %u invalid, %u unknown, %u start-of-game only", g_ov_rev, po.lines, po.bad, po.unknown, po.startup);
     if (changed) {
         char sum[300]; int n = 0;
         for (int k = 0; k < kKeys; ++k) n += std::snprintf(sum + n, sizeof sum - size_t(n), "%s%s=%s", k ? " " : "", kInfo[k].name, Show(k, Get(live, k)).c_str());
@@ -211,8 +280,20 @@ void Apply(const char* why, const std::string& text, bool present) {
 }  // namespace
 
 // Settings that cannot change while a game runs (they size buffers or pick shaders) are read from live.conf once, when the game starts.
+namespace {
+const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL"};
+// The layer's built-in default of a start-of-game key (what an override line recorded as base=absent is compared with when no environment value is set).
+double StartupDefault(const char* key) {
+    const Config d{};
+    if (!std::strcmp(key, "FLOW_LEVEL")) return d.flow_level;
+    if (!std::strcmp(key, "UI_MASK_THRESHOLD")) return double(d.ui_mask);
+    if (!std::strcmp(key, "EXTRAPOLATE")) return d.extrapolate ? 1 : 0;
+    if (!std::strcmp(key, "INTERPOLATE")) return d.interpolate ? 1 : 0;
+    return 0;                                           // EXPERIMENTAL
+}
+}  // namespace
+
 const char* StartupFileValue(const char* name) {
-    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL"};
     bool allowed = false;
     for (const char* k : kStartupKeys) if (std::strcmp(name, k) == 0) allowed = true;
     if (!allowed) return nullptr;                       // also keeps LIVE_CONF / LIVE_LOG lookups out of the loader below
@@ -222,20 +303,52 @@ const char* StartupFileValue(const char* name) {
         if (!e || !*e) e = std::getenv("FRAMEGEN_LIVE_CONF");
         const std::string path = e && *e ? std::string(e) : (ConfDir().empty() ? std::string() : ConfDir() + "/live.conf");
         std::string text;
-        if (!ReadOwnFile(path, text)) return m;
-        size_t pos = 0;
-        while (pos <= text.size()) {
-            size_t nl = text.find('\n', pos); if (nl == std::string::npos) nl = text.size();
-            std::string line = text.substr(pos, nl - pos); pos = nl + 1;
-            Trim(line);
-            const size_t eq = line.find('=');
-            if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
-            std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
-            for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
-            NormalizeKey(key);
-            for (const char* k : kStartupKeys) if (key == k && !val.empty()) m[key] = val;
+        auto each_line = [](const std::string& t, auto&& fn) {
+            size_t pos = 0;
+            while (pos <= t.size()) {
+                size_t nl = t.find('\n', pos); if (nl == std::string::npos) nl = t.size();
+                std::string line = t.substr(pos, nl - pos); pos = nl + 1;
+                Trim(line);
+                const size_t eq = line.find('=');
+                if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+                std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
+                for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
+                NormalizeKey(key);
+                for (const char* k : kStartupKeys) if (key == k) { fn(key, val); break; }
+            }
+        };
+        if (ReadOwnFile(path, text)) {
+            each_line(text, [&](const std::string& key, const std::string& val) { if (!val.empty()) m[key] = val; });
+            for (auto& kv : m) LogLine("startup setting %s=%s taken from live.conf (read once when the game starts: a change needs a game restart)", kv.first.c_str(), kv.second.c_str());
         }
-        for (auto& kv : m) LogLine("startup setting %s=%s taken from live.conf (read once when the game starts: a change needs a game restart)", kv.first.c_str(), kv.second.c_str());
+        // overrides.conf next to it: wins unless live.conf has changed the key since the line was set (its ;base= differs from live.conf's value now)
+        std::string otext;
+        const std::string ovp = [&] { if (const char* v = EnvVar("OVERRIDES_CONF"); v && *v) return std::string(v); const size_t sl = path.rfind('/'); return sl == std::string::npos ? std::string("overrides.conf") : path.substr(0, sl) + "/overrides.conf"; }();
+        struct stat ost;
+        if (::lstat(ovp.c_str(), &ost) == 0 && S_ISREG(ost.st_mode) && ReadOwnFile(ovp, otext)) {
+            const std::map<std::string, std::string> live_vals = m;
+            each_line(otext, [&](const std::string& key, std::string val) {
+                std::string base; bool has_base = false;
+                const size_t semi = val.find(';');
+                if (semi != std::string::npos) {
+                    std::string rest = val.substr(semi); val.erase(semi); Trim(val);
+                    const size_t bp = rest.find("base=");
+                    if (bp != std::string::npos) { size_t end = rest.find(';', bp); base = rest.substr(bp + 5, end == std::string::npos ? std::string::npos : end - bp - 5); Trim(base); has_base = true; }
+                }
+                if (val.empty()) return;
+                auto lv = live_vals.find(key);
+                if (lv != live_vals.end() && has_base) {
+                    double basev;
+                    if (base == "absent") {
+                        const char* ev = std::getenv(("VKIFRAME_" + key).c_str()); if (!ev) ev = std::getenv(("FRAMEGEN_" + key).c_str());
+                        basev = ev ? std::atof(ev) : StartupDefault(key.c_str());
+                    } else basev = std::atof(base.c_str());
+                    if (std::atof(lv->second.c_str()) != basev) { LogLine("startup setting %s: override ignored, live.conf has changed the key since it was set", key.c_str()); return; }
+                }
+                m[key] = val;
+                LogLine("startup setting %s=%s taken from overrides.conf (read once when the game starts: a change needs a game restart)", key.c_str(), val.c_str());
+            });
+        }
         return m;
     }();
     auto it = values.find(name);
@@ -274,10 +387,15 @@ LiveSettings& Live() {
         l->enabled = 1; l->target_fps = c.target_fps; l->max_synthetic = std::min(c.max_synthetic, LiveMaxSyntheticLimit()); l->base_fps_cap = c.base_fps_cap; l->cmd_buffers = c.cmd_buffers; l->synth_margin = c.synth_margin;
         l->min_gain = c.min_gain; l->phase_lock = c.phase_lock ? 1 : 0; l->phase_offset = c.phase_offset; l->interp_bidir = c.interp_bidir ? 1 : 0;
         if (const char* v = EnvVar("STATS")) l->stats = std::atoi(v) != 0 ? 1 : 0;
-        for (int k = 0; k < kKeys; ++k) g_startup[k] = Get(*l, k);
+        for (int k = 0; k < kKeys; ++k) { g_startup[k] = Get(*l, k); g_src_startup[k] = EnvVar(kInfo[k].name) ? kSrcEnv : kSrcDefault; g_src[k] = int(g_src_startup[k]); }
         return l;
     }();
     return *s;
+}
+
+namespace {
+std::string g_live_text, g_ov_text;                          // the last text read of each file (both are needed whenever either changes)
+bool g_ov_stat_valid = false;                                // g_ov_mtime_ns / g_ov_size describe the file as last examined (readable or not)
 }
 
 void LivePoll(uint64_t now_ns) {
@@ -290,21 +408,75 @@ void LivePoll(uint64_t now_ns) {
     if (first) {
         char sum[300]; int n = 0;
         for (int k = 0; k < kKeys; ++k) n += std::snprintf(sum + n, sizeof sum - size_t(n), "%s%s=%s", k ? " " : "", kInfo[k].name, Show(k, g_startup[k]).c_str());
-        LogLine("session start; startup values from the environment: %s; watching %s", sum, "live.conf");
+        LogLine("session start; startup values from the environment: %s; watching %s", sum, "live.conf and overrides.conf");
     }
+    bool live_changed = false, live_removed = false, ov_changed = false, ov_removed = false;
     struct stat st;
     if (::stat(ConfPath().c_str(), &st) != 0) {
-        if (g_have_file) { g_have_file = false; g_size = -1; g_mtime_ns = 0; Apply("live.conf removed", "", false); }
+        if (g_have_file) { g_have_file = false; g_size = -1; g_mtime_ns = 0; g_live_text.clear(); live_changed = live_removed = true; }
+    } else {
+        const long long mt = (long long)st.st_mtim.tv_sec * 1'000'000'000ll + st.st_mtim.tv_nsec;
+        if (!g_have_file || mt != g_mtime_ns || (long long)st.st_size != g_size) {
+            g_have_file = true; g_mtime_ns = mt; g_size = (long long)st.st_size;
+            std::string text;
+            if (ReadOwnFile(ConfPath(), text)) { g_live_text = text; live_changed = true; }
+            else LogLine("live.conf could not be opened (errno %d), keeping the current values", errno);
+        }
+    }
+    // overrides.conf: a symlink, another user's file or an unreadable one is ignored, with ONE log line per change of the reason
+    std::string problem;
+    struct stat os;
+    const std::string ovp = OvPath();
+    if (ovp.empty() || ::lstat(ovp.c_str(), &os) != 0) {
+        if (g_have_ov) { g_have_ov = false; g_ov_text.clear(); ov_changed = ov_removed = true; }
+        g_ov_stat_valid = false;
+    } else {
+        const long long mt = (long long)os.st_mtim.tv_sec * 1'000'000'000ll + os.st_mtim.tv_nsec;
+        if (!g_ov_stat_valid || mt != g_ov_mtime_ns || (long long)os.st_size != g_ov_size) {
+            g_ov_stat_valid = true; g_ov_mtime_ns = mt; g_ov_size = (long long)os.st_size;
+            std::string text;
+            if (S_ISLNK(os.st_mode)) problem = "it is a symbolic link";
+            else if (!S_ISREG(os.st_mode)) problem = "it is not a regular file";
+            else if (os.st_uid != ::geteuid()) problem = "it belongs to another user";
+            else if (!ReadOwnFile(ovp, text)) problem = "it cannot be read";
+            if (problem.empty()) { g_ov_text = text; g_have_ov = true; ov_changed = true; }
+            else if (g_have_ov) { g_have_ov = false; g_ov_text.clear(); ov_changed = true; ov_removed = true; }
+            if (problem != g_ov_problem) { g_ov_problem = problem; if (!problem.empty()) LogLine("overrides.conf ignored: %s", problem.c_str()); }
+        }
+    }
+    if (!live_changed && !ov_changed) {
+        if (first) { g_baseline_done = true; g_bench_seen = Live().bench_token.load(); }       // no settings files at start: nothing is "changed" later by the first one that appears
         return;
     }
-    const long long mt = (long long)st.st_mtim.tv_sec * 1'000'000'000ll + st.st_mtim.tv_nsec;
-    if (g_have_file && mt == g_mtime_ns && (long long)st.st_size == g_size) return;
-    g_have_file = true; g_mtime_ns = mt; g_size = (long long)st.st_size;
-    std::string text;
-    if (ReadOwnFile(ConfPath(), text)) {
-    } else { LogLine("live.conf could not be opened (errno %d), keeping the current values", errno); return; }
-    Apply(first ? "live.conf found at startup" : "live.conf changed", text, true);
+    const char* why = live_changed && ov_changed ? "live.conf and overrides.conf changed"
+        : live_changed ? (first ? "live.conf found at startup" : live_removed ? "live.conf removed" : "live.conf changed")
+        : (first ? "overrides.conf found at startup" : ov_removed ? "overrides.conf removed: live.conf values apply" : "overrides.conf changed");
+    Apply(why, g_live_text, g_have_file, g_ov_text, g_have_ov);
     if (first) g_bench_seen = Live().bench_token.load();      // a token left in the file from before is not a request
+}
+
+const char* LiveSourceOf(const char* key) {
+    for (int k = 0; k < kKeys; ++k) if (!std::strcmp(key, kInfo[k].name)) { (void)Live(); return kSrcName[g_src[k].load()]; }
+    return nullptr;
+}
+std::string LiveSourcesJson() {
+    (void)Live();
+    std::string j = "{";
+    for (int k = 0; k < kKeys; ++k) { if (k == kBench) continue; if (j.size() > 1) j += ","; j += std::string("\"") + kInfo[k].name + "\":\"" + kSrcName[g_src[k].load()] + "\""; }
+    return j + "}";
+}
+std::string LiveOverrideKeys() {
+    (void)Live();
+    std::string r;
+    for (int k = 0; k < kKeys; ++k) if (k != kBench && g_src[k].load() == kSrcOverrides) { if (!r.empty()) r += ","; r += kInfo[k].name; }
+    return r;
+}
+int LiveKeyTable(LiveKeyRow* rows, int max) {
+    const Config d{};
+    const double defs[kKeys] = {1, double(d.target_fps), double(d.max_synthetic), double(d.base_fps_cap), double(d.min_gain), d.phase_lock ? 1.0 : 0.0, double(d.phase_offset), d.interp_bidir ? 1.0 : 0.0, double(d.cmd_buffers), double(d.synth_margin), 0, 0};
+    int n = 0;
+    for (int k = 0; k < kKeys && n < max; ++k) { if (k == kBench) continue; rows[n++] = {kInfo[k].name, kInfo[k].toggle, kInfo[k].lo, kInfo[k].hi, defs[k]}; }
+    return n;
 }
 
 unsigned long long LiveGeneration() { return g_gen; }
@@ -361,7 +533,11 @@ void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mod
     if (fd < 0) return;
     FILE* f = ::fdopen(fd, "w");
     if (!f) { ::close(fd); return; }
-    std::fprintf(f, "{\"native_fps\":%.1f,\"output_fps\":%.1f,\"k\":%d,\"mode\":\"%s\",\"enabled\":%d,\"refresh_hz\":%.2f,\"bench\":\"%s\"}\n", native_fps, shown_fps, k, mode, Live().enabled.load(), refresh_hz, bench ? bench : "");
+    // "effective": the values the layer uses now; "source": where each comes from (so a panel, ctl or the UI can show what really applies)
+    std::string eff = "{";
+    for (int i = 0; i < kKeys; ++i) { if (i == kBench) continue; if (eff.size() > 1) eff += ","; eff += std::string("\"") + kInfo[i].name + "\":" + Show(i, Get(Live(), i)); }
+    eff += "}";
+    std::fprintf(f, "{\"native_fps\":%.1f,\"output_fps\":%.1f,\"k\":%d,\"mode\":\"%s\",\"enabled\":%d,\"refresh_hz\":%.2f,\"bench\":\"%s\",\"effective\":%s,\"source\":%s}\n", native_fps, shown_fps, k, mode, Live().enabled.load(), refresh_hz, bench ? bench : "", eff.c_str(), LiveSourcesJson().c_str());
     std::fclose(f);
     (void)std::rename(tmp.c_str(), fin.c_str());
 }

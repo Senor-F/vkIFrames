@@ -55,7 +55,8 @@ std::string RecordJson(const Record& r, long long unix_s) {
 
 // ---------------------------------------------------------------- benchmark
 
-void Bench::Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers, int flow_level, double synth_margin) {
+void Bench::Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers, int flow_level, double synth_margin, const std::string& sources_json) {
+    sources_ = sources_json;
     state_ = State::Running; reason_.clear(); elapsed_ = 0.0; rows_.clear();
     user_enabled_ = user_enabled; cur_enabled_ = 1;
     target_ = target_fps; synth_ = max_synthetic; cap_ = base_fps_cap; gain_ = min_gain; bidir_ = bidir; refresh_ = 0.0; cmd_buffers_ = cmd_buffers; flow_level_ = flow_level; synth_margin_ = synth_margin;
@@ -188,6 +189,7 @@ std::string Bench::Json() const {
         "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"cmd_buffers\":%d,\"flow_level\":%d,\"synth_margin\":%.2f,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
         status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, cmd_buffers_, flow_level_, synth_margin_, refresh_);
     j += b;
+    if (!sources_.empty()) j += "\"sources\":" + sources_ + ",\n";          // where each setting above came from (default, env, live.conf, overrides.conf)
     j += "\"off\":" + agg(off) + ",\n\"on\":" + agg(on) + ",\n\"derived\":";
     if (!ok) {
         j += "null\n}\n";
@@ -247,7 +249,14 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
         long long token = 0;
         if (LiveBenchRequest(&token)) {
             LiveBenchAck(token);
-            g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load(), live.cmd_buffers.load(), GetConfig().flow_level, live.synth_margin.load());
+            g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load(), live.cmd_buffers.load(), GetConfig().flow_level, live.synth_margin.load(), LiveSourcesJson());
+            if (const std::string ov = LiveOverrideKeys(); !ov.empty()) {      // the run's settings would not be the ones live.conf and the environment give: refuse
+                g_bench.Abort(("overrides active: " + ov).c_str());
+                g_bench_active = 1;                                 // Finish() clears it and writes bench.json and the status label ("aborted")
+                FG_LOG("benchmark refused: overrides.conf sets %s; remove them (vkiframes-ctl reset) and ask again", ov.c_str());
+                Finish(false);
+                return;
+            }
             g_gen0 = LiveGeneration();
             g_bench_active = 1; g_last_state.clear();
             live.enabled = 1;                                 // warm-up with the layer on

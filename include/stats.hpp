@@ -51,7 +51,7 @@ public:
     Bench() = default;
     explicit Bench(Params p) : p_(p) {}
     // Starts a run. The settings are echoed into bench.json; user_enabled is what to restore.
-    void Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers = 0, int flow_level = 0, double synth_margin = -1.0);
+    void Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers = 0, int flow_level = 0, double synth_margin = -1.0, const std::string& sources_json = std::string());
     // Feeds one second. Returns the value ENABLED must have for the next second (1 = layer on, 0 = off). The record's `bench` label is set here.
     int OnSecond(Record& r);
     void Abort(const char* reason);                     // the user changed a setting, or left the game
@@ -79,6 +79,7 @@ private:
     Params p_;
     State state_{State::Idle};
     std::string reason_;
+    std::string sources_;                               // JSON object: the source of each setting echoed in bench.json
     double elapsed_{0.0};
     int user_enabled_{1};
     int cur_enabled_{1};
