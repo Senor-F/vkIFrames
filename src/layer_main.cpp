@@ -117,7 +117,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* p
     inst->props2 = props2;
     inst->surface_caps2 = surface_caps2;
     if (!surface_caps2) inst->GetPhysicalDeviceSurfaceCapabilities2KHR = nullptr;
-    FG_LOG("instance created (build: fence-carry patch, %s %s)", __DATE__, __TIME__);
+    FG_LOG("instance created (vkIFrames %s, commit %s, commit time %s unix)", FRAMEGEN_VERSION, FRAMEGEN_COMMIT, FRAMEGEN_COMMIT_TIME);
     return VK_SUCCESS;
 }
 

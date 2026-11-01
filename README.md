@@ -72,12 +72,12 @@ scripts/uninstall.sh        # removes it again
 In Steam, set the game's launch options, for example for a Deck OLED at 90 Hz with the game capped to 45:
 
 ```text
-VKIFRAME_ENABLE=1 VKIFRAME_TARGET_FPS=90 VKIFRAME_BASE_FPS_CAP=45 VKIFRAME_INTERPOLATE=1 %command%
+VKIFRAME_ENABLE=1 VKIFRAME_TARGET_FPS=90 VKIFRAME_BASE_FPS_CAP=45 %command%
 ```
 
 - `VKIFRAME_ENABLE=1` loads the layer, `VKIFRAME_DISABLE=1` forces it off.
 - The layer's log (rates, content delay, GPU times, settings changes) goes to `~/.config/vkiframes/live.log` by default; `VKIFRAME_LOG_FILE` writes it to another file instead. `live.log` and `stats.jsonl` are each capped at 8 MiB: past that the file becomes `.1` (one old file is kept, the previous one goes), checked when the layer starts and about once a second while it runs, so the two files and their old copies together stay under about 32 MiB. If `live.log` cannot be opened (no writable config folder) the layer's per-second lines are cut to one a minute, so the game's own stderr (and Steam's log) does not fill up. The Decky plugin caps its lines in the same file the same way. `VKIFRAME_LOG_FILE` (below) has no cap: use it for short runs only.
-- Without `VKIFRAME_INTERPOLATE=1` synthetic frames are plain cross-fades.
+- With `VKIFRAME_INTERPOLATE=0` synthetic frames are plain cross-fades (no optical flow, much cheaper, more ghosting).
 - The earlier `FRAMEGEN_` spelling of all settings still works; `VKIFRAME_` wins if both are set.
 
 For a quick test of the base frame rate use `VKIFRAME_BASE_FPS_CAP`, an in-game limiter, or `DXVK_FRAME_RATE=30` on Proton.
@@ -112,7 +112,7 @@ Environment variables, read once at start. Defaults in the second column.
 | `VKIFRAME_CMD_BUFFERS` | `8` | Command buffer entries per swapchain (4..32). A GPU-bound game makes the game thread wait on the fence of the oldest entry (`wait_fence_ms` in the stats); more entries let the layer queue further ahead of the GPU before that happens, at the price of more latency in the layer's own work and a little memory. Live: change it in live.conf or the Decky panel while the game runs. |
 | `VKIFRAME_EXPERIMENTAL` | `0` | `1` raises the `MAX_SYNTHETIC` limit from 4 to 10 and sizes the swapchain for it (more images, more memory, untested above 4). Read once when the game starts, from live.conf or the environment. The Decky plugin also uses it to unlock its "More settings". |
 | `VKIFRAME_MIN_GAIN` | `1.01` | Interpolate only when the game's frame time exceeds the target frame time by this factor. |
-| `VKIFRAME_INTERPOLATE` | `0` (old name `VKIFRAME_WARP`) | `1`: build synthetic frames by interpolating along the optical flow (implies `VKIFRAME_FLOW`). |
+| `VKIFRAME_INTERPOLATE` | `1` (old name `VKIFRAME_WARP`) | `1`: build synthetic frames by interpolating along the optical flow (implies `VKIFRAME_FLOW`; costs about 5 ms of GPU time per native frame at 720p on the Steam Deck). `0`: plain cross-fades, no optical flow. |
 | `VKIFRAME_EXTRAPOLATE` | `0` | `1`: low-latency mode, no frame held back, slots after each native frame show predicted frames (implies `VKIFRAME_INTERPOLATE`). |
 | `VKIFRAME_UI_MASK_THRESHOLD` | `0.08` (`0` = off) | Static-UI mask: pixels whose 3x3 mean of \|A−B\| (luma) stays below this cross-fade instead of interpolating. `0.03` suits film-grain content. |
 | `VKIFRAME_INTERP_BIDIR` | `1` (old name `VKIFRAME_WARP_BIDIR`) | `1`: two-sided interpolation (A forward, B backward); costs about 0.37 ms more per synthetic frame. |
@@ -135,7 +135,7 @@ The layer re-reads `live.conf` (`$XDG_CONFIG_HOME/vkiframes/live.conf`, by defau
 
 | Key | Range | When it applies |
 |---|---|---|
-| `ENABLED` | 0 / 1 | next present (0 = plain bypass: no interpolation, no base-fps cap) |
+| `ENABLED` | 0 / 1 (default 1) | next present (0 = plain bypass: no interpolation, no base-fps cap) |
 | `TARGET_FPS` | 30..1000 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
 | `MAX_SYNTHETIC` | 1..4 (up to 10 with `EXPERIMENTAL`) | next present |
 | `BASE_FPS_CAP` | 0..90 | next present |
