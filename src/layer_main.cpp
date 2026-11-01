@@ -105,7 +105,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* p
         ci.ppEnabledExtensionNames = names.data();
         r = create(&ci, pAllocator, pInstance);
         if (r == VK_SUCCESS) { got_props2 = props2 || t.props2_ext; got_caps2 = surface_caps2 || caps2_ok; break; }
-        if (r != VK_ERROR_EXTENSION_NOT_PRESENT) return r;
+        // Any failure of a request that carries our extras (a layer or driver below may answer an unwanted extension with another code) is tried again with
+        // fewer; the last try is the app's own list, and its result is what the app gets.
     }
     if (r != VK_SUCCESS) return r;
     props2 = got_props2; surface_caps2 = got_caps2;

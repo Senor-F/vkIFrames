@@ -17,12 +17,17 @@ static Fake g_inst{(void*)0x1111};
 static std::set<std::string> g_supported;                       // instance extensions the mock implementation offers
 static std::vector<std::vector<std::string>> g_attempts;        // the extension names of every vkCreateInstance that reached it
 static VkResult g_force_error = VK_SUCCESS;
+static bool g_force_only_with_extras = false;                    // g_force_error only for requests that carry an extension the app did not ask for
 
 static VkResult VKAPI_CALL m_CreateInstance(const VkInstanceCreateInfo* ci, const VkAllocationCallbacks*, VkInstance* p) {
     std::vector<std::string> names;
     for (uint32_t i = 0; i < ci->enabledExtensionCount; ++i) names.push_back(ci->ppEnabledExtensionNames[i]);
     g_attempts.push_back(names);
-    if (g_force_error != VK_SUCCESS) return g_force_error;
+    if (g_force_error != VK_SUCCESS) {
+        bool extras = false;
+        for (auto& n : names) if (n == VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME || n == VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) extras = true;
+        if (!g_force_only_with_extras || extras) return g_force_error;
+    }
     for (auto& n : names) if (!g_supported.count(n)) return VK_ERROR_EXTENSION_NOT_PRESENT;
     *p = (VkInstance)&g_inst; return VK_SUCCESS;
 }
@@ -80,8 +85,19 @@ int main(int, char** argv) {
     // an extension the app itself asked for and nobody offers: the app gets the error, after the layer's own fallbacks
     CHECK(run(VK_API_VERSION_1_0, {SURF, "VK_FOO_not_there"}, {SURF}) == VK_ERROR_EXTENSION_NOT_PRESENT);
     CHECK(g_attempts.size() == 3);
-    // any other error is returned at once, without a retry
+    // a layer or driver below answers an extension it does not want with another code: the requests carrying the extras fail with it, the app's own
+    // list works, so the game's vkCreateInstance succeeds after the fallbacks (1.0 surface app: three attempts, the last is the app's list unchanged)
+    g_force_only_with_extras = true;
+    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}, VK_ERROR_INITIALIZATION_FAILED) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
+    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF, P2, C2}, VK_ERROR_INCOMPATIBLE_DRIVER) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 2 && g_attempts[1].size() == 1);
+    g_force_only_with_extras = false;
+    // everything fails with that code: the last try's code comes back, and the last try is the app's own list unchanged
     CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}, VK_ERROR_INITIALIZATION_FAILED) == VK_ERROR_INITIALIZATION_FAILED);
-    CHECK(g_attempts.size() == 1);
+    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
+    // an app with no surface gets no extras and a single attempt, whatever the error
+    CHECK(run(VK_API_VERSION_1_0, {}, {}, VK_ERROR_INITIALIZATION_FAILED) == VK_ERROR_INITIALIZATION_FAILED);
+    CHECK(g_attempts.size() == 1 && g_attempts[0].empty());
     std::printf("PASS: instance extensions are tried and dropped, no null-instance call below the layer\n");
 }
