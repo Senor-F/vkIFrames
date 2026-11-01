@@ -2,6 +2,8 @@
 
 Open items, in priority order, checked against `main` 6c0e949. Findings go on the board issue; this file holds the detail. Not compiled or run by the Auditor: everything is from reading the source and the GitHub objects. Nothing is a Deck measurement unless it says so.
 
+**Status 2026-11-01, `main` c5230b8:** sections 1 to 11 are the original plan (items 1 and 2 are in main). Section 13 is the current review log: which heads were reviewed and passed, the sanitizer results, the measurements recomputed so far, and the residuals that are still open.
+
 Every item below uses the same layout: what it is, what it costs today, what happens if we do it, what happens if we do not, a recommendation, and how to decide. Numbers marked "estimate" are the Auditor's arithmetic from the Builder's Deck figures, not measurements; the measurement logic (section 1) replaces them with real ones.
 
 ## Priority order (owner, 22:24; reordered 06:00)
@@ -142,3 +144,48 @@ Private config folder and files (0700/0600, no symlink following, no temp-direct
 ## 12. Rules for these notes
 
 No session links, no real name, email, IP, host name or home path; commits as `Claude (Auditor)`, no session line in the message; fast-forward pushes only; no merges or rewrites by the Auditor.
+
+## 13. Review log, sanitizer results, measurements and residuals (2026-11-01, `main` c5230b8)
+
+How to read it. A PASS covers only the exact head named. "Measured" means run in the Auditor's container (Arch, GCC 16, AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer, mock-driver tests); "read" means from the source. Nothing here is a Deck measurement unless it says so, and the Deck runs were done by the Tester and recomputed by the Auditor from the raw files.
+
+**Reviews with a PASS (all merged).**
+
+| PR | Head reviewed | Subject |
+|---|---|---|
+| #35 | `af78dc7` | hidden acquire: reserve the command buffer entry while `gpu_mu` is dropped (#25) |
+| #36 | `92225121bdd7e919cbfaca47b060fa272e5e612e` | failure paths of `EndAndSubmit`, `DumpImage` and the hidden acquire (#26, #28, part of #27) |
+| #38 | `280a5e8081c363cd0d2aec92362b6b58dd099d65` | hook hardening (#23, #29, #30) |
+| #39 | `41ed60c5731b3aefc31336447659507cb34b99cc` | Decky backend: no symlink following as root, tolerant settings (#21, #22, #24) |
+| #40 | `be2cb918573bb6c06046aa65117ebb7d30c6fd90` | docs and stale text (#31, #32, #34) |
+| #37 | `1faf1c4ab079b3c4bd2b4d5dd912f7b3f5abaf4a` | scheduler: a tick on the next native frame is that frame, not a pass at t = 1 |
+| #45 | `4da63852dfd5f8e02e265b9cd4646644ca9dc8d9` | scheduler: re-anchor the output clock when `TARGET_FPS` changes while running |
+| #46 | `2b52c367b0618672401cf178b4fe3019028a737b` | give back the swapchain image acquired on the hidden path when a later step fails (#27) |
+| #47 | `8759be66d6e68c28bd7ce25748d51341a6941b09` | the global registries are never destroyed (#41) |
+| #48 | `4b5ce90278886fde3f8b677266e3f10561e681e4` | `last_queue` atomic, `gpu` atomic pointer, idle-flush test (#33) |
+
+What the last four showed. #45: the plans are bit-identical to the old header at a steady period (1.2 million random plans per mode, compared byte for byte), the grid stays continuous across 3133 random period switches, and five of the six new tests fail on the old header. #46: every step after a hidden acquire that can fail is covered (the index check and the three failure points of `EndAndSubmit`); the PR's test gives 131 acquired and 131 presented against 131 and 130 on the old source; the give-back's own failure paths were checked with throwaway test variants, not in the repo. #47: ThreadSanitizer library-side reports go from 9 to 1. #48: ThreadSanitizer reports are 9 before and 9 after.
+
+**Sanitizers (measured, mock tests only).**
+- ThreadSanitizer on `main` b056bb9: 4 of the 12 tests fail (`mock_synth`, `mock_cmdreuse`, `mock_detach`, `mock_extrap`). 9 reports point into the library: 8 are the exit-time teardown of #41 (`layer_dispatch.cpp:12` five times and `:15` once, plus the heap-use-after-free in `PresenterMain` at `layer_main.cpp:751` and `:755`), 1 is the `mock_detach` read below. The other warnings are the tests' own mock globals.
+- On `main` c5230b8 (#46, #47, #48 merged): 1 library-side report, the `mock_detach` one. The same 4 tests still fail under ThreadSanitizer because of their own mock globals.
+- AddressSanitizer and UndefinedBehaviorSanitizer: no memory error and no runtime error on b056bb9 and on the heads of #46, #47 and #48 (not re-run on c5230b8 itself). LeakSanitizer lists only the tests' own mock allocations (10532 bytes in 45 allocations once, 256 bytes in 32 allocations five times).
+- Method note: run `ctest` with `--output-on-failure` or `-V`, or the sanitizer text is lost; UndefinedBehaviorSanitizer prints and continues.
+
+**Deck measurements recomputed (the Tester ran them).**
+- `STATS=1` over `STATS=0` (568d786, 6 pairs): +0.0044 ms, standard error 0.0152 ms, 95 % interval -0.035 to +0.043 ms: "no cost above 0.05 ms at this resolution", narrowly; a 10 s or 15 s settle, the median, or a clock offset of -5 s move it to "inconclusive". It does not cover the always-on timestamps.
+- `SYNTH_MARGIN=0` with #37 (`1faf1c4`, library sha256 `bb88489f06f077612f7c878ab08d4ec72ec7011349facc5c427fcad859b0627e`), stationary scene, native 30, shown 60: 1.015 passes per game frame against 1.619 on 568d786; 330 of 341 seconds within 1.0 +/- 0.1 (328 if the two seconds at exactly 1.100 are counted outside); no late, dropped or cancelled frames. Layer GPU time per game frame, derived from means: 5.932 ms against 6.333 ms. One run, one scene; the cap hides the layer's cost.
+- The same setting on `bff7aa7` (library sha256 `a1a5053f99ba275fc2a3d3a25ccd4d557760dcc6c0b754328c98302168d0c77a`) in a moving scene with fps dips: not valid under the native-30 rule. 1.258 passes per game frame (up to 2.82); the stationary segment gives 1.014; seconds with uneven frame times average 1.76 against 1.07. Nothing about cost or saving can be read from it.
+- **The b8-l2 baseline on the final library has not been run.** Acceptance (Auditor): layer cost 5.1 +/- 0.2 ms from `layer_cost_pairs_ms`, no late, dropped or cancelled frames in the on-seconds, shown fps 90; every file and number labelled with the commit and the library sha256; the report gives the off-arm native fps and frame time (the first series had a layer-off frame of 17.99 ms), and says whether anything touched `live.conf` or the Decky panel before the bench started; read only against its own pair costs and standard error, never against a layer-off baseline from another game start. First series on 568d786: 5.136 ms (standard error 0.010).
+- The offline check of the one-sided fill (`tools/interp_eval`): the Auditor recomputes the error numbers from the raw captures. The folder of private captures is not opened without the owner's word.
+
+**Residuals still open.**
+1. `layer_main.cpp:954` (a plain read of `sc->presenter` in `Hook_QueuePresentKHR`) against `:804` (`StopPresenter` sets it to null on the detach path): triggered only by `mock_detach`, which presents while the swapchain is destroyed. Vulkan requires external synchronization of presenting on and destroying the same swapchain, so this is test-only (the Builder's reading; it matches the Auditor's). Not changed.
+2. `layer_main.cpp:768` to `:770`: the presenter's watchdog log reads `sc->frames` and `sc->gpu->held.valid`, `.present_id`, `.fence` without a lock. Log only, after at least 2 s without a present and at most every 5 s, but the fields are plain and written under `flow_mu` or `mu`, so the atomic pointer of #48 does not make that read race-free. No issue opened. Small fix: take `flow_mu` with a try-lock for that log line, or leave the fields out.
+3. The PR #48 text says the presenter's reads of `sc->gpu` and `sc->last_queue` are ordered by `last_present_ns`. That is true for `last_queue` (written at `:877`, just before the store at `:878`), where the atomic closes a real but tiny formal race (a later write against the unlocked read at `:752`). It is not the reason for `sc->gpu`: that write (`:896`) comes after the store, and it is ordered by thread creation (`StartPresenter` runs after it) and by stopping the presenter before the null write at destroy. The atomic on `gpu` is harmless and not needed. The calibration fields are guarded by `sc.mu`.
+4. #46: the given-back image is presented after an UNDEFINED to PRESENT_SRC transition, so its content is undefined (the code comment says it shows what it held last); the present goes straight to the driver, not through `PresentWithTiming`; the paths inside the give-back are best effort.
+5. #47: if the loader unloads the layer library while the process goes on, the five heap objects stay allocated (a few hundred bytes per load). No search was made for a static initialiser in another translation unit that calls into the registries.
+6. PR #42 (the layer asks the next layer for instance extension support with a null instance, and Mesa's device-select layer dereferences it; any Vulkan 1.0 application with a surface is hit; reproduced in the Auditor's container with a software driver, not on the Deck): parked, not reviewed.
+7. `stats.cpp:186` says that with `SYNTH_MARGIN=0` the native frame "costs no pass". Measured: true in a stationary scene with the phase locked and offset 0 (1.015), not in a moving scene with uneven frame times (1.258 up to 2.82).
+8. Image count (read from the source and shown with a scratch build in the Auditor's container; not re-checked in this pass): with hold on, the layer asks for the application's minimum plus `max(MAX_SYNTHETIC, 4)` plus 2 images (more with `EXPERIMENTAL`). An application with a fixed array of 8 swapchain images breaks. The decision (document, size from `MAX_SYNTHETIC`, or a cap setting) is the owner's.
+9. Not covered by the audit: the `GpuFlow` barriers and command recording in `optical_flow.cpp`, `flow_ref.hpp`, `timing_engine.hpp`, the plugin front end, the root-only parts of the Decky backend (read, not run), and the image quality of flow level 3 and of bidirectional off. Nothing was measured on the Deck by the Auditor.
