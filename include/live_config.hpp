@@ -17,7 +17,6 @@ struct LiveSettings {
     std::atomic<int>   cmd_buffers{8};         // CMD_BUFFERS (4..32): command buffer entries in use; the fence of each entry keeps a change safe
     std::atomic<float> synth_margin{0.15f};    // SYNTH_MARGIN (0..0.45): ticks of a pair keep t at least this far from 0 and 1; 0 lets a tick sit on the native frame (takes effect from the next pair)
     std::atomic<int>   stats{0};               // STATS: one measurement record a second in stats.jsonl (see stats.hpp)
-    std::atomic<long long> bench_token{0};     // BENCH: a new non-zero number asks for one benchmark run
 };
 constexpr int kLiveMaxSynthetic = 10;        // hard upper bound of MAX_SYNTHETIC (experimental mode)
 constexpr int kLiveMaxSyntheticNormal = 4;   // the most without experimental mode
@@ -48,13 +47,15 @@ void LivePoll(uint64_t now_ns);               // cheap: one stat() per second; r
 // About once a second: native fps, shown fps, generated frames per native frame and the mode; written to status.json next to live.conf
 void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz = 0.0, const char* bench = "");  // refresh_hz: the swapchain's refresh rate, 0 = unknown
 
-// The layer's own table of live keys (name, on/off key, range, built-in default), for the build test that compares it with decky/settings_schema.json. STATS is included, BENCH is not.
+// The layer's own table of live keys (name, on/off key, range, built-in default), for the build test that compares it with decky/settings_schema.json. STATS is included.
 struct LiveKeyRow { const char* name; bool toggle; double lo, hi, def; };
 int LiveKeyTable(LiveKeyRow* rows, int max);   // fills at most `max` rows; returns the number of keys
 
-// Benchmark support (stats.hpp): the number of loads that changed a setting, the pending BENCH request, and private files next to live.conf.
+// Benchmark support (stats.hpp): the number of loads that changed a setting, the pending request in bench.req, and private files next to live.conf.
 unsigned long long LiveGeneration();
-bool LiveBenchRequest(long long* token);      // true when live.conf holds a BENCH number that has not been handled (and was not there at startup)
+bool LiveBenchRequest(long long* token);      // true when bench.req holds a number that has not been handled (and was not there at startup)
 void LiveBenchAck(long long token);
+void LiveBenchRunning(bool on);              // stats.cpp: a benchmark run starts or ends. While one runs, a live.conf write that changes no setting leaves ENABLED to the run (it switches ENABLED itself)
+bool LiveBenchCancel();                       // true once when bench.req was changed to 0 (the request token went from non-zero to zero): stop a running benchmark
 bool LiveWritePrivate(const char* name, const std::string& text);   // temp + rename, 0600, in the 0700 config folder
 bool LiveStatsAppend(const std::string& line, bool allow_rotate = true);   // allow_rotate=false while a benchmark runs: one run's records stay in one file                      // one line of stats.jsonl

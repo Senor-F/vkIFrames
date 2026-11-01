@@ -1,4 +1,4 @@
-// Measurement logic: percentiles, derived values, the benchmark schedule and bench.json, the BENCH request through live.conf, privacy of the files.
+// Measurement logic: percentiles, derived values, the benchmark schedule and bench.json, the benchmark request through bench.req, privacy of the files.
 #include "live_config.hpp"
 #include "stats.hpp"
 #include "vk_iframes_layer.hpp"
@@ -144,7 +144,7 @@ int main() {
         CHECK(j.find("a setting was changed") != std::string::npos);
     }
 
-    // ---- through live.conf: a BENCH request, the run, the files ----
+    // ---- through bench.req and live.conf: a benchmark request, the run, the files ----
     char dir[] = "/tmp/vkistats_XXXXXX";
     if (!mkdtemp(dir)) return 2;
     const std::string conf = std::string(dir) + "/vkiframes/live.conf";
@@ -158,12 +158,15 @@ int main() {
         if (fd >= 0) { ::fchmod(fd, 0644); ::close(fd); }
         struct stat st0; CHECK(stat(old.c_str(), &st0) == 0 && (st0.st_mode & 0777) == 0644);
     }
-    Poll();                                                              // no file yet
+    const std::string req = std::string(dir) + "/vkiframes/bench.req";
+    Put(req, "1699999999\n");                                            // a request left from an earlier game run is not a request now
+    Poll();                                                              // no live.conf yet
     CHECK(!StatsOn() && !StatsWantsSecond());                            // off: nothing is asked of the layer
     Put(conf, "REV=1\nENABLED=1\nBASE_FPS_CAP=60\n");
     Poll();
     CHECK(!StatsWantsSecond());
-    Put(conf, "REV=2\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000001\n");
+    Put(conf, "REV=2\nENABLED=1\nBASE_FPS_CAP=60\n");
+    Put(req, "1700000001\n");
     Poll();
     CHECK(StatsWantsSecond() && !StatsOn());                             // a request is waiting
     {
@@ -196,14 +199,27 @@ int main() {
     }
     // the same token does not start a second run; a new one does; a setting change stops it and keeps the user's value
     Poll(); CHECK(!StatsWantsSecond());
-    Put(conf, "REV=3\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000002\n");
+    Put(conf, "REV=3\nENABLED=1\nBASE_FPS_CAP=60\n");
+    Put(req, "1700000002\n");
     Poll(); CHECK(StatsWantsSecond());
     {
         stats::Record r = Second(true); StatsOnSecond(r, g_now);
         CHECK(StatsBenchActive());
         for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }    // warm-up over, an "off" segment running
         CHECK(Live().enabled.load() == 0);
-        Put(conf, "REV=4\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000002\nTARGET_FPS=75\n");
+        // writes that change no setting do not stop the run, in an "off" second too: the plugin rewriting live.conf (new REV, same values; an old plugin's BENCH line),
+        // and bench.req itself being rewritten with the same or another number
+        Put(conf, "REV=3a\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000002\n");
+        Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
+        CHECK(StatsBenchActive() && Live().enabled.load() == 0);
+        Put(conf, "REV=3b\nENABLED=1\nBASE_FPS_CAP=60\n");
+        Put(req, "1700000002\n");
+        Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
+        CHECK(StatsBenchActive() && Live().enabled.load() == 0);
+        Put(req, "1700000077\n");                                         // a new number while a run is going is not a second run and not a stop
+        Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
+        CHECK(StatsBenchActive());
+        Put(conf, "REV=4\nENABLED=1\nBASE_FPS_CAP=60\nTARGET_FPS=75\n");
         Poll();
         stats::Record q = Second(false); StatsOnSecond(q, g_now);
         CHECK(!StatsBenchActive());
@@ -211,8 +227,24 @@ int main() {
         CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("a setting was changed") != std::string::npos);
         CHECK(std::string(StatsBenchLabel()) == "aborted");
     }
+    // bench.req set to 0 stops a run and restores ENABLED (scripts/vkiframes-bench.sh --cancel); 0 with nothing running asks for nothing and is not kept
+    Put(req, "0\n"); Poll();
+    { stats::Record q = Second(true); StatsOnSecond(q, g_now); }
+    CHECK(!StatsBenchActive() && !StatsWantsSecond());
+    Put(req, "1700000004\n"); Poll();
+    {
+        stats::Record r = Second(true); StatsOnSecond(r, g_now);
+        for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }
+        CHECK(StatsBenchActive() && Live().enabled.load() == 0);
+        Put(req, "0\n"); Poll();
+        stats::Record q = Second(false); StatsOnSecond(q, g_now);
+        CHECK(!StatsBenchActive() && Live().enabled.load() == 1);
+        CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("cancelled") != std::string::npos);
+        CHECK(std::string(StatsBenchLabel()) == "aborted");
+    }
     // leaving the game stops a run and restores ENABLED
-    Put(conf, "REV=5\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000003\n");
+    Put(conf, "REV=5\nENABLED=1\nBASE_FPS_CAP=60\n");
+    Put(req, "1700000003\n");
     Poll();
     {
         stats::Record r = Second(true); StatsOnSecond(r, g_now);

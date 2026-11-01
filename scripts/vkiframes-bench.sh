@@ -1,26 +1,34 @@
 #!/usr/bin/env bash
 # Runs the layer benchmark in the game that is running now: 30 s warm-up, then 6 x (60 s layer off, 60 s on), about 13 minutes.
-# It asks the layer through live.conf (BENCH=<number>); the layer writes bench.json in the config folder, and this script prints it.
-#   scripts/vkiframes-bench.sh            start a run and wait for the result
-#   scripts/vkiframes-bench.sh --cancel   stop a run (the layer puts your settings back)
+# It asks the layer through the file bench.req in the config folder (a request number; the layer checks it once a second, it is not a setting and not in
+# live.conf). The layer writes bench.json next to it, and this script prints it.
+#   scripts/vkiframes-bench.sh              start a run and wait for the result
+#   scripts/vkiframes-bench.sh --no-wait    start a run and return at once
+#   scripts/vkiframes-bench.sh --cancel     stop a run (the layer puts your settings back)
 # Start the game first (with the layer on) and stay in a demanding scene. Do not change settings during the run: that stops it.
 set -euo pipefail
 umask 077
 dir="${XDG_CONFIG_HOME:-$HOME/.config}/vkiframes"
-conf="$dir/live.conf"
+req="$dir/bench.req"
 mkdir -p "$dir"; chmod 700 "$dir"
 
+wait=1
 want="$(date +%s)"
-[ "${1:-}" = "--cancel" ] && want=0
+case "${1:-}" in
+  "") ;;
+  --no-wait) wait=0 ;;
+  --cancel) want=0 ;;
+  *) echo "usage: $0 [--no-wait | --cancel]" >&2; exit 2 ;;
+esac
 
-tmp="$(mktemp "$dir/live.conf.XXXXXX")"
+tmp="$(mktemp "$dir/bench.req.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
-if [ -f "$conf" ]; then grep -v -E '^(VKIFRAME_|FRAMEGEN_)?BENCH=' "$conf" > "$tmp" || true; fi
-echo "VKIFRAME_BENCH=$want" >> "$tmp"
-mv "$tmp" "$conf"; trap - EXIT
+echo "$want" > "$tmp"
+mv "$tmp" "$req"; trap - EXIT
 
 if [ "$want" = 0 ]; then echo "Cancel requested."; exit 0; fi
 echo "Benchmark requested. It starts within a second if a game with the layer is running, and takes about 13 minutes."
+[ "$wait" = 1 ] || exit 0
 
 start="$(date +%s)"
 last=""

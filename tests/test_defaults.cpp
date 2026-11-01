@@ -69,7 +69,7 @@ int main() {
     CHECK(d.hold && d.synth && d.presenter);                  // the product runs by default once enabled
     CHECK(d.max_synthetic <= kLiveMaxSyntheticNormal);
     CHECK(LiveMaxSyntheticLimit() == kLiveMaxSyntheticNormal);   // EXPERIMENTAL is off: the limit is 4, not 10
-    CHECK(Live().stats.load() == 0 && Live().bench_token.load() == 0 && Live().enabled.load() == 1);
+    CHECK(Live().stats.load() == 0 && Live().enabled.load() == 1);
     CHECK(d.dump_frames == 5);
 
     // the manifest turns the layer on only for a process that sets VKIFRAME_ENABLE=1, and VKIFRAME_DISABLE=1 wins

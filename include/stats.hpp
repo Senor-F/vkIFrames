@@ -95,7 +95,7 @@ private:
 // ---- the layer's side (src/stats.cpp) ----
 bool StatsOn();                                         // STATS key / environment, or a benchmark running
 bool StatsBenchActive();
-bool StatsWantsSecond();                                // StatsOn(), or a BENCH request is waiting (so the layer builds this second's record)
+bool StatsWantsSecond();                                // StatsOn(), or a benchmark request (bench.req) is waiting (so the layer builds this second's record)
 // Once a second, from the present path, with this second's record. Writes it, and drives the benchmark (starts one when live.conf asks, switches ENABLED, finishes).
 void StatsOnSecond(stats::Record& r, uint64_t now_ns);
 void StatsBenchAbort(const char* reason);               // leaving the game

@@ -27,11 +27,11 @@ main = importlib.util.module_from_spec(spec); spec.loader.exec_module(main)
 
 rel = os.path.join(tmp, "release")
 os.makedirs(os.path.join(rel, "scripts")); os.makedirs(os.path.join(rel, "manifest"))
-for s in ("install.sh", "uninstall.sh"):
+for s in ("install.sh", "uninstall.sh", "vkiframes-bench.sh"):
     subprocess.check_call(["cp", os.path.join(repo, "scripts", s), os.path.join(rel, "scripts", s)])
 subprocess.check_call(["cp", os.path.join(repo, "manifest", "VkLayer_frame_gen.json.in"), os.path.join(rel, "manifest")])
 open(os.path.join(rel, "libvkIFrames.so"), "wb").write(elf)
-env = dict(os.environ, HOME=home); env.pop("XDG_DATA_HOME", None)
+env = dict(os.environ, HOME=home); env.pop("XDG_DATA_HOME", None); env.pop("XDG_CONFIG_HOME", None)
 def script(name, *args):
     return subprocess.run([os.path.join(rel, "scripts", name), *args], env=env, capture_output=True, text=True)
 def mode(p): return stat.S_IMODE(os.lstat(p).st_mode)
@@ -63,4 +63,17 @@ assert a == b == (0o700, 0o755, 0o644, os.getuid()), (a, b)
 # 4. the plugin installs over the script's install and the script over the plugin's: both keep working
 assert script("install.sh").returncode == 0 and json.load(open(main.MANIFEST)) == plugin_manifest
 run(p.install_layer()); assert json.load(open(main.MANIFEST)) == plugin_manifest
+# 5. benchmark request: the script and the plugin write the same file in the same form (bench.req: one number and a newline, 0600, in the 0700 config
+#    folder), never into live.conf, and neither leaves a temporary file. 0 is the script's cancel.
+def bench_req(): return open(main.BENCH_REQ).read()
+r = script("vkiframes-bench.sh", "--no-wait"); assert r.returncode == 0, r.stderr
+s1 = bench_req(); assert s1.endswith("\n") and s1.strip().isdigit() and int(s1) > 1_000_000_000 and "\n" not in s1[:-1], repr(s1)
+assert mode(main.BENCH_REQ) == 0o600 and mode(main.CONF_DIR) == 0o700 and os.stat(main.BENCH_REQ).st_uid == os.getuid()
+t = run(p.start_bench())["token"]
+s2 = bench_req(); assert s2 == "%d\n" % t and mode(main.BENCH_REQ) == 0o600 and os.stat(main.BENCH_REQ).st_uid == os.getuid(), repr(s2)
+assert len(s1.strip()) == len(s2.strip())                                     # both are a unix time in seconds
+r = script("vkiframes-bench.sh", "--cancel"); assert r.returncode == 0 and bench_req() == "0\n", (r.stderr, bench_req())
+assert "BENCH" not in (open(main.LIVE_CONF).read() if os.path.exists(main.LIVE_CONF) else "")
+assert not [f for f in os.listdir(main.CONF_DIR) if f.startswith("bench.req.")]
+assert script("vkiframes-bench.sh", "--bogus").returncode == 2
 print("script and plugin agree: ok")

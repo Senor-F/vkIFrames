@@ -25,6 +25,7 @@ CONF_DIR = os.path.join(USER_HOME, ".config", "vkiframes")
 LIVE_CONF = os.path.join(CONF_DIR, "live.conf")      # plugin -> layer
 STATUS_JSON = os.path.join(CONF_DIR, "status.json")  # layer -> plugin (optional)
 BENCH_JSON = os.path.join(CONF_DIR, "bench.json")    # layer -> plugin: result of a benchmark run (numbers only)
+BENCH_REQ = os.path.join(CONF_DIR, "bench.req")      # plugin -> layer: the benchmark request number, one line; not a setting and not in live.conf
 LOG_CAP_BYTES = 8 * 1024 * 1024                        # live.log is rotated past this size (the layer does the same)
 LIVE_LOG = os.path.join(CONF_DIR, "live.log")        # verbose log of every change; the layer appends to the same file
 DATA_DIR = os.path.join(USER_HOME, ".local", "share", "vkiframes")
@@ -257,7 +258,7 @@ def _check_library(path):
 class Plugin:
     values = None
     rev = 0
-    bench_token = 0        # BENCH=<number> in live.conf: a new number asks the layer for one benchmark run (6 pairs of 60 s, about 13 minutes)
+    bench_token = 0        # the number last written to bench.req: a new number asks the layer for one benchmark run (6 pairs of 60 s, about 13 minutes)
     experimental = False   # EXPERIMENTAL on: the "more" settings can be changed and Most generated frames reaches 10
     refresh_hz = 0.0       # refresh rate of the screen the game renders on; 0 = not known yet
     refresh_src = ""       # "layer" (what the running game's swapchain reports), "xrandr", or "saved"
@@ -356,8 +357,6 @@ class Plugin:
                  "REV=%d" % self.rev]
         for item in self._schema():
             lines.append("%s%s=%s" % (PREFIX, item["key"], self.values[item["key"]]))
-        if self.bench_token:
-            lines.append("%sBENCH=%d" % (PREFIX, self.bench_token))     # kept in every later write, so the layer does not see it change
         _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n", user_dir=False)    # the plugin's own folder: always
         try:
             _private_dir(CONF_DIR)
@@ -421,8 +420,14 @@ class Plugin:
     async def start_bench(self):
         """Asks the running game's layer for one benchmark run: 30 s warm-up, then 6 pairs of 60 s (layer off, on; every second pair on, off), about 13 minutes. The layer writes bench.json."""
         self.bench_token = max(int(time.time()), self.bench_token + 1)
-        self._write_live()
-        _log("panel: benchmark requested (BENCH=%d, REV %d); the layer starts it within a second if a game is running" % (self.bench_token, self.rev))
+        try:
+            _private_dir(CONF_DIR)
+            _atomic_write(BENCH_REQ, "%d\n" % self.bench_token)     # its own file: live.conf is not touched, so the request cannot count as a changed setting
+        except OSError as e:
+            decky.logger.error("bench.req not written: %s", e)
+            _log("panel: benchmark NOT requested, bench.req could not be written (%s)" % e)
+            raise ValueError("the benchmark request could not be written: %s" % e)
+        _log("panel: benchmark requested (bench.req %d); the layer starts it within a second if a game is running" % self.bench_token)
         return {"token": self.bench_token}
 
     async def reset_values(self):
