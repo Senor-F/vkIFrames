@@ -866,7 +866,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
     // (VKIFRAME_CAP_EARLY=1: wait before the present, which makes the intervals exact but adds the whole wait to the latency of every frame.)
     uint64_t cap_slot_ns = 0;
     LivePoll(NowNs());                                          // live.conf: one stat() a second
-    const float cap_fps = (Live().enabled.load() || StatsBenchActive()) ? Live().base_fps_cap.load() : 0.0f;   // a benchmark keeps the cap in its "off" seconds, so both states pace the game the same way   // disabled = pure passthrough, no cap either
+    const float cap_fps_raw = (Live().enabled.load() || StatsBenchActive()) ? Live().base_fps_cap.load() : 0.0f;
+    const float cap_fps = cap_fps_raw >= 1.0f ? cap_fps_raw : 0.0f;   // below 1 fps is not a cap (the settings already turn it into 0; this is the last guard before the sleep)   // a benchmark keeps the cap in its "off" seconds, so both states pace the game the same way   // disabled = pure passthrough, no cap either
     if (cap_fps > 0.0f) {
         cap_slot_ns = uint64_t(1e9 / cap_fps);
         const uint64_t now0 = NowNs();

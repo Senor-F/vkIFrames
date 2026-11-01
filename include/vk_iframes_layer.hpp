@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "output_clock.hpp"
@@ -221,6 +222,27 @@ inline const char* EnvVar2(const char* name, const char* old_name) {
     if (const char* v = EnvVar(name)) return v;
     return EnvVar(old_name);
 }
+// A number from the environment or a settings file: only digits, a sign, a point and an exponent (no hex float, no inf, no nan, no blanks inside), the whole
+// string, and finite. Anything else is not a number (the setting keeps its default) instead of being turned into 0 or into a huge value by atof.
+inline bool ParseFiniteNumber(const char* v, double& out) {
+    if (!v || !*v) return false;
+    const char* p = v; while (*p == ' ' || *p == '\t') ++p;
+    const char* b = p;
+    for (; *p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n'; ++p) if (!((*p >= '0' && *p <= '9') || *p == '+' || *p == '-' || *p == '.' || *p == 'e' || *p == 'E')) return false;
+    const char* e = p; while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p || e == b) return false;
+    std::string t(b, e);
+    char* end = nullptr; errno = 0;
+    const double x = std::strtod(t.c_str(), &end);
+    if (*end || errno == ERANGE || !(x - x == 0.0)) return false;           // trailing text, out of range, inf or nan
+    out = x; return true;
+}
+inline void EnvNumberValue(const char* name, const char* v, double lo, double hi, float& dst) {
+    double x;
+    if (ParseFiniteNumber(v, x)) dst = float(std::clamp(x, lo, hi));
+    else FG_LOG("VKIFRAME_%s=\"%.40s\" is not a usable number: ignored, the default stays", name, v);
+}
+inline void EnvNumber(const char* name, double lo, double hi, float& dst) { if (const char* v = EnvVar(name)) EnvNumberValue(name, v, lo, hi, dst); }
 inline const Config& GetConfig() {
     static const Config c = [] {
         Config c;
@@ -228,13 +250,14 @@ inline const Config& GetConfig() {
         // VKIFRAME_LOG_FILE=<path>: append everything the layer prints (and the game's own stderr) to that file; for runs without the launch script
         if (const char* v = EnvVar("LOG_FILE"); v && *v) { FILE* r_ = std::freopen(v, "a", stderr); (void)r_; }
         else (void)LiveLogOpen();                     // default: one log, ~/.config/vkiframes/live.log, shared with the settings changes
-        if (const char* v = EnvVar("TARGET_FPS"))   c.target_fps   = std::max(1.0f, float(std::atof(v)));
-        if (const char* v = EnvVar("SYNTH_MARGIN"))   c.synth_margin  = std::clamp(float(std::atof(v)), 0.0f, 0.45f);
-        if (const char* v = EnvVar("PHASE_OFFSET"))   c.phase_offset  = std::clamp(float(std::atof(v)), 0.0f, 0.999f);
+        EnvNumber("TARGET_FPS", 1.0, 1000.0, c.target_fps);
+        EnvNumber("SYNTH_MARGIN", 0.0, 0.45, c.synth_margin);
+        EnvNumber("PHASE_OFFSET", 0.0, 0.999, c.phase_offset);
         if (const char* v = EnvVar("PHASE_LOCK"))     c.phase_lock    = std::atoi(v) != 0;
-        if (const char* v = EnvVar("MIN_GAIN"))       c.min_gain      = std::clamp(float(std::atof(v)), 1.01f, 2.0f);
+        EnvNumber("MIN_GAIN", 1.01, 2.0, c.min_gain);
         if (const char* v = EnvVar("MAX_SYNTHETIC"))  c.max_synthetic = std::clamp(std::atoi(v), 1, 10);
-        if (const char* v = EnvVar("BASE_FPS_CAP")) c.base_fps_cap = std::max(0.0f, float(std::atof(v)));
+        EnvNumber("BASE_FPS_CAP", 0.0, 90.0, c.base_fps_cap);
+        if (c.base_fps_cap < 1.0f) c.base_fps_cap = 0.0f;                      // below 1 fps is not a cap anybody means: off (a 1/x second sleep per frame would freeze the game)
         if (const char* v = EnvVar("HOLD"))             c.hold          = std::atoi(v) != 0;
         if (const char* v = EnvVar("SYNTH"))            c.synth         = std::atoi(v) != 0;
         if (const char* v = EnvVar("PACE_SLEEP"))       c.pace_sleep    = std::atoi(v) != 0;
@@ -247,16 +270,16 @@ inline const Config& GetConfig() {
         if (const char* v = EnvVar("DEBUG_FLOW"))       c.debug_flow    = std::atoi(v) != 0;
         if (const char* v = EnvVar("TICKMARK"))         c.tickmark      = std::atoi(v);
         if (const char* v = EnvVar("FLOW_LEVEL"))       c.flow_level    = std::clamp(std::atoi(v), 1, 3);
-        if (const char* v = EnvVar2("INTERP_GUIDE", "WARP_GUIDE"))     c.interp_guide    = std::clamp(float(std::atof(v)), 0.0f, 1.0f);
-        if (const char* v = EnvVar("CONF_LO"))        c.conf_lo       = std::clamp(float(std::atof(v)), 0.0f, 10.0f);
-        if (const char* v = EnvVar("CONF_HI"))        c.conf_hi       = std::clamp(float(std::atof(v)), 0.0f, 10.0f);
-        if (const char* v = EnvVar("PAN_LO"))         c.pan_lo        = std::clamp(float(std::atof(v)), 0.0f, 1.0f);
-        if (const char* v = EnvVar("PAN_HI"))         c.pan_hi        = std::clamp(float(std::atof(v)), 0.0f, 1.0f);
-        if (const char* v = EnvVar("UI_MASK_THRESHOLD")) c.ui_mask = std::clamp(float(std::atof(v)), 0.0f, 0.5f);
+        if (const char* v = EnvVar2("INTERP_GUIDE", "WARP_GUIDE")) EnvNumberValue("INTERP_GUIDE", v, 0.0, 1.0, c.interp_guide);
+        EnvNumber("CONF_LO", 0.0, 10.0, c.conf_lo);
+        EnvNumber("CONF_HI", 0.0, 10.0, c.conf_hi);
+        EnvNumber("PAN_LO", 0.0, 1.0, c.pan_lo);
+        EnvNumber("PAN_HI", 0.0, 1.0, c.pan_hi);
+        EnvNumber("UI_MASK_THRESHOLD", 0.0, 0.5, c.ui_mask);
         if (const char* v = EnvVar("CAP_EARLY"))        c.cap_early     = std::atoi(v) != 0;
         if (const char* v = EnvVar("EXTRAPOLATE"))      c.extrapolate   = std::atoi(v) != 0;
         if (const char* v = EnvVar2("INTERP_BIDIR", "WARP_BIDIR"))     c.interp_bidir    = std::atoi(v) != 0;
-        if (const char* v = EnvVar2("INTERP_CAND", "WARP_CAND"))      c.cand_thr      = std::clamp(float(std::atof(v)), 0.0f, 1.0f);
+        if (const char* v = EnvVar2("INTERP_CAND", "WARP_CAND")) EnvNumberValue("INTERP_CAND", v, 0.0, 1.0, c.cand_thr);
         if (const char* v = EnvVar("FLOW_BWD_SKIP"))  c.flow_bwd_skip  = std::clamp(std::atoi(v), 0, 2);
         if (const char* v = EnvVar("FLOW_SUBPIXEL"))    c.flow_subpixel = std::atoi(v) != 0;
         if (const char* v = EnvVar("DUMP_DIR"))         { std::snprintf(c.dump_dir, sizeof c.dump_dir, "%s", v); }

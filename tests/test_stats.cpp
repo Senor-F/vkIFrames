@@ -226,6 +226,7 @@ int main() {
         CHECK(Live().enabled.load() == 1 && Live().target_fps.load() == 75.0f);       // the file's values stand
         CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("a setting was changed") != std::string::npos);
         CHECK(std::string(StatsBenchLabel()) == "aborted");
+        Poll(); CHECK(!StatsWantsSecond());                                   // the number that arrived during the run (…077) was acknowledged: it does not start a second run now
     }
     // bench.req set to 0 stops a run and restores ENABLED (scripts/vkiframes-bench.sh --cancel); 0 with nothing running asks for nothing and is not kept
     Put(req, "0\n"); Poll();

@@ -255,16 +255,23 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
             FG_LOG("benchmark started: 30 s warm-up, then 6 pairs of 60 s (off, on; every second pair on, off), about 13 minutes; do not change settings or leave the game");
             return;                                           // this second belongs to the time before the run
         }
-    } else if (LiveBenchCancel()) {                           // bench.req was set to 0 (scripts/vkiframes-bench.sh --cancel)
-        g_bench.Abort("cancelled (bench.req set to 0)");
-        Finish(true);
-    } else if (LiveGeneration() != g_gen0) {                  // the user changed a setting: their value wins
-        g_bench.Abort("a setting was changed during the run");
-        Finish(false);
     } else {
-        const int next = g_bench.OnSecond(r);
-        if (!g_bench.Active()) Finish(true);
-        else if (live.enabled.load() != next) { live.enabled = next; FG_LOG("benchmark: layer %s", next ? "on" : "off"); }
+        long long ignored = 0;
+        if (LiveBenchRequest(&ignored)) {                     // a new number while a run is going: neither a second run afterwards nor a stop
+            LiveBenchAck(ignored);
+            FG_LOG("benchmark: request %lld ignored, a run is going (ask again when it is done)", ignored);
+        }
+        if (LiveBenchCancel()) {                              // bench.req was set to 0 (scripts/vkiframes-bench.sh --cancel)
+            g_bench.Abort("cancelled (bench.req set to 0)");
+            Finish(true);
+        } else if (LiveGeneration() != g_gen0) {              // the user changed a setting: their value wins
+            g_bench.Abort("a setting was changed during the run");
+            Finish(false);
+        } else {
+            const int next = g_bench.OnSecond(r);
+            if (!g_bench.Active()) Finish(true);
+            else if (live.enabled.load() != next) { live.enabled = next; FG_LOG("benchmark: layer %s", next ? "on" : "off"); }
+        }
     }
     if (StatsOn() || r.bench.size()) {
         timespec ts; clock_gettime(CLOCK_REALTIME, &ts);

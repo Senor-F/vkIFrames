@@ -38,17 +38,27 @@ std::string ConfDir() {
 std::string ConfPath() { if (const char* v = EnvVar("LIVE_CONF"); v && *v) return v; const std::string d = ConfDir(); return d.empty() ? d : d + "/live.conf"; }
 std::string LogPath()  { if (const char* v = EnvVar("LIVE_LOG");  v && *v) return v; const std::string d = ConfDir(); return d.empty() ? d : d + "/live.log"; }
 
-// Reads a small settings file: no symlink, a regular file owned by this user. Empty string when it cannot be used.
-bool ReadOwnFile(const std::string& path, std::string& text) {
+// Reads a small settings file: no symlink, a regular file owned by this user. False when it cannot be used. O_NONBLOCK: a FIFO (or another special file) put in
+// the file's place must not block the game's present thread in open(); it is refused after the fstat. At most 64 KiB are used: from a bigger file only the
+// complete lines inside the first 64 KiB (a last line cut by the limit is dropped, not read as a shorter value); *truncated says so.
+constexpr size_t kMaxSettingsBytes = 65536;
+bool ReadOwnFile(const std::string& path, std::string& text, bool* truncated = nullptr) {
     text.clear();
+    if (truncated) *truncated = false;
     if (path.empty()) return false;
-    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) return false;
     struct stat st;
     if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid()) { ::close(fd); errno = EACCES; return false; }
     char buf[4096]; ssize_t n;
-    while ((n = ::read(fd, buf, sizeof buf)) > 0 && text.size() < 65536) text.append(buf, size_t(n));
+    while (text.size() <= kMaxSettingsBytes && (n = ::read(fd, buf, sizeof buf)) > 0) text.append(buf, size_t(n));
     ::close(fd);
+    if (text.size() > kMaxSettingsBytes) {
+        text.resize(kMaxSettingsBytes);
+        const size_t nl = text.rfind('\n');
+        text.resize(nl == std::string::npos ? 0 : nl + 1);
+        if (truncated) *truncated = true;
+    }
     return true;
 }
 
@@ -90,6 +100,8 @@ void LogLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void LogLine(const char* fmt, ...) {
     char msg[600];
     va_list ap; va_start(ap, fmt); std::vsnprintf(msg, sizeof msg, fmt, ap); va_end(ap);
+    // text from a settings file ends up in the message: one line, no control characters (a CR, an escape sequence or a NUL must not forge or hide log lines)
+    for (char* c = msg; *c; ++c) if (static_cast<unsigned char>(*c) < 0x20 || *c == 0x7f) *c = '?';
     std::lock_guard<std::mutex> l(g_log_mu);
     if (g_shared) {                                         // the layer's log stream already is live.log: one line, with the wall-clock time
         timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
@@ -129,21 +141,18 @@ double g_startup[kKeys];            // values from the environment (what removin
 bool   g_have_file = false;
 long long g_mtime_ns = 0; long long g_size = -1; unsigned long long g_rev = 0;
 unsigned long long g_gen = 0;      // counts the loads that changed a setting (the benchmark stops when it moves)
-long long g_bench_seen = 0;        // the bench.req token already handled (or present when the game started)
-long long g_bench_cur = 0;         // the token bench.req holds now (0: none, or a cancel)
+std::atomic<long long> g_bench_seen{0};   // the bench.req token already handled (or present when the game started); read on the stats path, written there and by the poll
+std::atomic<long long> g_bench_cur{0};    // the token bench.req holds now (0: none, or a cancel)
 std::atomic<bool> g_bench_running{false};   // set by stats.cpp while a benchmark run is going (LiveBenchRunning)
-bool   g_bench_cancel = false;     // bench.req changed to 0 while a non-zero token was there: stop a running benchmark (consumed by LiveBenchCancel)
+std::atomic<bool> g_bench_cancel{false};     // bench.req changed to 0 while a non-zero token was there: stop a running benchmark (consumed by LiveBenchCancel)
 long long g_req_mtime_ns = 0; long long g_req_size = -1; unsigned long long g_req_ino = 0; bool g_req_have = false;
 uint64_t g_next_poll = 0;
 std::mutex g_poll_mu;
 
 // Parses VALUE for key k; true when usable, with the clamped number in out and a note when it was clamped.
 bool ParseValue(int k, const std::string& raw, double& out, std::string& note) {
-    char* end = nullptr;
-    errno = 0;
-    double v = std::strtod(raw.c_str(), &end);
-    while (end && (*end == ' ' || *end == '\t' || *end == '\r')) ++end;
-    if (raw.empty() || end == raw.c_str() || (end && *end) || errno == ERANGE || !std::isfinite(v)) {
+    double v = 0.0;
+    if (raw.find('\0') != std::string::npos || !ParseFiniteNumber(raw.c_str(), v)) {      // digits, sign, point, exponent only: no hex float, inf, nan, no text after the number
         if (kInfo[k].toggle && (raw == "true" || raw == "on" || raw == "yes")) { out = 1; return true; }
         if (kInfo[k].toggle && (raw == "false" || raw == "off" || raw == "no")) { out = 0; return true; }
         return false;
@@ -161,6 +170,7 @@ bool ParseValue(int k, const std::string& raw, double& out, std::string& note) {
         }
         hi = double(cap);
     } else if (k == kMaxSynthetic && g_synth_cap.load() > 0) hi = std::min(hi, double(g_synth_cap.load()));
+    if (k == kBaseFpsCap && v > 0.0 && v < 1.0) { out = 0.0; note = "below 1 fps is not a cap: off"; return true; }
     const double c = std::clamp(v, kInfo[k].lo, hi);
     if (c != v && !over_capacity) { char b[120]; std::snprintf(b, sizeof b, "clamped to the range %g..%g", kInfo[k].lo, hi); note = b; }
     out = (k == kMaxSynthetic || k == kCmdBuffers) ? c : double(float(c));      // the settings are floats: compare as floats, or 1.12 reads as a change from 1.12f
@@ -184,7 +194,9 @@ void Apply(const char* why, const std::string& text, bool present) {
     for (int k = 0; k < kKeys; ++k) want[k] = g_startup[k];
     if (!g_prev_init) { for (int k = 0; k < kKeys; ++k) g_prev_want[k] = g_startup[k]; g_prev_init = true; }
     bool from_file[kKeys] = {};
-    unsigned lines = 0, comments = 0, bad = 0, unknown = 0, startup = 0;
+    unsigned lines = 0, comments = 0, bad = 0, unknown = 0, startup = 0, notes = 0;
+    constexpr unsigned kMaxNotes = 10;                          // a hostile or broken file must not turn one poll into thousands of log lines
+    auto Note = [&](auto&&... args) { if (++notes <= kMaxNotes) LogLine(std::forward<decltype(args)>(args)...); };
     if (present) {
         size_t pos = 0; int lineno = 0;
         while (pos <= text.size()) {
@@ -193,15 +205,16 @@ void Apply(const char* why, const std::string& text, bool present) {
             Trim(line);
             if (line.empty() || line[0] == '#') { ++comments; continue; }
             ++lines;
+            if (line.find('\0') != std::string::npos) { ++bad; Note("line %d ignored (contains a NUL byte)", lineno); continue; }
             const size_t eq = line.find('=');
-            if (eq == std::string::npos) { ++bad; LogLine("line %d ignored (no '='): \"%.60s\"", lineno, line.c_str()); continue; }
+            if (eq == std::string::npos) { ++bad; Note("line %d ignored (no '='): \"%.60s\"", lineno, line.c_str()); continue; }
             std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
             if (key == "REV") { g_rev = std::strtoull(val.c_str(), nullptr, 10); continue; }
             for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
             NormalizeKey(key);
             if (key == "BENCH") {                       // an older plugin or script: a benchmark request is now the file bench.req, never a setting
                 static bool noted = false;
-                if (!noted) { noted = true; LogLine("line %d: BENCH in live.conf is not used any more (a benchmark request is the file bench.req); ignored", lineno); }
+                if (!noted) { noted = true; Note("line %d: BENCH in live.conf is not used any more (a benchmark request is the file bench.req); ignored", lineno); }
                 continue;
             }
             int k = -1;
@@ -210,14 +223,15 @@ void Apply(const char* why, const std::string& text, bool present) {
                 bool startup_only = false;
                 for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL", "ONESIDED_FILL"}) if (key == sk) startup_only = true;
                 if (startup_only) { ++startup; continue; }     // read once when the game starts (logged then), not an error
-                ++unknown; LogLine("line %d: unknown key \"%.40s\" ignored", lineno, key.c_str()); continue;
+                ++unknown; Note("line %d: unknown key \"%.40s\" ignored", lineno, key.c_str()); continue;
             }
             double v; std::string note;
-            if (!ParseValue(k, val, v, note)) { ++bad; LogLine("line %d: %s=\"%.40s\" is not a valid value, keeping %s", lineno, kInfo[k].name, val.c_str(), Show(k, Get(live, k)).c_str()); continue; }
-            if (!note.empty()) LogLine("line %d: %s=%s %s -> %s", lineno, kInfo[k].name, val.c_str(), note.c_str(), Show(k, v).c_str());
+            if (!ParseValue(k, val, v, note)) { ++bad; Note("line %d: %s=\"%.40s\" is not a valid value, keeping %s", lineno, kInfo[k].name, val.c_str(), Show(k, Get(live, k)).c_str()); continue; }
+            if (!note.empty()) Note("line %d: %s=%s %s -> %s", lineno, kInfo[k].name, val.c_str(), note.c_str(), Show(k, v).c_str());
             want[k] = v; from_file[k] = true;
         }
     }
+    if (notes > kMaxNotes) LogLine("... and %u more notes about this file not shown", notes - kMaxNotes);
     int changed = 0;
     // A running benchmark switches ENABLED itself, so the live value differs from the file's in its "off" seconds. A write that changes nothing (the plugin
     // rewriting live.conf at a loader restart or a panel change) must not count as a change of ENABLED: it is compared with the file's previous value instead.
@@ -261,6 +275,7 @@ void PollBenchReq(bool first) {
     g_req_have = true; g_req_mtime_ns = mt; g_req_size = (long long)st.st_size; g_req_ino = (unsigned long long)st.st_ino;
     std::string text;
     if (!ReadOwnFile(path, text)) { LogLine("bench.req could not be used (errno %d), ignored", errno); return; }
+    if (text.find('\0') != std::string::npos) { LogLine("bench.req contains a NUL byte, ignored"); return; }
     Trim(text);
     const size_t nl = text.find('\n'); if (nl != std::string::npos) text.erase(nl);
     Trim(text);
@@ -270,11 +285,11 @@ void PollBenchReq(bool first) {
         LogLine("bench.req: \"%.40s\" is not a request number (0 to 4e12), ignored", text.c_str());
         return;
     }
-    const long long old = g_bench_cur;
+    const long long old = g_bench_cur.load();
     g_bench_cur = v;
     if (first) { g_bench_seen = v; return; }                      // there before the game started: not a request
     if (v == 0 && old != 0) { g_bench_cancel = true; LogLine("bench.req: 0, a running benchmark is stopped"); }
-    else if (v != 0 && v != g_bench_seen) LogLine("bench.req: request %lld", v);
+    else if (v != 0 && v != g_bench_seen.load()) LogLine("bench.req: request %lld", v);
 }
 
 }  // namespace
@@ -439,9 +454,9 @@ void LivePoll(uint64_t now_ns) {
     const long long mt = (long long)st.st_mtim.tv_sec * 1'000'000'000ll + st.st_mtim.tv_nsec;
     if (g_have_file && mt == g_mtime_ns && (long long)st.st_size == g_size) return;
     g_have_file = true; g_mtime_ns = mt; g_size = (long long)st.st_size;
-    std::string text;
-    if (ReadOwnFile(ConfPath(), text)) {
-    } else { LogLine("live.conf could not be opened (errno %d), keeping the current values", errno); return; }
+    std::string text; bool cut = false;
+    if (!ReadOwnFile(ConfPath(), text, &cut)) { LogLine("live.conf could not be opened (errno %d), keeping the current values", errno); return; }
+    if (cut) LogLine("live.conf is bigger than %zu bytes: only the complete lines inside the first %zu bytes are used", kMaxSettingsBytes, kMaxSettingsBytes);
     Apply(first ? "live.conf found at startup" : "live.conf changed", text, true);
 }
 
@@ -455,13 +470,13 @@ int LiveKeyTable(LiveKeyRow* rows, int max) {
 
 unsigned long long LiveGeneration() { return g_gen; }
 bool LiveBenchRequest(long long* token) {
-    const long long t = g_bench_cur;
-    if (t == 0 || t == g_bench_seen) return false;
+    const long long t = g_bench_cur.load();
+    if (t == 0 || t == g_bench_seen.load()) return false;
     *token = t; return true;
 }
 void LiveBenchAck(long long token) { g_bench_seen = token; }
 void LiveBenchRunning(bool on) { g_bench_running = on; }
-bool LiveBenchCancel() { if (!g_bench_cancel) return false; g_bench_cancel = false; return true; }
+bool LiveBenchCancel() { return g_bench_cancel.exchange(false); }
 
 // Atomic private file next to live.conf: written to a temp name (O_EXCL, 0600, no symlink) and renamed over NAME.
 bool LiveWritePrivate(const char* name, const std::string& text) {
