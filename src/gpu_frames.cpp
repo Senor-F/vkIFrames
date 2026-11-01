@@ -49,14 +49,6 @@ void Blit(const DeviceDispatch& dt, VkCommandBuffer cb, VkImage src, VkImageLayo
     dt.CmdBlitImage(cb, src, src_layout, dst, dst_layout, 1, &r, VK_FILTER_NEAREST);
 }
 
-uint32_t FindMemoryType(const DeviceDispatch& dt, uint32_t bits, VkMemoryPropertyFlags want) {
-    VkPhysicalDeviceMemoryProperties mp;
-    dt.instance->GetPhysicalDeviceMemoryProperties(dt.physical_device, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
-        if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) return i;
-    return UINT32_MAX;
-}
-
 // Takes the next command buffer, waiting for its previous submission to finish, and starts recording.
 bool BeginCmd(const DeviceDispatch& dt, GpuState& g, uint32_t& entry) {
     const uint32_t n = std::clamp<uint32_t>(uint32_t(Live().cmd_buffers.load()), 4u, g.n_cmd);   // live setting; every entry has its own fence, so changing n while frames are in flight is safe
@@ -182,32 +174,6 @@ bool CreateSlot(const DeviceDispatch& dt, GpuState& g, GpuState::Slot& s) {
     return dt.CreateImageView(dt.device, &vi, nullptr, &s.view) == VK_SUCCESS;
 }
 
-bool CreateStorageImage(const DeviceDispatch& dt, VkFormat format, VkExtent2D extent, VkImageUsageFlags usage, FlowImage& out) {
-    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = format;
-    ci.extent = {extent.width, extent.height, 1}; ci.mipLevels = 1; ci.arrayLayers = 1;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = usage;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                  // only the present queue's family uses these
-    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    out.extent = extent;
-    if (!dt.CreateImage || !dt.CreateImageView || dt.CreateImage(dt.device, &ci, nullptr, &out.image) != VK_SUCCESS) return false;
-    VkMemoryRequirements req; dt.GetImageMemoryRequirements(dt.device, out.image, &req);
-    const uint32_t type = FindMemoryType(dt, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size, type};
-    if (type == UINT32_MAX || dt.AllocateMemory(dt.device, &ai, nullptr, &out.memory) != VK_SUCCESS ||
-        dt.BindImageMemory(dt.device, out.image, out.memory, 0) != VK_SUCCESS) return false;
-    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vi.image = out.image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = format;
-    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    return dt.CreateImageView(dt.device, &vi, nullptr, &out.view) == VK_SUCCESS;
-}
-
-void DestroyFlowImage(const DeviceDispatch& dt, FlowImage& img) {
-    if (img.view && dt.DestroyImageView) dt.DestroyImageView(dt.device, img.view, nullptr);
-    if (img.image)  dt.DestroyImage(dt.device, img.image, nullptr);
-    if (img.memory) dt.FreeMemory(dt.device, img.memory, nullptr);
-    img = {};
-}
 
 // The compute pass of Stage 3 (blend.comp). Failure here only switches synthetic frames off.
 bool CreateBlendPass(const DeviceDispatch& dt, GpuState& g) {

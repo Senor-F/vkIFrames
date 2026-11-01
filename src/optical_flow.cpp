@@ -121,14 +121,16 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
 
     // images: luma pyramid of A and B (R32F), forward and backward flow per level (RGBA16F), mask at level 1 (R32F)
     constexpr VkImageUsageFlags kUse = VK_IMAGE_USAGE_STORAGE_BIT;
+    // VKIFRAME_DUMP copies the final forward and backward flow and the mask to files: only those three get TRANSFER_SRC, and only then (the pyramid and the other levels never do)
+    const VkImageUsageFlags kDump = kUse | (GetConfig().dump_pair > 0 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
     VkExtent2D ext[FlowState::kLevels];
     ext[0] = HalfUp(g.extent);
     for (uint32_t i = 1; i < FlowState::kLevels; ++i) ext[i] = HalfUp(ext[i - 1]);
     for (uint32_t i = 0; i < FlowState::kLevels; ++i) {
         if (!CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext[i], kUse, f.pyr[0][i]) || !CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext[i], kUse, f.pyr[1][i]) ||
-            !CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext[i], kUse, f.fwd[i]) || !CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext[i], kUse, f.bwd[i])) return false;
+            !CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext[i], i == f.fin ? kDump : kUse, f.fwd[i]) || !CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext[i], i == f.fin ? kDump : kUse, f.bwd[i])) return false;
     }
-    if (!CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext[0], kUse, f.mask)) return false;
+    if (!CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext[0], kDump, f.mask)) return false;
 
     // descriptor sets
     VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kSetsStorageImages * g.n_cmd};
@@ -333,9 +335,13 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
             else if (::lstat(dir, &dst) != 0 || !S_ISDIR(dst.st_mode) || dst.st_uid != ::geteuid()) FG_LOG("dump: %s is not a folder of this user, nothing written", dir);
             else { (void)::chmod(dir, 0700); FG_LOG("dump: pair %llu, capturing %llu frames into memory, the files are written after the last one (private: these are screenshots)", (unsigned long long)n, (unsigned long long)window); }
             DumpRecord(dt, cb, g.ring[b.slot].image, g.extent, 8, &g.dump_pool.B(), "B.rgba16f");
-            DumpRecord(dt, cb, f.fwd[f.fin].image, f.fwd[f.fin].extent, 8, &g.dump_pool.Fwd(), "flow_fwd.rgba16f");
-            DumpRecord(dt, cb, f.bwd[f.fin].image, f.bwd[f.fin].extent, 8, &g.dump_pool.Bwd(), "flow_bwd.rgba16f");
-            DumpRecord(dt, cb, f.mask.image, f.fwd[f.fin].extent, 4, &g.dump_pool.Mask(), "mask.r32f");
+            auto dump_flow = [&](const FlowImage& img, VkExtent2D ext, uint32_t bpt, DumpPool::Buf* buf, const char* name) {
+                if (img.transfer_src) DumpRecord(dt, cb, img.image, ext, bpt, buf, name);
+                else FG_LOG("dump: %s skipped, the image cannot be a copy source on this driver", name);        // the flow engine itself is untouched
+            };
+            dump_flow(f.fwd[f.fin], f.fwd[f.fin].extent, 8, &g.dump_pool.Fwd(), "flow_fwd.rgba16f");
+            dump_flow(f.bwd[f.fin], f.bwd[f.fin].extent, 8, &g.dump_pool.Bwd(), "flow_bwd.rgba16f");
+            dump_flow(f.mask, f.fwd[f.fin].extent, 4, &g.dump_pool.Mask(), "mask.r32f");
         }
         char name[64]; std::snprintf(name, sizeof name, "pair%d_A.rgba16f", int(n - first));
         DumpRecord(dt, cb, g.ring[a.slot].image, g.extent, 8, &g.dump_pool.A(int(n - first)), name);
