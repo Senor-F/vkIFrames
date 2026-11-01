@@ -98,6 +98,8 @@ target_compile_definitions(vkIFrames PRIVATE FRAMEGEN_VERSION="${FRAMEGEN_VERSIO
 add_dependencies(vkIFrames layer_shaders)
 target_link_libraries(vkIFrames PRIVATE Vulkan::Headers Threads::Threads)
 target_link_options(vkIFrames PRIVATE -Wl,--no-undefined -Wl,--version-script=${CMAKE_SOURCE_DIR}/scripts/layer.map -Wl,--exclude-libs,ALL)   # only the three entry points are exported
+# Full RELRO: the relocation tables and the PLT's GOT are read-only once the library is loaded (all symbols are bound at load, none lazily). scripts/check_so.sh requires it.
+target_link_options(vkIFrames PRIVATE -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
 # The C++ runtime is linked statically (release): the layer then needs no libstdc++/libgcc_s from the host or the game's container, and its runtime
 # symbols stay hidden. Only glibc is a dependency (floor GLIBC_2.34). Turn it off for sanitizer builds (ASan wants the shared runtime).
 option(FRAMEGEN_STATIC_RUNTIME "Link libstdc++ and libgcc statically" ON)
@@ -195,6 +197,7 @@ if(FRAMEGEN_BUILD_TESTS)
     add_test(NAME logcap_nofile COMMAND test_logcap nofile)
     # the install scripts, in a throw-away HOME; and their agreement with the Decky plugin (install with one, remove with the other)
     add_test(NAME install_scripts COMMAND bash ${CMAKE_SOURCE_DIR}/tests/test_install.sh ${CMAKE_SOURCE_DIR})
+    add_test(NAME check_so_hardening COMMAND bash ${CMAKE_SOURCE_DIR}/tests/test_check_so.sh ${CMAKE_SOURCE_DIR})
     find_program(FRAMEGEN_PYTHON python3)
     if(FRAMEGEN_PYTHON)
         add_test(NAME script_plugin_agreement COMMAND ${FRAMEGEN_PYTHON} -I ${CMAKE_SOURCE_DIR}/decky/tests/test_script_agreement.py)
