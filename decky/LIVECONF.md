@@ -15,7 +15,7 @@ VKIFRAME_TARGET_FPS=60
 ...
 ```
 
-* One `KEY=VALUE` per line. `#` starts a comment. Unknown keys are ignored. Missing keys keep the startup (environment) value.
+* One `KEY=VALUE` per line. `#` starts a comment. Unknown keys are ignored. The file is a full snapshot, not a patch: every key the layer reads starts at its startup (environment) value at each load, and only the keys present in the file override it. A key missing from the file goes back to the startup value (the log says `back to the startup value`). A tool that writes only its own keys therefore resets all the others; write the whole set, and write a temp file and rename it.
 * `REV` increases on every write.
 
 ## Layer side
