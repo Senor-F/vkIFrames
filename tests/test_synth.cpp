@@ -253,6 +253,18 @@ int main(int, char** argv) {
       CHECK(r_presents.size() == before);                                              // the held frame was not presented by the wait
     }
 
+    // idle flush (#33): when the game stops presenting, the presenter thread shows the held frame after 200 ms. It reads sc->gpu and sc->last_queue
+    // for that, and the game thread writes last_queue at every present. Repeated so that a write follows a read (ThreadSanitizer needs that order).
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        for (int i = 0; i < 12; ++i) present_frame(25'000);
+        usleep(100'000);                                                              // let the presenter finish its jobs
+        const size_t before_idle = r_presents.size();
+        usleep(700'000);
+        CHECK(r_presents.size() > before_idle);                                       // the held frame was shown while the game was silent
+        for (int i = 0; i < 3; ++i) present_frame(25'000);
+    }
+    for (int i = 0; i < 30; ++i) present_frame(25'000);                               // a pause over 100 ms resets the gate: interpolating again before the next part
+
     // 2) a failing acquire switches synthetic frames off; the game keeps getting its frames shown
     k_acquire_fail = true; const int disp_before = r_dispatches;
     for (int i = 0; i < 6; ++i) present_frame(25'000);
