@@ -117,12 +117,12 @@ Environment variables, read once at start. Defaults in the second column.
 | `VKIFRAME_UI_MASK_THRESHOLD` | `0.08` (`0` = off) | Static-UI mask: pixels whose 3x3 mean of \|A−B\| (luma) stays below this cross-fade instead of interpolating. `0.03` suits film-grain content. |
 | `VKIFRAME_INTERP_BIDIR` | `1` (old name `VKIFRAME_WARP_BIDIR`) | `1`: two-sided interpolation (A forward, B backward); costs about 0.37 ms more per synthetic frame. |
 | `VKIFRAME_FLOW_LEVEL` | `2` | Resolution of the flow field: 1 = half (most expensive), 2 = quarter (default), 3 = eighth. |
-| `VKIFRAME_PHASE_LOCK` / `VKIFRAME_PHASE_OFFSET` | `1` / `0.5` | Keep the output ticks at fixed positions between native frames when the ratio is near an integer. |
+| `VKIFRAME_PHASE_LOCK` / `VKIFRAME_PHASE_OFFSET` | `1` / `0.5` | Keep the output ticks at fixed positions between native frames when the ratio is near an integer. With the lock on the content delay is not constant: at 30 native and 60 target it ranged from 33.6 to 51.7 ms (median 41.0 ms) in one log of an earlier build with `PHASE_OFFSET` 0. In an offline simulation of the scheduler with offset 0 it ranged from 33.6 to 50.2 ms with the lock on and from 33.6 to 34.5 ms with it off; at the default offset 0.5 it ranged from 37.8 to 47.3 ms with small jitter and from 34.5 to 51.2 ms with ±1 ms jitter. The lock trades a steady pass count for a varying delay. The effect on how it feels is not established. |
 | `VKIFRAME_SYNTH_MARGIN` | `0.15` | Keep *t* at least this far from 0 and 1, so no native frame is shown as it is. Live: change it in live.conf or the Decky panel while the game runs (from the next pair); bench.json echoes the value. With 0 a tick can sit on the native frame (a sharper frame now and then); it skips the interpolation pass only when the phase lock holds and `VKIFRAME_PHASE_OFFSET` is 0, otherwise only about 4 % of ticks qualify (t < 0.02 after a native frame, or within 0.02 of the next one, which is then shown as the next pair's t = 0). |
 | `VKIFRAME_INTERP_GUIDE`, `VKIFRAME_CONF_LO`, `VKIFRAME_CONF_HI` | `0.08`, `0.06`, `0.14` | Colour guidance of the vector weighting and the match-cost range where the interpolation fades to the cross-fade. |
 | `VKIFRAME_PAN_LO`, `VKIFRAME_PAN_HI` | `0.15`, `0.35` | Share of unmatched flow where the whole frame starts / finishes cross-fading (fast pans). |
 | `VKIFRAME_PRESENTER` | `1` | `0`: present the ticks from the game thread instead of the pacing thread. |
-| `VKIFRAME_DUMP`, `VKIFRAME_DUMP_DIR` | off | Write frames, flow and mask of one pair to a folder (debugging; use a folder under the home directory on Proton). The dumps are screenshots of your game: the folder is created 0700 and the files 0600, so keep them private. |
+| `VKIFRAME_DUMP`, `VKIFRAME_DUMP_DIR` | off | `VKIFRAME_DUMP=N` writes, for the N-th pair whose flow ran since the game started, `B.rgba16f`, the forward and backward flow, the mask and five consecutive native frames `pair0_A` to `pair4_A` (`B` equals `pair1_A`), and the synthetic frames of those pairs (`synthNN_t….rgba16f`, up to two per pair), so one start gives three triplets (A, middle frame, B) for `interp_eval`; A and B are then two native frames apart, twice the gap the layer sees in use, so offline errors are likely an overestimate. It is read at game start only (a launch option, not live). Use a folder under the home directory on Proton; its parent must exist (the layer creates only the last level). The dumps are screenshots of your game: the folder is created 0700 and the files 0600, so keep them private. |
 | `VKIFRAME_DEBUG_FLOW`, `VKIFRAME_TICKMARK` | `0` | Debug views: motion field instead of frames; frame-position marks. |
 
 More settings (`VKIFRAME_FLOW_BWD_SKIP`, `VKIFRAME_FLOW_SUBPIXEL`, `VKIFRAME_INTERP_CAND`, `VKIFRAME_PACE_*`, …) are documented next to their definitions in `include/vk_iframes_layer.hpp`.
@@ -136,7 +136,7 @@ The layer re-reads `~/.config/vkiframes/live.conf` about once a second (one `sta
 | Key | Range | When it applies |
 |---|---|---|
 | `ENABLED` | 0 / 1 | next present (0 = plain bypass: no interpolation, no base-fps cap) |
-| `TARGET_FPS` | 30..144 | next present |
+| `TARGET_FPS` | 30..144 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
 | `MAX_SYNTHETIC` | 1..4 | next present |
 | `BASE_FPS_CAP` | 0..90 | next present |
 | `MIN_GAIN` | 1.01..1.5 | next present |
