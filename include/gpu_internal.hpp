@@ -20,8 +20,13 @@ bool EndAndSubmit(const DeviceDispatch& dt, VkQueue queue, GpuState& g, uint32_t
 bool CreateStorageImage(const DeviceDispatch& dt, VkFormat format, VkExtent2D extent, VkImageUsageFlags usage, FlowImage& out);
 void DestroyFlowImage(const DeviceDispatch& dt, FlowImage& img);
 
-// Debug: copies an image (in GENERAL layout) to a host buffer and writes it to `path` (raw texels). Caller holds g.gpu_mu.
-// VKIFRAME_DUMP: reads the image back into host memory (g.dump) with a short GPU wait and no file write; g.dump.Flush writes the queued files.
-bool DumpImage(const DeviceDispatch& dt, VkQueue queue, GpuState& g, VkImage image, VkExtent2D extent, uint32_t bytes_per_texel, const char* path);
+// VKIFRAME_DUMP. DumpInit allocates the pool (at start, after the flow engine exists). DumpRecord records the copy of `image` into the next
+// free pool buffer inside `cb` (no wait, no CPU work) and returns it, or null when the pool is not ready or too small. DumpFlush waits once for
+// every submitted copy, writes the files from the mapped memory and frees the pool. DumpTeardown (GpuDestroy) logs what is dropped and frees.
+void DumpInit(const DeviceDispatch& dt, GpuState& g);
+DumpPool::Buf* DumpRecord(const DeviceDispatch& dt, VkCommandBuffer cb, VkImage image, VkExtent2D extent, uint32_t bytes_per_texel, DumpPool::Buf* buf, const char* name);
+void DumpFlush(const DeviceDispatch& dt, GpuState& g);
+void DumpMaybeFlush(const DeviceDispatch& dt, GpuState& g, bool force);
+void DumpTeardown(const DeviceDispatch& dt, GpuState& g);
 
 } // namespace gpuint
