@@ -224,7 +224,7 @@ inline const Config& GetConfig() {
         Config c;
         c.target_fps = DefaultTargetFps();
         // VKIFRAME_LOG_FILE=<path>: append everything the layer prints (and the game's own stderr) to that file; for runs without the launch script
-        if (const char* v = EnvVar("LOG_FILE"); v && *v) (void)std::freopen(v, "a", stderr);
+        if (const char* v = EnvVar("LOG_FILE"); v && *v) { FILE* r_ = std::freopen(v, "a", stderr); (void)r_; }
         else (void)LiveLogOpen();                     // default: one log, ~/.config/vkiframes/live.log, shared with the settings changes
         if (const char* v = EnvVar("TARGET_FPS"))   c.target_fps   = std::max(1.0f, float(std::atof(v)));
         if (const char* v = EnvVar("SYNTH_MARGIN"))   c.synth_margin  = std::clamp(float(std::atof(v)), 0.0f, 0.45f);
