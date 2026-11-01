@@ -188,3 +188,26 @@ assert p3.values["MIN_GAIN"] == d["MIN_GAIN"] and p3.values["BASE_FPS_CAP"] == d
 open(main.SETTINGS_FILE, "w").write("[1, 2]")
 p4 = main.Plugin(); run(p4._main()); assert p4.values == p4._defaults()
 print("backend tests passed")
+
+# --- log and temporary-file caps
+main.LOG_CAP_BYTES = 4096
+main._log("start"); cap_size_ok = os.path.getsize(main.LIVE_LOG) < 4096
+for i in range(400): main._log("filler line %d with some text to grow the file" % i)
+assert os.path.exists(main.LIVE_LOG + ".1"), "live.log was not rotated"
+assert os.path.getsize(main.LIVE_LOG) <= 4096 + 200 and os.path.getsize(main.LIVE_LOG + ".1") <= 4096 + 200
+assert not os.path.exists(main.LIVE_LOG + ".2")
+assert (os.stat(main.LIVE_LOG).st_mode & 0o777) == 0o600
+# stale temporary files of an earlier version are removed at start, our own files stay
+stale = [main.LIVE_CONF + ".tmp.123", main.LIVE_CONF + ".tmp.99999"]
+for f in stale: open(f, "w").write("x")
+keep = os.path.join(os.path.dirname(main.LIVE_CONF), "notes.tmp.txt"); open(keep, "w").write("x")
+p3 = main.Plugin(); run(p3._main())
+assert not any(os.path.exists(f) for f in stale) and os.path.exists(keep) and os.path.exists(main.LIVE_CONF)
+assert not any(".tmp" in n for n in os.listdir(os.path.dirname(main.LIVE_CONF)) if n != "notes.tmp.txt"), os.listdir(os.path.dirname(main.LIVE_CONF))
+# while the layer's status.json is fresh the layer rotates live.log, not the plugin
+open(main.STATUS_JSON, "w").write("{}")
+main.LOG_CAP_BYTES = 100
+before = os.path.getsize(main.LIVE_LOG); os.unlink(main.LIVE_LOG + ".1") if os.path.exists(main.LIVE_LOG + ".1") else None
+main._log("one more line while the layer runs"); assert os.path.getsize(main.LIVE_LOG) > before and not os.path.exists(main.LIVE_LOG + ".1")
+os.unlink(main.STATUS_JSON)
+print("log caps: ok")

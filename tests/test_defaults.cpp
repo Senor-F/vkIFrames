@@ -15,9 +15,8 @@ static int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++g_fail; } } while (0)
 #define FAIL(...) do { std::printf("FAIL: " __VA_ARGS__); std::printf("\n"); ++g_fail; } while (0)
 
-// Known, documented differences that the owner has to decide (listed in the PR). Each entry is a schema key whose DEFAULT may differ from the layer's.
-static const char* const kKnownDefaultDifferences[] = {"INTERPOLATE"};
-static bool Known(const char* key) { for (const char* k : kKnownDefaultDifferences) if (!std::strcmp(k, key)) return true; return false; }
+// Known, documented differences that the owner has decided to keep: none. A schema key whose DEFAULT differs from the layer's fails the test.
+static bool Known(const char*) { return false; }
 
 int main() {
     const Config d{};                                        // the layer's built-in defaults, before any environment variable

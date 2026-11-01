@@ -23,7 +23,7 @@ int main() {
     const std::string logp = dir + "/log.txt";
     g_fg_log = std::fopen(logp.c_str(), "w+");
     const uint8_t px[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-    auto log = [&] { std::fflush(g_fg_log); return Slurp(logp); };
+    auto log = [&] { std::fflush(g_fg_log.load()); return Slurp(logp); };
 
     {   // M=5: nothing is written before the last frame and its synthetic frames are in
         DumpQueue q;
@@ -39,7 +39,8 @@ int main() {
         for (int k = 0; k < 5; ++k) CHECK(Slurp(dir + "/pair" + std::to_string(k) + "_A.rgba16f") == std::string((const char*)px, 8));
         CHECK(Slurp(dir + "/times.txt") == "pair0_A 1000\npair1_A 1001\npair2_A 1002\npair3_A 1003\npair4_A 1004\n");
         struct stat st; CHECK(stat((dir + "/times.txt").c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
-        CHECK(log().find("capture complete, 6 of 6 files written") != std::string::npos);
+        CHECK(log().find("capture complete, 6 of 6 files written in ") != std::string::npos);
+        CHECK(log().find("dump: window over at ") != std::string::npos && log().find(", writing 6 files") != std::string::npos);
         CHECK(q.items.empty() && q.pairs_queued == 0);
     }
     {   // forced flush when the synthetic frames never came
@@ -68,7 +69,7 @@ int main() {
         q.Drop("again");                                                       // nothing queued: no second line
         CHECK(log().find("again") == std::string::npos);
     }
-    std::fclose(g_fg_log); g_fg_log = nullptr;
+    std::fclose(g_fg_log.load()); g_fg_log = nullptr;
     std::system(("rm -rf " + dir).c_str());
     std::printf(g_fail ? "FAILED\n" : "dump queue: ok\n");
     return g_fail ? 1 : 0;

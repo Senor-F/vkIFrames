@@ -19,8 +19,8 @@
 
 #define FRAMEGEN_EXPORT extern "C" __attribute__((visibility("default")))
 bool LiveLogOpen();   // live_config.cpp
-inline FILE* g_fg_log = nullptr;                          // the layer's log stream (live.log), null = stderr
-inline FILE* FgLog() { return g_fg_log ? g_fg_log : stderr; }
+inline std::atomic<FILE*> g_fg_log{nullptr};              // the layer's log stream (live.log), null = stderr; swapped when live.log is rotated while the layer runs
+inline FILE* FgLog() { FILE* f = g_fg_log.load(std::memory_order_acquire); return f ? f : stderr; }
 #define FG_LOG(...) do { FILE* fg_f_ = FgLog(); std::fprintf(fg_f_, "[FrameGen] " __VA_ARGS__); std::fputc('\n', fg_f_); } while (0)
 
 // The loader's dispatch pointer is the first word of every dispatchable handle.
@@ -163,7 +163,7 @@ struct Config {
     int   pace_lead_us{2000};    // VKIFRAME_PACE_LEAD_US: the presenter calls present this long before a tick is due (vblank-paced path)
     bool  absolute{false};       // VKIFRAME_ABSOLUTE=1: give each tick an absolute target time when the surface supports it (untested path)
     bool  flow{false};           // VKIFRAME_FLOW=1: estimate the optical flow of every pair (Stage 4; the blend still ignores it until Stage 5)
-    bool  interpolate{false};    // VKIFRAME_INTERPOLATE=1 (old name VKIFRAME_WARP): build the in-between frames by interpolating along the flow instead of the plain blend (Stage 5; implies VKIFRAME_FLOW)
+    bool  interpolate{true};     // VKIFRAME_INTERPOLATE (old name VKIFRAME_WARP; default 1, =0 for the plain cross-fade): build the in-between frames by interpolating along the flow instead of the plain blend (Stage 5; implies VKIFRAME_FLOW)
     int   tickmark{0};           // VKIFRAME_TICKMARK: 1 = 64x64 square top-left, red for the first half of a pair, green for the second; 2 = also a bar along the bottom that steps 6 px every displayed frame (120 steps/s at 60->120); 3 = the bar steps 12 px once per pair (60 steps/s, both frames of a pair identical). 2 vs 3 shows by eye whether 120 distinct frames arrive
     int   flow_level{2};         // VKIFRAME_FLOW_LEVEL: pyramid level of the finished flow field, 1 = half resolution (finest, most expensive), 2 = quarter (default), 3 = eighth
     float interp_guide{0.08f};     // VKIFRAME_INTERP_GUIDE: luma sigma of the colour-guided vector weighting (0 = plain bilinear)

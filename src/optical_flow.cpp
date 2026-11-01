@@ -203,7 +203,7 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
             f.ms_sum += ms; f.ms_max = std::max(f.ms_max, ms);
             { f.stat_flow_ns += uint64_t(ms * 1e6); ++f.stat_flow_n; }
             if (++f.ms_count >= 120) {
-                FG_LOG("flow: GPU %.2f ms per pair (max %.2f) over %u pairs, field %ux%u", f.ms_sum / f.ms_count, f.ms_max, f.ms_count, f.fwd[f.fin].extent.width, f.fwd[f.fin].extent.height);
+                FG_LOG_ROUTINE("flow: GPU %.2f ms per pair (max %.2f) over %u pairs, field %ux%u", f.ms_sum / f.ms_count, f.ms_max, f.ms_count, f.fwd[f.fin].extent.width, f.fwd[f.fin].extent.height);
                 char line[256]; int o = 0;
                 for (uint32_t i = 0; i + 1 < n && o < 220; ++i) {
                     const char* name = i == 0 ? "pyramid" : i == 1 ? "coarse" : i + 2 == n ? "occlusion" : "refine";
@@ -211,7 +211,7 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
                     o += lvl ? std::snprintf(line + o, sizeof line - size_t(o), "%s L%d %.2f | ", name, lvl, f.stage_sum[i] / f.ms_count)
                              : std::snprintf(line + o, sizeof line - size_t(o), "%s %.2f | ", name, f.stage_sum[i] / f.ms_count);
                 }
-                FG_LOG("flow stages (ms, mean): %s", line);
+                FG_LOG_ROUTINE("flow stages (ms, mean): %s", line);
                 for (double& v : f.stage_sum) v = 0.0;
                 f.ms_sum = 0.0; f.ms_max = 0.0; f.ms_count = 0;
             }

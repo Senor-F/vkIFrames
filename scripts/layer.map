@@ -1,0 +1,9 @@
+/* The layer's public symbols: exactly the three entry points the manifest names. Everything else, including the statically linked C++ runtime, stays local. */
+{
+  global:
+    FrameGen_NegotiateLoaderLayerInterfaceVersion;
+    FrameGen_GetInstanceProcAddr;
+    FrameGen_GetDeviceProcAddr;
+  local:
+    *;
+};

@@ -2,7 +2,7 @@
 # Installs vkIFrames as an implicit Vulkan layer for the current user (no root needed, no launch script).
 #   scripts/install.sh [path/to/libvkIFrames.so]      default: <repo>/build/libvkIFrames.so
 # Afterwards a game uses the layer when its launch options start with VKIFRAME_ENABLE=1, e.g.
-#   VKIFRAME_ENABLE=1 VKIFRAME_TARGET_FPS=90 VKIFRAME_BASE_FPS_CAP=45 VKIFRAME_INTERPOLATE=1 %command%
+#   VKIFRAME_ENABLE=1 VKIFRAME_TARGET_FPS=90 VKIFRAME_BASE_FPS_CAP=45 %command%
 # Remove it again with scripts/uninstall.sh.
 set -eu
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
