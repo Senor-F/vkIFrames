@@ -372,6 +372,36 @@ void GpuDestroy(const DeviceDispatch& dt, GpuState* g) {
     delete g;
 }
 
+// A hidden swapchain image was acquired but the frame could not be made. The layer cannot hand an acquired image back (no vkReleaseSwapchainImages),
+// and an image that is neither presented nor released is lost until the swapchain is recreated, so it is presented as it is: it shows what the image
+// held last, once, and the caller switches synthetic frames off. `transition`: the image goes UNDEFINED -> PRESENT_SRC first (a present needs that
+// layout), in a small submit that waits on the acquire semaphore and signals the image's staged semaphore; without it (or when that submit fails) the
+// present waits on the acquire semaphore itself. Called with gpu_mu held. Best effort: a failure here is logged and nothing more can be done.
+static void GiveBackAcquired(const DeviceDispatch& dt, VkQueue queue, GpuState& g, uint32_t idx, VkSemaphore acquire_sem, bool transition) {
+    constexpr auto ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSemaphore wait = acquire_sem;
+    if (transition && idx < g.swap_images.size() && idx < g.staged.size()) {
+        uint32_t e2;
+        if (BeginCmd(dt, g, e2)) {
+            Barrier(dt, g.cbs[e2], g.swap_images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, ALL, 0, ALL, 0);
+            VkSemaphoreSubmitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}; w.semaphore = acquire_sem; w.stageMask = ALL;
+            if (EndAndSubmit(dt, queue, g, e2, {w}, g.staged[idx])) wait = g.staged[idx];
+        }
+    }
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &wait;
+    pi.swapchainCount = 1; pi.pSwapchains = &g.swapchain; pi.pImageIndices = &idx;
+    VkResult r;
+    {
+        std::mutex* qm = QueueMutex(queue);
+        std::unique_lock<std::mutex> lk;
+        if (qm) lk = std::unique_lock<std::mutex>(*qm);                        // the game thread presents and submits to this queue too
+        r = dt.QueuePresentKHR(queue, &pi);
+    }
+    if (r >= 0) FG_LOG("synth: the failed frame's swapchain image %u was presented as it is, so it is not lost", idx);
+    else FG_LOG("synth: could not give swapchain image %u back (present %d); it stays with the layer until the swapchain is recreated", idx, int(r));
+}
+
 VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFrame& a, const HeldFrame& b, float t,
                        bool hidden, uint32_t& out_image_index, VkSemaphore& wait_sem, bool extrap) {
     if (!g.synth_ready) return VK_ERROR_FEATURE_NOT_PRESENT;
@@ -407,7 +437,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
             if (!wait_ns) { timespec nap{0, 200'000}; nanosleep(&nap, nullptr); }
         }
         relock();
-        if (idx >= g.swap_images.size()) { FG_LOG("synth: the driver returned image index %u of %zu", idx, g.swap_images.size()); dt.EndCommandBuffer(cb); return VK_ERROR_UNKNOWN; }
+        if (idx >= g.swap_images.size()) { FG_LOG("synth: the driver returned image index %u of %zu", idx, g.swap_images.size()); dt.EndCommandBuffer(cb); GiveBackAcquired(dt, queue, g, idx, g.acquire[e], false); return VK_ERROR_UNKNOWN; }
         w.semaphore = g.acquire[e]; waits.push_back(w); acquired = true;
     } else {
         w.semaphore = g.captured[a.image_index]; waits.push_back(w);               // A's own capture must be done before its image is overwritten
@@ -502,9 +532,8 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     Barrier(dt, cb, g.swap_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL, 0);
 
     if (!EndAndSubmit(dt, queue, g, e, waits, g.staged[idx])) {
-        // The layer has no way to hand an acquired image back (no vkReleaseSwapchainImages), so say so: synthetic frames are switched off
-        // for this swapchain after a failure, and the image stays acquired until the swapchain is recreated.
-        if (acquired) FG_LOG("synth: submit failed after acquiring swapchain image %u; the image is not presented and stays with the layer until the swapchain is recreated", idx);
+        // Synthetic frames are switched off for this swapchain after a failure (the caller); the acquired image is presented, not kept.
+        if (acquired) { FG_LOG("synth: submit failed after acquiring swapchain image %u", idx); GiveBackAcquired(dt, queue, g, idx, g.acquire[e], true); }
         return VK_ERROR_UNKNOWN;
     }
     g.synth.initialized = true;
