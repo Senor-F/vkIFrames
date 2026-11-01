@@ -2,7 +2,7 @@
 
 ## 1. Overview & Objectives
 
-This blueprint describes an independent Vulkan layer for Linux that performs **dynamic frame interpolation** that hits a user-chosen **Target FPS** (e.g. 60 Hz or 120 Hz) exactly. Its fallback to a single real frame where an interpolation cannot be trusted is inspired by [afmf-linux](https://github.com/serialexperimentslainnnn/afmf-linux); see the credits in the README.
+This blueprint describes an independent Vulkan layer for Linux that performs **dynamic frame interpolation** that hits a user-chosen **Target FPS** (e.g. 60 Hz or 120 Hz) exactly.
 
 Instead of a fixed multiplier, the layer continuously rescales its interpolation ratio and temporal weights to follow the game's fluctuating base frame rate. It uses **`VK_EXT_present_timing`** for precise frame pacing and temporal smoothing to avoid cadence judder. When the game already reaches the target, the layer steps aside and frames pass through untouched.
 
