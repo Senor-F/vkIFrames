@@ -6,7 +6,47 @@ vkIFrames is an independent Vulkan layer that sits between a game and the driver
 
 Unlike fixed 2x/3x frame generation, the number of generated frames changes from moment to moment with the game's real frame rate. When the game already reaches the target, the layer steps aside and passes native frames straight through with no added latency.
 
-> **Status: working, experimental.** Tested on a Steam Deck OLED (Game Mode, Proton) and on a Radeon RX 9070 desktop. 45 → 90 fps runs locked (90.0 fps shown, no drops). Motion-based interpolation and an opt-in extrapolation mode exist; image quality around thin or fast-moving structures is still being improved. See [STATUS.md](STATUS.md) for measurements and open items.
+> **Alpha 0.1.0-alpha.1. Expect rough edges.** vkIFrames has been tested by one developer on one Steam Deck OLED and one Radeon RX 9070 desktop, with a few Proton games. It can break a game. 45 → 90 fps ran locked in the best case (90.0 fps shown, no drops); image quality around thin or fast-moving structures is still being improved. See [STATUS.md](STATUS.md) for measurements and open items.
+
+## If something goes wrong (read this first)
+
+1. Remove `VKIFRAME_ENABLE=1` from the game's launch options. Without it the layer is not loaded.
+2. Or set `VKIFRAME_DISABLE=1`.
+3. Or run `scripts/uninstall.sh`. It removes the manifest (`~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json`) and the installed library (`~/.local/share/vkiframes/`). Your settings and logs in `~/.config/vkiframes` stay unless you pass `--purge`.
+
+Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `status.json`, and with `STATS` or `BENCH` set also `stats.jsonl` (and `.1`) and `bench.json`. With `VKIFRAME_DUMP` it also writes the capture folder you name. Nothing else, and it opens no network port.
+
+## Install the alpha
+
+- **Layer:** download `vkIFrames-0.1.0-alpha.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the release, check with `sha256sum -c SHA256SUMS`, unpack, and run `scripts/install.sh` (no root; it refuses to run as root and is safe to run twice). The archive is unsigned: the checksums only tell you the download is intact.
+- **Steam Deck panel (optional):** install `vkIFrames-decky-0.1.0-alpha.1.zip` with Decky Loader's "install from ZIP". The panel changes settings while a game runs. It is the only live control for now: there are no in-game keys or menu yet.
+- **Turn it on per game:** Steam launch options `VKIFRAME_ENABLE=1 %command%`. The layer then runs with its default settings. The plugin never sets the launch option for you.
+- **Requirements:** Linux x86-64, 64-bit games only, a Vulkan 1.3 driver, glibc 2.34 or newer (SteamOS 3.x, Ubuntu 22.04+, Debian 12+).
+
+## Known issues and limits (alpha)
+
+- **Cost.** In one saved-game scene on a Steam Deck at 1280x720 the layer cost about 5.1 ms per game frame (one scene, one run of six off/on pairs). A GPU-bound game loses base frame rate: 55.6 fps native became 43.3 fps while 90 fps were shown. Other games and scenes measured 1 to 6 ms so far. `VKIFRAME_INTERPOLATE` is on by default; set it to 0 for the much cheaper cross-fade.
+- **Picture quality.** Thin lines and tree trunks distort, and occlusions can ghost. In an offline check on 25 captured triplets the interpolation had the lower error than the plain cross-fade in 16; it can be slightly worse on near-static content. Not measured against any quality bar.
+- **The Decky panel rewrites the whole `live.conf`** at every change and at loader start, so edits made by hand to that file are overwritten.
+- **Input latency** is about one base frame while interpolating.
+- **Frame pacing.** The layer forces FIFO presentation, which may not suit every variable-refresh setup. Present-timing support differs between gamescope and Mesa versions.
+- **Crash on low memory.** An out-of-memory inside the layer ends the game (uncaught `bad_alloc`).
+- **Debug capture.** `VKIFRAME_DUMP` writes frames of the game to a folder; it holds about 300 to 330 MB of memory at 30 frames and writes the files in one stall of about 0.3 s at the end. Off by default.
+- **Not tested:** NVIDIA, Intel, native 32-bit games, native Linux Vulkan games, other distributions than SteamOS.
+
+## Tested
+
+| Where | What | Result |
+|---|---|---|
+| Steam Deck OLED, SteamOS 3.9.5, AMD VANGOGH (RADV), Mesa 26.1 | Tomb Raider (2013), 18 to 60 fps native, 90 fps shown | works, see cost above |
+| same Deck | a 2D side-scrolling shooter (45 fps cap, 90 fps target) | works |
+| Radeon RX 9070 desktop (RADV, Mesa 26.2 development version), SteamOS | a test application only; no game run with the layer | works for the test application |
+
+All runs started from Steam in Game Mode with Proton; Desktop Mode is not verified.
+
+## Reporting a problem
+
+Open an issue in this repository and attach `~/.config/vkiframes/live.log` (and `status.json`). They contain the process id, the local times you played and the setting values; in normal use they do not contain your user name, home folder, host name or the game's name. Say which game, which mode (Game Mode or Desktop Mode) and what you set. Do not post anything else personal.
 
 ---
 
@@ -40,7 +80,9 @@ Interpolation needs the *next* native frame before it can show anything in betwe
 
 ---
 
-## Quick start
+## Quick start (build from source)
+
+The release archives above need no build. This section is for building the layer yourself.
 
 ### 1. Build
 
@@ -183,7 +225,8 @@ vkIFrames/
 ├── README.md, DESIGN.md, ROADMAP.md, STATUS.md, TARGETS.md   # overview, architecture, plan, measurements, target machines
 ├── STAGE1.md … STAGE6.md        # per-stage implementation notes
 ├── ASYNC.md                     # plan and measurements for the asynchronous layer
-├── AUDIT.md                     # Auditor findings
+├── AUDIT.md                     # review log (development record)
+├── CLAUDE.md                    # working rules of the development sessions (development record)
 ├── LICENSE, NOTICE
 ├── manifest/VkLayer_frame_gen.json.in
 ├── include/
@@ -217,7 +260,7 @@ Developed for a **Steam Deck OLED** (base machine, 90 Hz, Game Mode) and a Steam
 
 ## Roadmap
 
-Stages 1–5 (layer, present timing, hold and ring buffer, optical flow, interpolation) are implemented; Stage 6 (integration, packaging, resizing) is in progress. Known open items: smudging around trees and thin lines, slow phase-lock recovery after stalls, hiding `VK_EXT_present_timing` from games that use it themselves. See [ROADMAP.md](ROADMAP.md) and [STATUS.md](STATUS.md).
+Stages 1–6 (layer, present timing, hold and ring buffer, optical flow, interpolation, integration and packaging) are implemented. Known open items: smudging around trees and thin lines, slow phase-lock recovery after stalls, hiding `VK_EXT_present_timing` from games that use it themselves. Planned next: lower GPU load, an in-game menu with hotkeys, and a study of the interpolation shader. See [ROADMAP.md](ROADMAP.md) and [STATUS.md](STATUS.md).
 
 ---
 
