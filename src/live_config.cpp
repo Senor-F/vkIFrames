@@ -307,6 +307,14 @@ void LivePoll(uint64_t now_ns) {
     if (first) g_bench_seen = Live().bench_token.load();      // a token left in the file from before is not a request
 }
 
+int LiveKeyTable(LiveKeyRow* rows, int max) {
+    const Config d{};
+    const double defs[kKeys] = {1, double(d.target_fps), double(d.max_synthetic), double(d.base_fps_cap), double(d.min_gain), d.phase_lock ? 1.0 : 0.0, double(d.phase_offset), d.interp_bidir ? 1.0 : 0.0, double(d.cmd_buffers), double(d.synth_margin), 0, 0};
+    int n = 0;
+    for (int k = 0; k < kKeys && n < max; ++k) { if (k == kBench) continue; rows[n++] = {kInfo[k].name, kInfo[k].toggle, kInfo[k].lo, kInfo[k].hi, defs[k]}; }
+    return n;
+}
+
 unsigned long long LiveGeneration() { return g_gen; }
 bool LiveBenchRequest(long long* token) {
     const long long t = Live().bench_token.load();

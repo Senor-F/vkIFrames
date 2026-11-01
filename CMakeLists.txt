@@ -1,6 +1,30 @@
 cmake_minimum_required(VERSION 3.21)
 project(vkIFrames VERSION 0.1.0 LANGUAGES CXX)
 
+# One release version for the whole project (library log line, Decky plugin, archives). The commit and its commit time come from git (or from
+# -DFRAMEGEN_COMMIT=... -DFRAMEGEN_COMMIT_TIME=<unix seconds> when building from a tarball): no build date or time is embedded, so two builds of the
+# same commit give the same library.
+set(FRAMEGEN_VERSION "0.1.0-alpha.1" CACHE STRING "Release version shown in the library's log line and used in archive names")
+if(NOT FRAMEGEN_COMMIT)
+    find_package(Git QUIET)
+    set(FRAMEGEN_COMMIT "unknown")
+    set(FRAMEGEN_COMMIT_TIME "0")
+    if(GIT_FOUND)
+        execute_process(COMMAND ${GIT_EXECUTABLE} -C ${CMAKE_SOURCE_DIR} rev-parse --short=10 HEAD OUTPUT_VARIABLE _c OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _r1)
+        execute_process(COMMAND ${GIT_EXECUTABLE} -C ${CMAKE_SOURCE_DIR} log -1 --format=%ct OUTPUT_VARIABLE _t OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _r2)
+        execute_process(COMMAND ${GIT_EXECUTABLE} -C ${CMAKE_SOURCE_DIR} status --porcelain --untracked-files=no OUTPUT_VARIABLE _d OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_r1 EQUAL 0 AND _r2 EQUAL 0)
+            set(FRAMEGEN_COMMIT "${_c}")
+            set(FRAMEGEN_COMMIT_TIME "${_t}")
+            if(_d)
+                set(FRAMEGEN_COMMIT "${_c}-dirty")
+            endif()
+        endif()
+    endif()
+endif()
+message(STATUS "vkIFrames ${FRAMEGEN_VERSION}, commit ${FRAMEGEN_COMMIT}, commit time ${FRAMEGEN_COMMIT_TIME}")
+add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=.)   # no build folder in the binary
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -70,6 +94,7 @@ add_library(vkIFrames SHARED
     src/stats.cpp
 )
 target_include_directories(vkIFrames PRIVATE include ${FRAMEGEN_GENERATED_DIR})
+target_compile_definitions(vkIFrames PRIVATE FRAMEGEN_VERSION="${FRAMEGEN_VERSION}" FRAMEGEN_COMMIT="${FRAMEGEN_COMMIT}" FRAMEGEN_COMMIT_TIME="${FRAMEGEN_COMMIT_TIME}")
 add_dependencies(vkIFrames layer_shaders)
 target_link_libraries(vkIFrames PRIVATE Vulkan::Headers Threads::Threads)
 target_link_options(vkIFrames PRIVATE -Wl,--no-undefined)
@@ -123,6 +148,16 @@ if(FRAMEGEN_BUILD_TESTS)
     target_include_directories(test_live PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_live PRIVATE Vulkan::Headers)
     add_test(NAME live_config COMMAND test_live)
+    # defaults: the Decky panel's schema against the layer, the safety defaults, the manifest's opt-in
+    set(FRAMEGEN_SCHEMA_TABLE ${FRAMEGEN_GENERATED_DIR}/schema_table.h)
+    add_custom_command(OUTPUT ${FRAMEGEN_SCHEMA_TABLE}
+        COMMAND ${CMAKE_COMMAND} -DSCHEMA=${CMAKE_SOURCE_DIR}/decky/settings_schema.json -DOUT=${FRAMEGEN_SCHEMA_TABLE} -P ${CMAKE_SOURCE_DIR}/cmake/GenSchemaTable.cmake
+        DEPENDS ${CMAKE_SOURCE_DIR}/decky/settings_schema.json ${CMAKE_SOURCE_DIR}/cmake/GenSchemaTable.cmake)
+    add_executable(test_defaults tests/test_defaults.cpp src/live_config.cpp ${FRAMEGEN_SCHEMA_TABLE})
+    target_include_directories(test_defaults PRIVATE include ${FRAMEGEN_GENERATED_DIR})
+    target_link_libraries(test_defaults PRIVATE Vulkan::Headers)
+    target_compile_definitions(test_defaults PRIVATE FRAMEGEN_MANIFEST_IN="${CMAKE_SOURCE_DIR}/manifest/VkLayer_frame_gen.json.in")
+    add_test(NAME defaults COMMAND test_defaults)
     add_executable(test_stats tests/test_stats.cpp src/stats.cpp src/live_config.cpp)
     target_include_directories(test_stats PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_stats PRIVATE Vulkan::Headers)

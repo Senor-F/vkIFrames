@@ -31,6 +31,10 @@ void LivePoll(uint64_t now_ns);               // cheap: one stat() per second; r
 // About once a second: native fps, shown fps, generated frames per native frame and the mode; written to status.json next to live.conf
 void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz = 0.0, const char* bench = "");  // refresh_hz: the swapchain's refresh rate, 0 = unknown
 
+// The layer's own table of live keys (name, on/off key, range, built-in default), for the build test that compares it with decky/settings_schema.json. STATS is included, BENCH is not.
+struct LiveKeyRow { const char* name; bool toggle; double lo, hi, def; };
+int LiveKeyTable(LiveKeyRow* rows, int max);   // fills at most `max` rows; returns the number of keys
+
 // Benchmark support (stats.hpp): the number of loads that changed a setting, the pending BENCH request, and private files next to live.conf.
 unsigned long long LiveGeneration();
 bool LiveBenchRequest(long long* token);      // true when live.conf holds a BENCH number that has not been handled (and was not there at startup)

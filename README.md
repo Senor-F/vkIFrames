@@ -133,7 +133,7 @@ The layer re-reads `live.conf` (`$XDG_CONFIG_HOME/vkiframes/live.conf`, by defau
 
 | Key | Range | When it applies |
 |---|---|---|
-| `ENABLED` | 0 / 1 | next present (0 = plain bypass: no interpolation, no base-fps cap) |
+| `ENABLED` | 0 / 1 (default 1) | next present (0 = plain bypass: no interpolation, no base-fps cap) |
 | `TARGET_FPS` | 30..1000 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
 | `MAX_SYNTHETIC` | 1..4 (up to 10 with `EXPERIMENTAL`) | next present |
 | `BASE_FPS_CAP` | 0..90 | next present |
