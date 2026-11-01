@@ -25,6 +25,7 @@ done
 [ -n "$OUT" ] || fail "--out is required"
 case "$VERSION" in *-dirty*|*unknown*) fail "refusing the version string \"$VERSION\"";; esac
 [ "$(head -c4 "$LIB" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] || fail "--lib is not an ELF file"
+command -v node >/dev/null || fail "node not found"
 command -v pnpm >/dev/null || fail "pnpm not found"
 command -v python3 >/dev/null || fail "python3 not found"
 mkdir -p "$OUT"

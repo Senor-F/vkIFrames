@@ -3,7 +3,7 @@
 # usage: test_decky_zip.sh <repo root> <version>
 set -u
 REPO=${1:?}; VERSION=${2:?}
-command -v pnpm >/dev/null || { echo "pnpm not found: skipped"; exit 0; }
+command -v node >/dev/null && command -v pnpm >/dev/null && pnpm --version >/dev/null 2>&1 || { echo "node/pnpm not usable here: skipped"; exit 0; }
 T=$(mktemp -d /tmp/vkizip.XXXXXX); trap 'rm -rf "$T"' EXIT
 printf '\177ELFfake library' > "$T/lib.so"
 fails=0; ok() { if eval "$2"; then :; else echo "FAIL: $1"; fails=$((fails+1)); fi; }
