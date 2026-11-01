@@ -2,7 +2,7 @@
 
 Open items, in priority order, checked against `main` 6c0e949. Findings go on the board issue; this file holds the detail. Not compiled or run by the Auditor: everything is from reading the source and the GitHub objects. Nothing is a Deck measurement unless it says so.
 
-**Status 2026-11-01, `main` c5230b8:** sections 1 to 11 are the original plan (items 1 and 2 are in main). Section 13 is the current review log: which heads were reviewed and passed, the sanitizer results, the measurements recomputed so far, and the residuals that are still open.
+**Status 2026-11-01, `main` f550d13 (behaviour last changed at c5230b8; since then only documentation and, in #56 `afdec48`, two comments in `output_clock.hpp`):** sections 1 to 11 are the original plan (items 1 and 2 are in main; the "checked against `main` 6c0e949" line above is the date of the plan, not of the current state). Section 13 is the current review log: which heads were reviewed and passed, the sanitizer results, the measurements recomputed so far, the docs-against-code check, and the residuals that are still open. Open PR at this update: #42 (parked). #59 was squash-merged as `f550d13` on the head passed here. #56 and #58 were merged by squash on the heads passed here (`afdec48`, `9906c68`); the tree of main equals those heads for the files they touch.
 
 Every item below uses the same layout: what it is, what it costs today, what happens if we do it, what happens if we do not, a recommendation, and how to decide. Numbers marked "estimate" are the Auditor's arithmetic from the Builder's Deck figures, not measurements; the measurement logic (section 1) replaces them with real ones.
 
@@ -145,7 +145,7 @@ Private config folder and files (0700/0600, no symlink following, no temp-direct
 
 No session links, no real name, email, IP, host name or home path; commits as `Claude (Auditor)`, no session line in the message; fast-forward pushes only; no merges or rewrites by the Auditor.
 
-## 13. Review log, sanitizer results, measurements and residuals (2026-11-01, `main` c5230b8)
+## 13. Review log, sanitizer results, measurements and residuals (2026-11-01, `main` c5230b8; updated for f550d13)
 
 How to read it. A PASS covers only the exact head named. "Measured" means run in the Auditor's container (Arch, GCC 16, AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer, mock-driver tests); "read" means from the source. Nothing here is a Deck measurement unless it says so, and the Deck runs were done by the Tester and recomputed by the Auditor from the raw files.
 
@@ -163,8 +163,19 @@ How to read it. A PASS covers only the exact head named. "Measured" means run in
 | #46 | `2b52c367b0618672401cf178b4fe3019028a737b` | give back the swapchain image acquired on the hidden path when a later step fails (#27) |
 | #47 | `8759be66d6e68c28bd7ce25748d51341a6941b09` | the global registries are never destroyed (#41) |
 | #48 | `4b5ce90278886fde3f8b677266e3f10561e681e4` | `last_queue` atomic, `gpu` atomic pointer, idle-flush test (#33) |
+| #56 | `18bef0a41b5e88f1603943e9a6b144fd76012375` | comment-only: the stale `MIN_GAIN` 1.12 comments in `output_clock.hpp` (squash-merged as `afdec48`) |
+| #51 | `8f3f5f3e232c029eadfda5707b2160023aef1efd` | ROADMAP: the deferred D3D hint provider (docs; merged) |
+| #52 | `79480452f10862b18687df588a61369a2d7e6093` | ROADMAP: the deferred upscaler hook (docs; merged) |
+| #53 | `8a01f86cf61a50aa046c9c13058c10ff8a48449c` | README, DESIGN: the prior-art credit line removed (docs; merged; the owner's decision) |
+| #54 | `920eeebda9d1ef9a9ddd9dba72657729880ce446` | STAGE3.md, STAGE4.md restored and brought up to date (docs; merged) |
+| #55 | `2bea6bded5ddac6ff27cf97e4b9ed9816106dcc0` | all documents compared with the code (docs; merged) |
+| #57 | `7a17fde69242cb9470e738f3050984c5001836ab` | STATUS.md "Build state", ROADMAP line 17 (docs; merged; STATUS.md sha256 `b5e2c954…d25a9e`) |
+| #58 | `e0123ad004b84b6c58da18c51061bfab91193b5e` | STAGE3.md line 66: `ENABLED=0` keeps the cap in a benchmark's off seconds (docs; squash-merged as `9906c68`) |
+| #59 | `1288bbb3225161f827e83973692427a6791ae8d4` | STATUS.md "Build state" at main 9906c68 (docs; squash-merged as `f550d13`; STATUS.md sha256 `0eab178e…09f9ed1`) |
 
 What the last four showed. #45: the plans are bit-identical to the old header at a steady period (1.2 million random plans per mode, compared byte for byte), the grid stays continuous across 3133 random period switches, and five of the six new tests fail on the old header. #46: every step after a hidden acquire that can fail is covered (the index check and the three failure points of `EndAndSubmit`); the PR's test gives 131 acquired and 131 presented against 131 and 130 on the old source; the give-back's own failure paths were checked with throwaway test variants, not in the repo. #47: ThreadSanitizer library-side reports go from 9 to 1. #48: ThreadSanitizer reports are 9 before and 9 after.
+
+**Docs against code (read, 2026-11-01; PM PRs #54 and #55, checked on `main` with code unchanged since c5230b8).** The tips of the branches were fetched at the time of the check; the heads that were open then were #54 `920eeebda9d1ef9a9ddd9dba72657729880ce446` and #55 `eb34fc31f2b775c3726fda2d8089bbc92d148045` (later `2bea6bded5ddac6ff27cf97e4b9ed9816106dcc0`), and the PASS on exact heads came afterwards (table above); this first check was not a PASS on those heads. Nothing was compiled or run. Checked and matching: the re-anchor (#45), the next-native-frame tick (#37, epsilon 0.02), the hidden-path give-back (#46), the registries (#47), the atomic `gpu` and `last_queue` (#48), the idle flush (200 ms) and stall (100 ms) limits, the queue mutex hooks, the defaults and live ranges in the README tables, the `FRAMEGEN_` fallback, the 4-level flow pyramid with the exhaustive plus or minus 4 search, the gate (dwell 8, exit 1 + (g - 1) / 4), the phase-lock window, and the "not built" names (`VKIFRAME_ASYNC`, `DEBUG_OVERLAY`, `DUMP_FLOW`, `MAX_VELOCITY_FALLBACK` are read nowhere). The F7 and F8 hotkeys and `vkiframes-ctl` are in no doc and not in the code. Not checked: the measured numbers in STATUS.md and STAGE5/6, and the ROADMAP text of #51 and #52. Findings, all sent to the Builder and passed on to the PM (items 1, 3 and 4 are applied in #55, which is merged; item 2 is #56, merged; the PASS on exact heads is in the table above): (1) DESIGN.md:45 says a tick within epsilon of B is always left to the next pair; the code defers it only when it is not the pair's first tick (`output_clock.hpp:129`). (2) The `MIN_GAIN` 1.12 code comments (fixed by #56). (3) STAGE3.md:195 "polled with timeout 0": each try is timeout 0, the hook retries until the game's own timeout. (4) README and LIVECONF give `~/.config/vkiframes`; the code uses `XDG_CONFIG_HOME` first and honours `VKIFRAME_LIVE_CONF` and `VKIFRAME_LIVE_LOG`. #55 is stacked on #54 and does not contain #53, so README and DESIGN overlap with #53: merge order matters.
 
 **Sanitizers (measured, mock tests only).**
 - ThreadSanitizer on `main` b056bb9: 4 of the 12 tests fail (`mock_synth`, `mock_cmdreuse`, `mock_detach`, `mock_extrap`). 9 reports point into the library: 8 are the exit-time teardown of #41 (`layer_dispatch.cpp:12` five times and `:15` once, plus the heap-use-after-free in `PresenterMain` at `layer_main.cpp:751` and `:755`), 1 is the `mock_detach` read below. The other warnings are the tests' own mock globals.
