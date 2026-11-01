@@ -62,6 +62,7 @@ add_library(vkIFrames SHARED
     src/layer_dispatch.cpp
     src/present_timing.cpp
     src/gpu_frames.cpp
+    src/gpu_images.cpp
     src/optical_flow.cpp
     src/dump_queue.cpp
     src/dump_pool.cpp
@@ -126,6 +127,10 @@ if(FRAMEGEN_BUILD_TESTS)
     target_include_directories(test_stats PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_stats PRIVATE Vulkan::Headers)
     add_test(NAME stats_bench COMMAND test_stats)
+    add_executable(test_flow_images tests/test_flow_images.cpp src/gpu_images.cpp)
+    target_include_directories(test_flow_images PRIVATE include ${FRAMEGEN_GENERATED_DIR})
+    target_link_libraries(test_flow_images PRIVATE Vulkan::Headers)
+    add_test(NAME flow_images COMMAND test_flow_images)
     add_executable(test_dump tests/test_dump.cpp src/dump_queue.cpp)
     target_include_directories(test_dump PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_dump PRIVATE Vulkan::Headers)

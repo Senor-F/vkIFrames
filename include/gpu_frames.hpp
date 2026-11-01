@@ -28,7 +28,7 @@ struct HeldFrame {
 constexpr uint32_t kMaxCmdBuffers = 32;
 
 // An image of the optical-flow engine (Stage 4).
-struct FlowImage { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; VkExtent2D extent{}; bool initialized{false}; };
+struct FlowImage { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; VkExtent2D extent{}; bool initialized{false}; bool transfer_src{false}; /* usable as a copy source (VKIFRAME_DUMP) */ };
 
 // Stage 4: pipelines, images and descriptor sets of the optical-flow engine (src/optical_flow.cpp).
 struct FlowState {
