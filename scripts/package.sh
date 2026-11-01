@@ -136,7 +136,7 @@ Settings and logs live in \`~/.config/vkiframes/\` (live.conf, live.log, status.
 \`scripts/uninstall.sh\` removes the library and the manifest; \`scripts/uninstall.sh --purge\` also deletes \`~/.config/vkiframes\` (it asks first).
 
 ## Check the download
-\`sha256sum -c SHA256SUMS\` in the folder that holds the archives and \`SHA256SUMS\`. The checksum file is not signed.
+\`sha256sum -c SHA256SUMS\` in the folder that holds the archives and \`SHA256SUMS\`. The release also carries SHA256SUMS.sig, an SSH signature of the checksum file; the README shows how to verify it.
 TXT
 find "$ST" -type d -exec chmod 0755 {} +
 find "$ST" -type f -exec chmod 0644 {} +
