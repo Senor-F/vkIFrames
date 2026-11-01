@@ -120,7 +120,8 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
     for (const auto& s : specs) if (!CreatePass(dt, f.*s.member, s)) return false;
 
     // images: luma pyramid of A and B (R32F), forward and backward flow per level (RGBA16F), mask at level 1 (R32F)
-    constexpr VkImageUsageFlags kUse = VK_IMAGE_USAGE_STORAGE_BIT;
+    // VKIFRAME_DUMP copies the final flow and the mask into host buffers: those images need TRANSFER_SRC (only then, so normal runs are unchanged)
+    const VkImageUsageFlags kUse = VK_IMAGE_USAGE_STORAGE_BIT | (GetConfig().dump_pair > 0 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
     VkExtent2D ext[FlowState::kLevels];
     ext[0] = HalfUp(g.extent);
     for (uint32_t i = 1; i < FlowState::kLevels; ++i) ext[i] = HalfUp(ext[i - 1]);
