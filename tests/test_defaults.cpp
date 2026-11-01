@@ -29,6 +29,7 @@ int main() {
         if (!std::strcmp(key, "EXTRAPOLATE")) { out = d.extrapolate ? 1 : 0; return true; }
         if (!std::strcmp(key, "UI_MASK_THRESHOLD")) { out = double(d.ui_mask); return true; }
         if (!std::strcmp(key, "FLOW_LEVEL")) { out = d.flow_level; return true; }
+        if (!std::strcmp(key, "ONESIDED_FILL")) { out = d.onesided_fill ? 1 : 0; return true; }
         if (!std::strcmp(key, "EXPERIMENTAL")) { out = 0; return true; }       // read from the environment / live.conf only; off unless set
         return false;
     };
@@ -63,6 +64,7 @@ int main() {
     // the layer's safety defaults: nothing experimental, nothing that writes files or costs GPU time unasked
     CHECK(d.dump_pair == 0);                                  // VKIFRAME_DUMP: off
     CHECK(!d.debug_flow && !d.debug_ring && d.tickmark == 0);
+    CHECK(!d.onesided_fill);                                  // the experimental fill is off
     CHECK(!d.extrapolate && !d.pace_sleep && !d.absolute && !d.cap_early && d.cand_thr == 0.0f);
     CHECK(d.hold && d.synth && d.presenter);                  // the product runs by default once enabled
     CHECK(d.max_synthetic <= kLiveMaxSyntheticNormal);

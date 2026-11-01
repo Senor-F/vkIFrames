@@ -24,6 +24,7 @@ constexpr int kLiveMaxSyntheticNormal = 4;   // the most without experimental mo
 // The most generated frames this game run can use: 10 when EXPERIMENTAL=1 was set at game start (env or live.conf), else 4. The swapchain is sized for it.
 int LiveMaxSyntheticLimit();
 
+
 // Without VKIFRAME_LOG_FILE the layer's own output goes to live.log (0600, in a 0700 folder; the game's stderr is not touched). Returns false on failure.
 bool LiveLogOpen();
 // live.log and stats.jsonl are capped at 8 MiB each (one old file, .1, is kept): checked when they are opened and while they grow. LiveLogCap() is called about once a second.

@@ -19,6 +19,7 @@
 
 #define FRAMEGEN_EXPORT extern "C" __attribute__((visibility("default")))
 bool LiveLogOpen();   // live_config.cpp
+int  LiveMaxSyntheticLimit();   // live_config.cpp: 10 when VKIFRAME_EXPERIMENTAL was set at game start, else 4
 inline std::atomic<FILE*> g_fg_log{nullptr};              // the layer's log stream (live.log), null = stderr; swapped when live.log is rotated while the layer runs
 inline FILE* FgLog() { FILE* f = g_fg_log.load(std::memory_order_acquire); return f ? f : stderr; }
 #define FG_LOG(...) do { FILE* fg_f_ = FgLog(); std::fprintf(fg_f_, "[FrameGen] " __VA_ARGS__); std::fputc('\n', fg_f_); } while (0)
@@ -173,6 +174,7 @@ struct Config {
     float pan_hi{0.35f};
     float ui_mask{0.08f};        // VKIFRAME_UI_MASK_THRESHOLD: static-UI mask; where the 3x3 mean of |A-B| (luma) stays below this the pixel cross-fades instead of warping (0 = off; 0.03 suits film-grain content)
     bool  cap_early{false};      // VKIFRAME_CAP_EARLY=1: VKIFRAME_BASE_FPS_CAP waits before the present (exact intervals, but the wait adds to every frame's latency); default: after it
+    bool  onesided_fill{false};  // VKIFRAME_ONESIDED_FILL=1 (experimental, needs VKIFRAME_EXTRAPOLATE-style opt-in VKIFRAME_EXPERIMENTAL=1; read at game start): at occluded pixels take the colour from the one frame that shows the background instead of blending both. Offline it was worse than the default in 21 of 25 triplets on hard pixels
     bool  extrapolate{false};    // VKIFRAME_EXTRAPOLATE=1: no frame is held back; the newest frame is shown at once and the slots until the next one show frames predicted from it (implies flow and warp)
     bool  interp_bidir{true};      // VKIFRAME_INTERP_BIDIR=1 (old name VKIFRAME_WARP_BIDIR): two interpolations (A forward, B backward), each trusted by its own flow; needs the full-resolution backward flow, so it turns the backward skip off
     float cand_thr{0.0f};        // VKIFRAME_INTERP_CAND (off by default: on real game footage it made ghosting worse): at occluded / badly matched pixels, pick the neighbouring vector that makes A and B agree (value = largest accepted luma difference; 0 = off)
@@ -261,6 +263,8 @@ inline const Config& GetConfig() {
         if (const char* v = EnvVar("DUMP"))             c.dump_pair     = std::atoi(v);
         if (const char* v = EnvVar("DUMP_FRAMES"))      c.dump_frames   = std::clamp(std::atoi(v), 5, 60);
         if (const char* v = EnvVar2("INTERPOLATE", "WARP")) c.interpolate = std::atoi(v) != 0;
+        if (const char* v = EnvVar("ONESIDED_FILL")) c.onesided_fill = std::atoi(v) != 0;
+        if (c.onesided_fill && LiveMaxSyntheticLimit() <= 4) { c.onesided_fill = false; FG_LOG("VKIFRAME_ONESIDED_FILL is experimental: it needs VKIFRAME_EXPERIMENTAL=1 as well; ignored"); }
         if (c.extrapolate) { c.interpolate = true; c.debug_flow = false; }
         if (c.debug_flow || c.interpolate) c.flow = true;
         if (const char* v = EnvVar("DEBUG_RING"))       c.debug_ring    = std::atoi(v) != 0;

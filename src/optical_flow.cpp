@@ -115,7 +115,7 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
         {&FlowState::refine,    kFlowRefineSpv,    sizeof(kFlowRefineSpv),    4, 3 * sizeof(int),         "flow_refine"},
         {&FlowState::occlusion, kFlowOcclusionSpv, sizeof(kFlowOcclusionSpv), 3, 2 * sizeof(float),       "flow_occlusion"},
         {&FlowState::vis,       kFlowVisSpv,       sizeof(kFlowVisSpv),       4, 0,                       "flow_vis"},
-        {&FlowState::interp,    kFlowInterpSpv,      sizeof(kFlowInterpSpv),      6, 10 * sizeof(float),      "flow_interp"},
+        {&FlowState::interp,    kFlowInterpSpv,      sizeof(kFlowInterpSpv),      6, 11 * sizeof(float),      "flow_interp"},
     };
     for (const auto& s : specs) if (!CreatePass(dt, f.*s.member, s)) return false;
 
