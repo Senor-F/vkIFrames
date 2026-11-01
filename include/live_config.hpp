@@ -26,6 +26,15 @@ int LiveMaxSyntheticLimit();
 
 // Without VKIFRAME_LOG_FILE the layer's own output goes to live.log (0600, in a 0700 folder; the game's stderr is not touched). Returns false on failure.
 bool LiveLogOpen();
+// live.log and stats.jsonl are capped at 8 MiB each (one old file, .1, is kept): checked when they are opened and while they grow. LiveLogCap() is called about once a second.
+void LiveLogCap();
+bool LiveLogIsFile();                         // false when live.log could not be opened and the layer's lines go to stderr (the game's log): the caller then keeps routine per-second lines to one a minute
+void LiveLogSetCap(long long bytes);          // for tests; the default is 8 MiB
+// A line that repeats while the game runs (per second, per N seconds, per N frames, on every stall) is written through FG_LOG_ROUTINE: always when live.log is a
+// file (it is capped), but at most once a minute per call site when the lines would go to the game's stderr.
+bool LiveLogAllowAt(std::atomic<uint64_t>& last_ns, uint64_t now_ns);
+bool LiveLogAllow(std::atomic<uint64_t>& last_ns);
+#define FG_LOG_ROUTINE(...) do { static std::atomic<uint64_t> fg_routine_last_{0}; if (LiveLogAllow(fg_routine_last_)) FG_LOG(__VA_ARGS__); } while (0)
 LiveSettings& Live();                         // initialised from the environment on first use
 void LivePoll(uint64_t now_ns);               // cheap: one stat() per second; re-reads the file when it changed
 // About once a second: native fps, shown fps, generated frames per native frame and the mode; written to status.json next to live.conf
@@ -36,4 +45,4 @@ unsigned long long LiveGeneration();
 bool LiveBenchRequest(long long* token);      // true when live.conf holds a BENCH number that has not been handled (and was not there at startup)
 void LiveBenchAck(long long token);
 bool LiveWritePrivate(const char* name, const std::string& text);   // temp + rename, 0600, in the 0700 config folder
-bool LiveStatsAppend(const std::string& line);                      // one line of stats.jsonl
+bool LiveStatsAppend(const std::string& line, bool allow_rotate = true);   // allow_rotate=false while a benchmark runs: one run's records stay in one file                      // one line of stats.jsonl

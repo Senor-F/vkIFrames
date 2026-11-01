@@ -264,7 +264,7 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
     }
     if (StatsOn() || r.bench.size()) {
         timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
-        (void)LiveStatsAppend(stats::RecordJson(r, (long long)ts.tv_sec));
+        (void)LiveStatsAppend(stats::RecordJson(r, (long long)ts.tv_sec), g_bench_active.load() == 0);      // no rotation inside a benchmark run: its records stay in one file
     }
 }
 

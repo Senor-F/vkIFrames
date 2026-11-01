@@ -82,6 +82,8 @@ FILE* OpenPrivateAppend(const std::string& path) {
 
 std::mutex g_log_mu;
 FILE* g_log = nullptr;
+FILE* g_retired_log = nullptr;          // the stream before the last rotation: closed at the next one, so a thread that still holds the old pointer has a whole rotation interval to finish
+long long g_cap_bytes = 8ll * 1024 * 1024;
 bool g_shared = false;                 // stderr is live.log: LogLine writes there, no second handle
 // One line in live.log (verbose, with wall-clock time) and, shorter, in the layer's own log.
 void LogLine(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -247,14 +249,46 @@ bool LiveLogOpen() {
     if (path.empty()) return false;                      // no HOME / XDG_CONFIG_HOME: the layer keeps logging to stderr, there are no live settings
     if (path == ConfDir() + "/live.log" && !MakePrivateDir(ConfDir())) return false;
     struct stat st;
-    if (::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 8 * 1024 * 1024) (void)std::rename(path.c_str(), (path + ".1").c_str());   // one old log is kept
+    if (::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > g_cap_bytes) (void)std::rename(path.c_str(), (path + ".1").c_str());   // one old log is kept
     FILE* f = OpenPrivateAppend(path);
     if (!f) return false;
     std::setvbuf(f, nullptr, _IOLBF, 0);
     std::lock_guard<std::mutex> l(g_log_mu);
-    g_fg_log = f;                                        // only the layer's own output goes there; the game's stderr is left alone
+    g_fg_log.store(f);                                   // only the layer's own output goes there; the game's stderr is left alone
     g_shared = true;
     return true;
+}
+
+void LiveLogSetCap(long long bytes) { g_cap_bytes = bytes; }
+bool LiveLogIsFile() { return g_shared; }
+bool LiveLogAllowAt(std::atomic<uint64_t>& last_ns, uint64_t now_ns) {
+    if (g_shared) return true;
+    uint64_t last = last_ns.load(std::memory_order_relaxed);
+    if (last != 0 && now_ns - last < 60'000'000'000ull) return false;
+    return last_ns.compare_exchange_strong(last, now_ns ? now_ns : 1, std::memory_order_relaxed);
+}
+bool LiveLogAllow(std::atomic<uint64_t>& last_ns) {
+    if (g_shared) return true;
+    timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return LiveLogAllowAt(last_ns, uint64_t(ts.tv_sec) * 1'000'000'000ull + uint64_t(ts.tv_nsec));
+}
+
+// Called about once a second: when live.log has passed the cap it becomes live.log.1 (the previous .1 goes) and a new live.log is opened; the old stream stays
+// open until the next rotation. Costs one fstat.
+void LiveLogCap() {
+    std::lock_guard<std::mutex> l(g_log_mu);
+    FILE* cur = g_fg_log.load();
+    if (!g_shared || !cur) return;
+    struct stat st;
+    if (::fstat(::fileno(cur), &st) != 0 || st.st_size <= g_cap_bytes) return;
+    const std::string path = LogPath();
+    (void)std::rename(path.c_str(), (path + ".1").c_str());
+    FILE* f = OpenPrivateAppend(path);
+    if (!f) return;                                          // keep writing to the old file rather than losing the log
+    std::setvbuf(f, nullptr, _IOLBF, 0);
+    g_fg_log.store(f);
+    if (g_retired_log) std::fclose(g_retired_log);
+    g_retired_log = cur;
 }
 
 int LiveMaxSyntheticLimit() {
@@ -334,18 +368,22 @@ bool LiveWritePrivate(const char* name, const std::string& text) {
 }
 
 // One line appended to stats.jsonl (0600, private folder, no symlink). One old file is kept when it grows past 8 MB.
-bool LiveStatsAppend(const std::string& line) {
+bool LiveStatsAppend(const std::string& line, bool allow_rotate) {
     static std::mutex mu;
     static FILE* f = nullptr;
     static unsigned n = 0;
     std::lock_guard<std::mutex> l(mu);
     const std::string dir = ConfDir(), path = dir + "/stats.jsonl";
     if (dir.empty() || !MakePrivateDir(dir)) return false;
-    if (f && (++n % 600) == 0) {                                  // about every ten minutes: check the size
+    if (allow_rotate && f && (++n % 60) == 0) {                                   // about every minute: check the size
         struct stat st;
-        if (::fstat(::fileno(f), &st) == 0 && st.st_size > 8 * 1024 * 1024) { std::fclose(f); f = nullptr; (void)std::rename(path.c_str(), (path + ".1").c_str()); }
+        if (::fstat(::fileno(f), &st) == 0 && st.st_size > g_cap_bytes) { std::fclose(f); f = nullptr; (void)std::rename(path.c_str(), (path + ".1").c_str()); }
     }
-    if (!f) f = OpenPrivateAppend(path);
+    if (!f) {
+        struct stat st;                                           // a file left over from an earlier run is checked before the first append
+        if (allow_rotate && ::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > g_cap_bytes) (void)std::rename(path.c_str(), (path + ".1").c_str());
+        f = OpenPrivateAppend(path);
+    }
     if (!f) return false;
     std::fputs(line.c_str(), f); std::fputc('\n', f); std::fflush(f);
     return true;

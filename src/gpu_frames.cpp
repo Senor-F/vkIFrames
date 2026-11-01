@@ -283,7 +283,7 @@ bool GpuCapture(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const VkPr
         const uint64_t t_wait = mono();
         const bool timed_out = g.pin_cv.wait_until(lk, deadline) == std::cv_status::timeout;
         g.wait_ring_ns += mono() - t_wait;
-        if (timed_out) { FG_LOG("hold: no free ring slot for 200 ms"); return false; }
+        if (timed_out) { FG_LOG_ROUTINE("hold: no free ring slot for 200 ms"); return false; }
     }
     auto& rs = g.ring[slot];
     uint32_t e;
@@ -438,7 +438,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
             fs.interp_sum += ms; fs.interp_max = std::max(fs.interp_max, ms);
             { fs.stat_interp_ns += uint64_t(ms * 1e6); ++fs.stat_interp_n; }
             if (++fs.interp_count >= 240) {
-                FG_LOG("interpolation: GPU %.2f ms per generated frame (max %.2f) over %u frames", fs.interp_sum / fs.interp_count, fs.interp_max, fs.interp_count);
+                FG_LOG_ROUTINE("interpolation: GPU %.2f ms per generated frame (max %.2f) over %u frames", fs.interp_sum / fs.interp_count, fs.interp_max, fs.interp_count);
                 fs.interp_sum = 0.0; fs.interp_max = 0.0; fs.interp_count = 0;
             }
         }

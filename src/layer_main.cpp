@@ -434,13 +434,14 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     if (r.last_ns == 0) { r = {.last_ns = now}; return; }
     if (now - r.last_ns < 1'000'000'000ull) return;
     const double secs = double(now - r.last_ns) / 1e9;
+    LiveLogCap();                                                  // live.log stays under its cap while the game runs
     const bool want_stats = StatsWantsSecond();
     stats::Record rec;
     {
         const double nat = double(r.native) / secs, shown = double(r.shown) / secs;
         LiveWriteStatus(nat, shown, nat > 0.5 ? std::max(0, int(std::lround(shown / nat)) - 1) : 0, !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass", sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0, StatsBenchLabel());
     }
-    FG_LOG("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
+    FG_LOG_ROUTINE("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
            double(r.native) / secs, double(r.output) / secs, double(r.shown) / secs, sc.gpu ? (GetConfig().extrapolate ? " (extrapolating)" : " (frame holding on)") : "",
            sc.sched.GateActive() ? "interpolating" : "bypass",
            (unsigned long long)r.pair, (unsigned long long)r.synthetic, (unsigned long long)r.bypass, (unsigned long long)r.carrier, (unsigned long long)r.dropped,
@@ -448,7 +449,7 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     if (GetConfig().extrapolate) {
         const uint64_t planned = sc.ex_planned.exchange(0), cancelled = sc.ex_cancelled.exchange(0), ln = sc.ex_late_n.exchange(0), lsum = sc.ex_late_sum_ns.exchange(0), lmax = sc.ex_late_max_ns.exchange(0);
         rec.late_mean_ms = ln ? double(lsum) / double(ln) / 1e6 : 0.0; rec.late_max_ms = double(lmax) / 1e6; rec.cancelled = cancelled;
-        FG_LOG("extrapolation: predicted frames not shown %llu of %llu | native frame late against its slot: mean %.2f ms, max %.2f ms",
+        FG_LOG_ROUTINE("extrapolation: predicted frames not shown %llu of %llu | native frame late against its slot: mean %.2f ms, max %.2f ms",
                (unsigned long long)cancelled, (unsigned long long)planned, ln ? double(lsum) / double(ln) / 1e6 : 0.0, double(lmax) / 1e6);
     }
     {
@@ -458,8 +459,8 @@ void LogRates(SwapchainState& sc, uint64_t now) {
         double w_lock = 0, w_ring = 0, w_fence = 0;
         if (sc.gpu) {
             w_lock = double(sc.gpu->wait_lock_ns.exchange(0)) / 1e6 / n; w_ring = double(sc.gpu->wait_ring_ns.exchange(0)) / 1e6 / n; w_fence = double(sc.gpu->wait_fence_ns.exchange(0)) / 1e6 / n;
-            FG_LOG("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
-            FG_LOG("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
+            FG_LOG_ROUTINE("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
+            FG_LOG_ROUTINE("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
         }
         double flow_ms = 0, pairs_s = 0, interp_ms = 0, gen_s = 0;       // GPU time of the flow and of the interpolation in this second (copied while the readback runs)
         if (sc.gpu) {
@@ -754,7 +755,7 @@ void PresenterMain(DeviceDispatch* dt, SwapchainState* sc, Presenter* p) {
                     {
                         std::unique_lock<std::mutex> fl(sc->flow_mu, std::try_to_lock);
                         if (fl.owns_lock() && sc->gpu->held.valid && NowNs() - sc->last_present_ns.load() > 200'000'000ull) {
-                            FG_LOG("hold: no present for %.0f ms, showing the held frame", (NowNs() - last) / 1e6);
+                            FG_LOG_ROUTINE("hold: no present for %.0f ms, showing the held frame", (NowNs() - last) / 1e6);
                             NotePresentError(*sc, PresentHeld(*dt, sc->last_queue, *sc, NowNs()));
                         }
                     }
@@ -765,7 +766,7 @@ void PresenterMain(DeviceDispatch* dt, SwapchainState* sc, Presenter* p) {
                 if (last && now - last > 2'000'000'000ull && now - wd_logged > 5'000'000'000ull) {
                     wd_logged = now;
                     const uint64_t aw = sc->acquire_wait_since_ns.load(), pw = sc->wait_present_since_ns.load();
-                    FG_LOG("watchdog: no present for %.1f s | frames %llu | held %d (id %llu fence %d) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
+                    FG_LOG_ROUTINE("watchdog: no present for %.1f s | frames %llu | held %d (id %llu fence %d) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
                            (now - last) / 1e9, (unsigned long long)sc->frames, sc->gpu ? int(sc->gpu->held.valid) : -1,
                            (unsigned long long)(sc->gpu ? sc->gpu->held.present_id : 0), sc->gpu ? int(sc->gpu->held.fence != VK_NULL_HANDLE) : 0,
                            aw ? (now - aw) / 1e9 : 0.0, pw ? (now - pw) / 1e9 : 0.0, (unsigned long long)sc->wait_present_id.load());
