@@ -125,23 +125,25 @@ Environment variables, read once at start. Defaults in the second column.
 | `VKIFRAME_DUMP`, `VKIFRAME_DUMP_DIR` | off | `VKIFRAME_DUMP=N` writes, for the N-th pair whose flow ran since the game started, `B.rgba16f`, the forward and backward flow, the mask and five consecutive native frames `pair0_A` to `pair4_A` (`B` equals `pair1_A`), and the synthetic frames of those pairs (`synthNN_t….rgba16f`, up to two per pair), so one start gives three triplets (A, middle frame, B) for `interp_eval`; A and B are then two native frames apart, twice the gap the layer sees in use, so offline errors are likely an overestimate. It is read at game start only (a launch option, not live). Use a folder under the home directory on Proton; its parent must exist (the layer creates only the last level). The dumps are screenshots of your game: the folder is created 0700 and the files 0600, so keep them private. |
 | `VKIFRAME_DEBUG_FLOW`, `VKIFRAME_TICKMARK` | `0` | Debug views: motion field instead of frames; frame-position marks. |
 
-More settings (`VKIFRAME_FLOW_BWD_SKIP`, `VKIFRAME_FLOW_SUBPIXEL`, `VKIFRAME_INTERP_CAND`, `VKIFRAME_PACE_*`, …) are documented next to their definitions in `include/vk_iframes_layer.hpp`.
+More settings are documented next to their definitions in `include/vk_iframes_layer.hpp`: `VKIFRAME_FLOW_BWD_SKIP`, `VKIFRAME_FLOW_SUBPIXEL`, `VKIFRAME_INTERP_CAND`, `VKIFRAME_CAP_EARLY`, `VKIFRAME_COST_WARN`, `VKIFRAME_ACQUIRE_WAIT_US` (how long the presenter waits per try for a free swapchain image, default 1000), `VKIFRAME_PACE_LEAD_US` (how long before a tick the presenter calls present, default 2000), `VKIFRAME_PACE_SLEEP`, `VKIFRAME_ABSOLUTE` (absolute target times, untested), and the diagnostics `VKIFRAME_DEBUG_RING`, `VKIFRAME_TIMING_TEST` and `VKIFRAME_HOLD` / `VKIFRAME_SYNTH` (switch holding or synthetic frames off).
 
 ---
 
 ## Live settings (Decky plugin)
 
-The layer re-reads `~/.config/vkiframes/live.conf` about once a second (one `stat()` on the present path), so settings can change while a game runs. The Decky plugin on the `decky-plugin` branch writes that file; it can also be edited by hand (`KEY=VALUE` per line, `#` comments, `VKIFRAME_` or `FRAMEGEN_` prefix optional). The environment gives the startup values, a key in the file overrides them, and removing the file goes back to the environment.
+The layer re-reads `~/.config/vkiframes/live.conf` about once a second (one `stat()` on the present path), so settings can change while a game runs. The Decky plugin in `decky/` writes that file; it can also be edited by hand (`KEY=VALUE` per line, `#` comments, `VKIFRAME_` or `FRAMEGEN_` prefix optional). The environment gives the startup values, a key in the file overrides them, and removing the file goes back to the environment.
 
 | Key | Range | When it applies |
 |---|---|---|
 | `ENABLED` | 0 / 1 | next present (0 = plain bypass: no interpolation, no base-fps cap) |
-| `TARGET_FPS` | 30..144 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
-| `MAX_SYNTHETIC` | 1..4 | next present |
+| `TARGET_FPS` | 30..1000 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
+| `MAX_SYNTHETIC` | 1..4 (up to 10 with `EXPERIMENTAL`) | next present |
 | `BASE_FPS_CAP` | 0..90 | next present |
 | `MIN_GAIN` | 1.01..1.5 | next present |
 | `PHASE_LOCK`, `PHASE_OFFSET` | 0 / 1, 0..0.999 | next present |
 | `INTERP_BIDIR` | 0 / 1 | next pair |
+| `CMD_BUFFERS` | 4..32 | next present (entries are used from then on) |
+| `SYNTH_MARGIN` | 0..0.45 | next pair |
 | `TARGET_FPS` limit | | the live target is used up to the display's refresh rate when that is fixed; a variable-refresh display (refreshInterval = UINT64_MAX in `VK_EXT_present_timing`) or an unknown rate is not limited. The log says so once (`display: refresh ...`, `TARGET_FPS ... is above the display's refresh rate`). |
 | `STATS` | 0 / 1 | next second: one measurement record a second in `stats.jsonl` (see Measuring) |
 | `BENCH` | a number | a number that is new (not in the file when the game started) asks for one benchmark run |
@@ -181,6 +183,7 @@ vkIFrames/
 ├── STAGE1.md … STAGE6.md        # per-stage implementation notes
 ├── ASYNC.md                     # plan and measurements for the asynchronous layer
 ├── AUDIT.md                     # Auditor findings
+├── LICENSE, NOTICE
 ├── manifest/VkLayer_frame_gen.json.in
 ├── include/
 │   ├── vk_iframes_layer.hpp     # config (VKIFRAME_* settings), dispatch tables, shared declarations
@@ -188,15 +191,20 @@ vkIFrames/
 │   ├── timing_engine.hpp        # frame-time filter
 │   ├── present_timing.hpp       # VK_EXT_present_timing helpers
 │   ├── gpu_frames.hpp           # ring buffer, hold, flow-engine state
+│   ├── gpu_internal.hpp         # helpers shared by gpu_frames.cpp and optical_flow.cpp
+│   ├── live_config.hpp          # settings that change while a game runs (live.conf)
+│   ├── stats.hpp                # measurement records and the benchmark
 │   └── flow_ref.hpp             # CPU reference of the flow and the interpolation
 ├── src/
 │   ├── layer_main.cpp           # hooked entry points, presenter thread
 │   ├── layer_dispatch.cpp       # registries, proc-addr tables, loader negotiation
 │   ├── gpu_frames.cpp           # capture, synthesize, present of synthetic frames
 │   ├── optical_flow.cpp         # flow passes and GPU timers
-│   └── present_timing.cpp
+│   ├── present_timing.cpp
+│   ├── live_config.cpp          # live.conf, live.log, status.json
+│   └── stats.cpp                # stats.jsonl, bench.json
 ├── shaders/                     # flow_luma/down/coarse/refine/occlusion, flow_interp (interpolation, pan fallback, UI mask, extrapolation), flow_vis, blend
-├── scripts/                     # install.sh, uninstall.sh, gamemode_launch.sh, check_env.sh
+├── scripts/                     # install.sh, uninstall.sh, gamemode_launch.sh, check_env.sh, vkiframes-bench.sh
 ├── decky/                       # Decky Loader plugin (live settings from Game Mode), see decky/README.md
 ├── tests/                       # mock-loader and mock-driver tests, scheduler replay, flow reference
 └── tools/                       # clock_sim (output-clock simulator), interp_eval (offline scoring)

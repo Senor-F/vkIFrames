@@ -1,5 +1,7 @@
 # Asynchronous layer: design note (stage 1) and measurements so far
 
+> **Status (2026-11-01, local time zone):** stage 3 is done and merged; stage 2 (per-thread command pools) and stage 1 (the compute queue, `VKIFRAME_ASYNC`) are not started. Nothing in the code reads `VKIFRAME_ASYNC`. The numbers below are from the Deck logs of the time (flow 4.84 ms per pair); later runs in STATUS.md show the flow cost drifting upward. AUDIT.md item 9 holds the async queue last in the order of work, only if the measurements show it is worth it.
+
 Request: PM ("make the layer asynchronous"). Owner order: stage 3, then 2, then 1. One actor on the code (Builder); the Auditor reviews.
 Nothing here is measured on the Deck yet unless a number says so.
 
