@@ -85,10 +85,12 @@ public:
             m_v_prev = m_v_cur - smoothed;
             m_L = wanted;
             m_anchor = m_v_cur + m_L;
-            m_next = 0;
+            m_next = 0; m_period = p.target_ns;
             plan.kind = Kind::Hold;
             return plan;
         }
+
+        RebaseOnPeriodChange(p.target_ns);                                  // TARGET_FPS changed while running (live settings): keep the grid continuous
 
         // L moves toward its wanted value by at most 2% of a target frame per pair: a hitch cannot run content backwards.
         const double step = 0.02 * p.target_ns;
@@ -154,7 +156,8 @@ public:
         if (!interpolate) { plan.kind = Kind::Bypass; m_running = false; m_held = false; return plan; }
         const double T = p.target_ns;
         const bool first = !m_running;
-        if (first) { m_running = true; m_anchor = now; m_next = 0; }
+        if (first) { m_running = true; m_anchor = now; m_next = 0; m_period = T; }
+        else RebaseOnPeriodChange(T);
         // the slot of B: the first one at or after `now` (a little early is fine), always after the previous B's slot
         long long n = (long long)std::ceil((now - m_anchor) / T - 0.1);
         if (!first && n <= (long long)m_next) n = (long long)m_next + 1;
@@ -173,12 +176,23 @@ public:
     }
 
 private:
+    // Tick i of the output clock is at m_anchor + i * period, with i counted from m_next. That only holds for the period the clock was advanced with:
+    // when the period changes while a run is going (a live TARGET_FPS change) the old index would be multiplied by the new period and every tick would
+    // land far away (a longer period: far in the future, so no tick at all for as long as the run has been going; a shorter one: in the past). The grid
+    // is therefore moved to the next tick time under the old period and counted from 0 again; the next tick stays where it was, the ones after it
+    // follow the new period. With an unchanged period this does nothing, so the plans stay bit-identical.
+    void RebaseOnPeriodChange(double period) {
+        if (period == m_period) return;
+        if (m_period > 0.0) { m_anchor += double(m_next) * m_period; m_next = 0; }
+        m_period = period;
+    }
+
     static double WantedDelay(double smoothed, double jitter) {             // one frame to hold + a jitter buffer (2x, capped at half a frame)
         return smoothed + std::min(2.0 * jitter, 0.5 * smoothed);
     }
 
     InterpolationGate m_gate;
     bool   m_held{false}, m_running{false};
-    double m_v_prev{0}, m_v_cur{0}, m_anchor{0}, m_L{0};
+    double m_v_prev{0}, m_v_cur{0}, m_anchor{0}, m_L{0}, m_period{0};   // m_period: the target period the clock was last advanced with
     uint64_t m_next{0};
 };
