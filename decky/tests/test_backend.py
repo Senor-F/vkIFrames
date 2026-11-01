@@ -104,11 +104,16 @@ try: run(p.install_layer()); raise SystemExit("installed without bundled lib")
 except ValueError: pass
 assert not run(p.uninstall_layer())["installed"]
 st = run(p.get_state()); assert st["status"] is None and len(st["schema"]) == len(json.load(open(os.path.join(root, "settings_schema.json"))))
-# benchmark request: BENCH=<number> in live.conf, kept by later writes; the result is read back from bench.json
+# benchmark request: the number goes to its own file bench.req (one line, 0600), never into live.conf; the result is read back from bench.json
 r1 = run(p.start_bench())["token"]
-conf = open(main.LIVE_CONF).read(); assert "VKIFRAME_BENCH=%d" % r1 in conf, conf
-run(p.set_value("TARGET_FPS", 62)); assert "VKIFRAME_BENCH=%d" % r1 in open(main.LIVE_CONF).read()
+assert open(main.BENCH_REQ).read() == "%d\n" % r1 and (os.lstat(main.BENCH_REQ).st_mode & 0o777) == 0o600, open(main.BENCH_REQ).read()
+assert "BENCH" not in open(main.LIVE_CONF).read(), "the request must not be in live.conf"
+live_before = open(main.LIVE_CONF).read()
+run(p.set_value("TARGET_FPS", 62)); assert "BENCH" not in open(main.LIVE_CONF).read()
+assert open(main.BENCH_REQ).read() == "%d\n" % r1                      # a panel write leaves the request alone
 r2 = run(p.start_bench())["token"]; assert r2 > r1                      # a second request is a new number, so the layer sees it
+assert open(main.BENCH_REQ).read() == "%d\n" % r2
+assert not [f for f in os.listdir(main.CONF_DIR) if f.startswith("bench.req.")]      # no temporary file is left
 assert run(p.get_state())["bench"] is None
 open(main.BENCH_JSON, "w").write('{"status":"complete","reason":"","derived":{"layer_cost_mean_ms":3.5,"gpu_share":0.22}}')
 b = run(p.get_state())["bench"]; assert b["status"] == "complete" and b["layer_cost_mean_ms"] == 3.5 and b["gpu_share"] == 0.22, b
@@ -131,6 +136,9 @@ run(p.set_value("TARGET_FPS", 61))                                    # must not
 assert sorted(os.listdir(bait)) == before == [], os.listdir(bait)
 assert json.load(open(main.SETTINGS_FILE))["TARGET_FPS"] == 61
 main._log("must not land in the target"); assert os.listdir(bait) == []
+try: run(p.start_bench()); raise SystemExit("start_bench claimed a request it could not write")      # the panel is told, nothing lands in the target
+except ValueError: pass
+assert os.listdir(bait) == []
 os.unlink(real_conf); os.rename(moved, real_conf)
 had_data = os.path.exists(main.DATA_DIR)
 if had_data:

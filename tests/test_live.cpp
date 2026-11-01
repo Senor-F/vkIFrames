@@ -94,6 +94,44 @@ int main() {
     Write(conf, "REV=8\nSYNTH_MARGIN=0.9\n"); Touch(conf, 20); Poll(); CHECK(L.synth_margin == 0.45f);
     Write(conf, "REV=9\nSYNTH_MARGIN=-1\n"); Touch(conf, 22); Poll(); CHECK(L.synth_margin == 0.0f);
 
+    {   // bench.req (next to live.conf): the benchmark request token. It is not a setting.
+        const std::string req = std::string(dir) + "/bench.req";
+        int t = 40;
+        auto Req = [&](const char* text) { Write(req, text); Touch(req, t += 2); Poll(); };
+        long long tok = 0;
+        CHECK(!LiveBenchRequest(&tok) && !LiveBenchCancel());
+        const unsigned long long gen0 = LiveGeneration();
+        Req("1700000001\n");
+        CHECK(LiveBenchRequest(&tok) && tok == 1700000001ll);
+        CHECK(LiveGeneration() == gen0);                          // no live value moved: a request can never count as a changed setting
+        LiveBenchAck(tok); CHECK(!LiveBenchRequest(&tok));
+        Req("1700000001\n"); CHECK(!LiveBenchRequest(&tok));      // the same number again is not a new request
+        Req("1700000002\n"); CHECK(LiveBenchRequest(&tok) && tok == 1700000002ll);
+        LiveBenchAck(tok);
+        Req("0\n"); CHECK(LiveBenchCancel() && !LiveBenchCancel() && !LiveBenchRequest(&tok));      // 0: stop a running benchmark, once
+        Req("0\n"); CHECK(!LiveBenchCancel());
+        Req("abc\n"); CHECK(!LiveBenchRequest(&tok) && !LiveBenchCancel());                          // not a number: ignored
+        Req("-5\n"); CHECK(!LiveBenchRequest(&tok));
+        Req("17000000010 x\n"); CHECK(!LiveBenchRequest(&tok));
+        Req("99999999999999999999\n"); CHECK(!LiveBenchRequest(&tok));
+        Req("  1700000003  \r\n"); CHECK(LiveBenchRequest(&tok) && tok == 1700000003ll);             // blanks and CRLF are fine
+        LiveBenchAck(tok);
+        // a BENCH line in live.conf (an older plugin or script) is neither a setting nor a request, and it moves no live value
+        Write(conf, "REV=30\nBENCH=1700000009\nTARGET_FPS=75\n"); Touch(conf, 60); Poll();
+        CHECK(!LiveBenchRequest(&tok) && Live().target_fps == 75.0f);
+        const unsigned long long gen1 = LiveGeneration();
+        Write(conf, "REV=31\nBENCH=1700000010\nTARGET_FPS=75\n"); Touch(conf, 62); Poll();
+        CHECK(!LiveBenchRequest(&tok) && LiveGeneration() == gen1);
+        // the file is read only when it is the user's own regular file: a symlink is not followed
+        unlink(req.c_str());
+        Poll(); CHECK(!LiveBenchRequest(&tok));
+        const std::string target = std::string(dir) + "/elsewhere";
+        Write(target, "1700000099\n");
+        CHECK(symlink(target.c_str(), req.c_str()) == 0); Poll(); CHECK(!LiveBenchRequest(&tok));
+        unlink(req.c_str()); unlink(target.c_str());
+        Write(conf, "REV=32\nTARGET_FPS=75\n"); Touch(conf, 64); Poll();
+    }
+
     unlink(conf.c_str());                                         // removing the file reverts everything
     Poll();
     CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8 && L.synth_margin == 0.15f);
@@ -110,6 +148,9 @@ int main() {
     CHECK(text.find("no '='") != std::string::npos);
     CHECK(text.find("not a valid value") != std::string::npos);
     CHECK(text.find("live.conf removed") != std::string::npos);
+    CHECK(text.find("BENCH in live.conf is not used any more") != std::string::npos);
+    CHECK(text.find("bench.req: request 1700000001") != std::string::npos && text.find("is not a request number") != std::string::npos);
+    CHECK(text.find("unknown key \"BENCH\"") == std::string::npos);
     CHECK(text.find("back to the startup value") != std::string::npos);
 
     {   // files the layer writes are private: folder 0700, status.json 0600, and no HOME / XDG_CONFIG_HOME means no files at all

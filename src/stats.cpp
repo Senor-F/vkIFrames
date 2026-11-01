@@ -226,7 +226,7 @@ void Finish(bool restore) {
     LiveWritePrivate("bench.json", g_bench.Json());
     const bool complete = g_bench.GetState() == stats::Bench::State::Complete;
     if (restore) Live().enabled = g_bench.Restore();
-    g_bench_active = 0;
+    g_bench_active = 0; LiveBenchRunning(false);
     g_last_state = complete ? "done" : "aborted";
     FG_LOG("benchmark %s: bench.json written; ENABLED %s", complete ? "complete" : "stopped", restore ? "restored" : "left as the settings file has it");
 }
@@ -245,15 +245,19 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
     LiveSettings& live = Live();
     if (!g_bench.Active()) {
         long long token = 0;
+        (void)LiveBenchCancel();                              // a cancel with nothing running is not kept for the next run
         if (LiveBenchRequest(&token)) {
             LiveBenchAck(token);
             g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load(), live.cmd_buffers.load(), GetConfig().flow_level, live.synth_margin.load());
             g_gen0 = LiveGeneration();
-            g_bench_active = 1; g_last_state.clear();
+            g_bench_active = 1; LiveBenchRunning(true); g_last_state.clear();
             live.enabled = 1;                                 // warm-up with the layer on
             FG_LOG("benchmark started: 30 s warm-up, then 6 pairs of 60 s (off, on; every second pair on, off), about 13 minutes; do not change settings or leave the game");
             return;                                           // this second belongs to the time before the run
         }
+    } else if (LiveBenchCancel()) {                           // bench.req was set to 0 (scripts/vkiframes-bench.sh --cancel)
+        g_bench.Abort("cancelled (bench.req set to 0)");
+        Finish(true);
     } else if (LiveGeneration() != g_gen0) {                  // the user changed a setting: their value wins
         g_bench.Abort("a setting was changed during the run");
         Finish(false);
