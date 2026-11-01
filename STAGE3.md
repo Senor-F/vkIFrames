@@ -146,7 +146,7 @@ How the clock works, from the first design and still true:
 * The smoothed arrival times of A and B (`m_v_prev`, `m_v_cur`) advance on the smoothed cadence and slew 1/8 toward the real arrival, so there is no jitter and no drift.
 * The content delay $L$ is one smoothed frame time (the hold) plus a jitter buffer: `WantedDelay = smoothed + min(2 * jitter, smoothed / 2)`. Tick $j$ is presented at `anchor + j * period` and shows content time $\tau_j = T_{tick,j} - L$, which lies in $[v_{prev}, v_{cur})$ for the ticks of the current pair. The buffer makes sure a tick is almost never due before the frame that makes it possible has arrived.
 * $L$ moves toward its wanted value by at most 2 % of a target frame per pair, so a hitch cannot push the content timeline backwards.
-* $t = (\tau - v_{prev}) / (v_{cur} - v_{prev})$, clamped to $[0, 1]$. A tick within `kNativeFrac` (0.02) of A is the native frame A itself (no interpolation pass). A tick that close to B is left to the next pair, where it is $t = 0$.
+* $t = (\tau - v_{prev}) / (v_{cur} - v_{prev})$, clamped to $[0, 1]$. A tick within `kNativeFrac` (0.02) of A is the native frame A itself (no interpolation pass). A tick that close to B is left to the next pair, where it is $t = 0$, unless it would be the pair's only tick.
 
 What was added after the first design:
 
