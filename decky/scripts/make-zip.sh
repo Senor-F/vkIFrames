@@ -44,7 +44,9 @@ case "$REPO_URL" in https://*) ;; *) fail "no repository URL (pass --repo-url ht
 # 1. build dist/index.js
 cd "$HERE"
 [ -d node_modules ] || pnpm install --frozen-lockfile >/dev/null
-pnpm build >/dev/null
+# a stalled rollup run must not hang a release build (it happened once in review and was not reproducible)
+command -v timeout >/dev/null || fail "timeout (coreutils) not found"
+timeout 300 pnpm build >/dev/null || fail "pnpm build failed or took more than 300 s"
 [ -f dist/index.js ] || fail "pnpm build did not produce dist/index.js"
 
 # 2. stage

@@ -5,3 +5,7 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 The Decky Loader plugin in decky/ is based on the Decky plugin template and
 keeps its own BSD 3-Clause license (see decky/LICENSE).
+
+The SPIR-V shaders embedded in the library are compiled from the project's own
+GLSL sources in shaders/ (glslangValidator is a build tool, not part of the
+library).
