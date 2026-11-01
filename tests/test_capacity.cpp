@@ -209,7 +209,7 @@ int main(int, char** argv) {
         {"conf3_env8",       8, true,  "VKIFRAME_MAX_SYNTHETIC=3\n",              0, 9,  4},     // the file says 3, it wins over the environment's 8
         {"conf10_noexp",     0, false, "VKIFRAME_MAX_SYNTHETIC=10\n",             0, 9,  4},
         {"max7",            10, true,  "",                                        7, 7,  2},     // the surface grants only 7: C_eff = 7 - 3 - 2
-        {"max5",            10, true,  "",                                        5, 5,  1},     // not even one synthetic frame fits: capacity 1, never 0
+        {"max5",            10, true,  "",                                        5, 5,  0},     // not even one synthetic frame fits: frame holding is off (pass-through), capacity 0
         {"max6_default",     0, false, "",                                        6, 6,  1},
     };
     const Sc* sc = nullptr; for (const Sc& t : table) if (sc_name == t.name) sc = &t;
@@ -235,6 +235,23 @@ int main(int, char** argv) {
     const std::string log = Slurp(logf);
     if (sc) {
         CHECK(r_min_images == sc->want_images);
+        if (sc->want_cap == 0) {                                                                      // pass-through: no capacity line, holding off, every present forwarded as it is
+            CHECK(log.find("frame holding is off for this swapchain") != std::string::npos);
+            CHECK(log.find("capacity ") == std::string::npos);
+            auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+            for (uint32_t f = 0; f < 40; ++f) {
+                usleep(10'000);
+                VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + f); uint32_t idx = f % 4;
+                VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &swc; pi.pImageIndices = &idx;
+                VkResult res = VK_NOT_READY; pi.pResults = &res; CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
+            }
+            usleep(200'000);
+            CHECK(r_presents.size() == 40);                                                           // one present per game frame, no synthetic frame
+            for (size_t i = 0; i < r_presents.size(); ++i) CHECK(r_presents[i].image == uint32_t(i % 4));   // the game's own image indices
+            std::printf("capacity %s: ok (pass-through, %zu presents for 40 game frames)\n", sc->name, r_presents.size());
+            std::string c0 = std::string("rm -rf ") + dir; if (std::system(c0.c_str()) != 0) (void)0;
+            return 0;
+        }
         char want[80]; std::snprintf(want, sizeof want, "capacity %d", sc->want_cap);
         CHECK(log.find(want) != std::string::npos);
         CHECK((log.find("fewer than wanted") != std::string::npos) == (sc->surface_max != 0));        // only a surface that limits the image count makes the capacity smaller than wanted

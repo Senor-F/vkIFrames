@@ -369,6 +369,15 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
         uint32_t granted = 0;
         if (dt->GetSwapchainImagesKHR && dt->GetSwapchainImagesKHR(device, *pSwapchain, &granted, nullptr) >= 0 && granted > 0) {
             const int fit = int(granted) - int(app_min_images) - 2;
+            if (fit < 1) {
+                // Not even one synthetic frame has an image (held frame + one queued + one spare for the acquire): holding would only add a frame of latency and the first
+                // synthetic tick would wait for an image that cannot be released. Pass-through for this swapchain: hold_candidate is read only by the present path
+                // (before any GpuInit, capture or presenter thread exist), so turning it off here is safe.
+                FG_LOG("synthetic frames: swapchain built for %d, but only %u images granted (the app asked for %u): not even one synthetic frame fits, frame holding is off for this swapchain", synth_capacity, granted, app_min_images);
+                sc->hold_candidate = false; sc->synth_capacity = 0;
+                LiveSetSynthCapacity(0);
+                return VK_SUCCESS;
+            }
             sc->synth_capacity = std::clamp(std::min(synth_capacity, fit), 1, kLiveMaxSynthetic);
             FG_LOG("synthetic frames: swapchain built for %d, %u images granted (the app asked for %u): capacity %d%s", synth_capacity, granted, app_min_images, sc->synth_capacity,
                    sc->synth_capacity < synth_capacity ? " (fewer than wanted: a higher MAX_SYNTHETIC is clamped to it)" : "");
