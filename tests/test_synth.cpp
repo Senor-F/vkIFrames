@@ -87,7 +87,11 @@ static VkResult VKAPI_CALL m_CreateFence(VkDevice, const VkFenceCreateInfo*, con
 static void VKAPI_CALL m_DestroyFence(VkDevice, VkFence, const VkAllocationCallbacks*) {}
 static VkResult VKAPI_CALL m_WaitFences(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t) { return VK_SUCCESS; }
 static VkResult VKAPI_CALL m_ResetFences(VkDevice, uint32_t, const VkFence*) { return VK_SUCCESS; }
+static bool k_bad_index = false;   // the next acquire returns an index the swapchain does not have
+static bool k_submit_fail_hidden = false; static VkSemaphore k_last_acq_sem = VK_NULL_HANDLE; static int r_failed_submits = 0;   // fail the next submit that waits on the last acquire semaphore
 static VkResult VKAPI_CALL m_Submit2(VkQueue, uint32_t, const VkSubmitInfo2* si, VkFence) {
+    if (k_submit_fail_hidden) for (uint32_t i = 0; i < si->waitSemaphoreInfoCount; ++i)
+        if (si->pWaitSemaphoreInfos[i].semaphore == k_last_acq_sem) { k_submit_fail_hidden = false; ++r_failed_submits; return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
     Submit s; for (uint32_t i = 0; i < si->waitSemaphoreInfoCount; ++i) s.waits.push_back(si->pWaitSemaphoreInfos[i].semaphore);
     CHECK(si->signalSemaphoreInfoCount == 1); s.signal = si->pSignalSemaphoreInfos[0].semaphore; r_submits.push_back(s); r_events.push_back("S"); return VK_SUCCESS;
 }
@@ -126,7 +130,9 @@ static void VKAPI_CALL m_Dispatch(VkCommandBuffer, uint32_t x, uint32_t y, uint3
 static VkResult VKAPI_CALL m_Acquire(VkDevice, VkSwapchainKHR, uint64_t timeout, VkSemaphore sem, VkFence, uint32_t* idx) {
     CHECK(timeout <= 1'000'000);   // the game's acquire polls with 0; the presenter waits at most ACQUIRE_WAIT_US (1 ms) outside the capture mutex
     if (k_acquire_fail) return VK_ERROR_DEVICE_LOST;
-    ++r_acquires; r_acq_sems.push_back(sem); *idx = 4 + (g_acq_next++ % 4); return VK_SUCCESS;
+    ++r_acquires; r_acq_sems.push_back(sem); k_last_acq_sem = sem; *idx = 4 + (g_acq_next++ % 4);
+    if (k_bad_index) { k_bad_index = false; *idx = 99; }
+    return VK_SUCCESS;
 }
 
 static PFN_vkVoidFunction VKAPI_CALL next_gipa(VkInstance, const char* n) {
@@ -264,5 +270,29 @@ int main(int, char** argv) {
 
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     CHECK(r_destroyed_images == r_images_created && r_images_created == 7);
+
+    // 3) a failure after a hidden acquire (#27): the submit fails, or the driver returns an index the swapchain does not have. The acquired image is
+    // presented, not lost, and synthetic frames go off. The images of a swapchain are few; one that is neither presented nor released is gone until
+    // the swapchain is recreated.
+    for (int kind = 0; kind < 2; ++kind) {
+        k_acquire_fail = false; r_failed_submits = 0;
+        VkSwapchainKHR sc2{}; CHECK(csc(e.dev, &sci, nullptr, &sc2) == VK_SUCCESS);
+        sc = sc2; frame = 0;                                                         // present_frame works on `sc`
+        const int acq0 = r_acquires; const size_t pres0 = r_presents.size();
+        for (int i = 0; i < 80; ++i) present_frame(25'000);
+        CHECK(r_acquires > acq0);                                                    // synthetic frames with hidden images are running again
+        if (kind == 0) k_submit_fail_hidden = true; else k_bad_index = true;
+        for (int i = 0; i < 60 && (kind == 0 ? r_failed_submits == 0 : k_bad_index); ++i) present_frame(25'000);
+        CHECK(kind == 0 ? r_failed_submits == 1 : !k_bad_index);
+        for (int i = 0; i < 6; ++i) present_frame(25'000);
+        const int disp_off = r_dispatches;
+        for (int i = 0; i < 20; ++i) present_frame(25'000);
+        CHECK(r_dispatches == disp_off);                                             // the failure switched synthetic frames off
+        int hidden_presented = 0; for (size_t i = pres0; i < r_presents.size(); ++i) if (r_presents[i].image >= 4) ++hidden_presented;
+        std::printf("%s after a hidden acquire: %d images acquired, %d presented\n", kind == 0 ? "submit failure" : "bad image index", r_acquires - acq0, hidden_presented);
+        CHECK(hidden_presented == r_acquires - acq0);                                // every acquired image went back to the swapchain
+        ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc2, nullptr);
+        CHECK(r_destroyed_images == r_images_created);
+    }
     std::printf("PASS: stage 3c mock driver\n");
 }
