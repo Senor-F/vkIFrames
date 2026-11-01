@@ -28,6 +28,7 @@ struct DumpPool {
     };
 
     bool ready{false};
+    bool cached{false};            // every buffer is in a host-cached memory type (reading the files back from it is fast)
     int  frames{0};                // native frames the pool holds (the window length that was actually allocated)
     std::vector<Buf> bufs;         // [0, frames) A frames, then B, fwd, bwd, mask, then the synthetic frames
 

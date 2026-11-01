@@ -26,6 +26,7 @@ bool DumpPool::AllocateOne(const DeviceDispatch& dt, Buf& b, size_t bytes, const
     r = dt.MapMemory(dt.device, b.mem, 0, VK_WHOLE_SIZE, 0, &p);
     if (r != VK_SUCCESS || !p) { FG_LOG("dump: buffer %zu: MapMemory failed (%d)", index, int(r)); return false; }
     b.ptr = static_cast<uint8_t*>(p); b.bytes = bytes;
+    if (!(mp.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) cached = false;
     return true;
 }
 
@@ -39,7 +40,7 @@ bool DumpPool::AllocateAll(const DeviceDispatch& dt, const DumpLayout& l, int n)
         sizes.insert(sizes.end(), size_t(l.synth), l.a_bytes);
         bufs.assign(sizes.size(), Buf{});
     } catch (const std::bad_alloc&) { bufs.clear(); FG_LOG("dump: out of memory for the buffer list"); return false; }
-    frames = n;
+    frames = n; cached = true;
     for (size_t i = 0; i < sizes.size(); ++i) {
         if (!AllocateOne(dt, bufs[i], sizes[i], mp, i)) { Destroy(dt); return false; }
     }
@@ -58,6 +59,7 @@ bool DumpPool::Create(const DeviceDispatch& dt, const DumpLayout& l, int wanted)
         const double mb = (double(l.a_bytes) * double(n + l.synth) + double(l.b_bytes + l.fwd_bytes + l.bwd_bytes + l.mask_bytes)) / 1048576.0;
         FG_LOG("dump: allocating host-visible buffers for %d frames, %.0f MB, before the game runs", n, mb);
         if (AllocateAll(dt, l, n)) {
+            FG_LOG("dump: %zu buffers allocated, memory %s", bufs.size(), cached ? "host-cached" : "coherent only, not cached: writing the files from it can be slow");
             if (n != wanted) FG_LOG("dump: only %d of the %d frames asked for fit; the window is %d frames", n, wanted, n);
             return true;
         }
@@ -75,7 +77,7 @@ void DumpPool::Destroy(const DeviceDispatch& dt) {
         if (b.mem) dt.FreeMemory(dt.device, b.mem, nullptr);
     }
     bufs.clear(); bufs.shrink_to_fit();
-    ready = false; frames = 0;
+    ready = false; frames = 0; cached = false;
 }
 
 void DumpPool::ClearRecorded() { for (auto& b : bufs) b.recorded = false; }

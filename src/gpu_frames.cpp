@@ -133,7 +133,7 @@ void DumpFlush(const DeviceDispatch& dt, GpuState& g) {
         if (dt.WaitForFences(dt.device, 1, &g.fences[i], VK_TRUE, 2'000'000'000ull) != VK_SUCCESS) {
             FG_LOG("dump: capture FAILED, a GPU copy did not finish in 2 s; nothing is written");
             g.dump.Drop("");
-            g.dump_pool.Destroy(dt);
+            g.dump_pool.ready = false;                                                    // no more copies; the buffers stay allocated (a copy may still run) until GpuDestroy, which waits for the device first
             return;
         }
     }
