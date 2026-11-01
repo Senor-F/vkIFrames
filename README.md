@@ -49,6 +49,10 @@ All runs started from Steam in Game Mode with Proton; Desktop Mode is not verifi
 
 Open an issue in this repository and attach `~/.config/vkiframes/live.log` (and `status.json`). They contain the process id, the local times you played and the setting values; in normal use they do not contain your user name, home folder, host name or the game's name. Say which game, which mode (Game Mode or Desktop Mode) and what you set. Do not post anything else personal.
 
+**Security problems:** do not open a public issue. Use the private report on this repository's Security tab ("Report a vulnerability").
+
+*New issues and pull requests are limited to the maintainer until 2026-11-08; the limit is lifted after that date.*
+
 ---
 
 ## How it works
