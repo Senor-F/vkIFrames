@@ -3,7 +3,7 @@ import asyncio, importlib.util, json, os, sys, tempfile, types
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tmp = tempfile.mkdtemp()
 fake = types.ModuleType("decky")
-fake.DECKY_USER_HOME = os.path.join(tmp, "home")
+fake.DECKY_USER_HOME = os.path.join(tmp, "home"); os.makedirs(fake.DECKY_USER_HOME)       # the home folder exists (the plugin never creates it)
 fake.DECKY_PLUGIN_SETTINGS_DIR = os.path.join(tmp, "settings")
 fake.DECKY_PLUGIN_DIR = root
 class L:
@@ -123,11 +123,11 @@ open(main.BENCH_JSON, "w").write("not json"); assert run(p.get_state())["bench"]
 import stat as _st
 # a symlink in place of a private folder: _private_dir must not change the mode of the target
 tgt = os.path.join(tmp, "elsewhere"); os.makedirs(tgt, 0o755); os.chmod(tgt, 0o755)
-lnk = os.path.join(tmp, "linkdir"); os.symlink(tgt, lnk)
+lnk = os.path.join(main.USER_HOME, "linkdir"); os.symlink(tgt, lnk)
 try: main._private_dir(lnk); raise SystemExit("_private_dir accepted a symlink")
 except OSError: pass
 assert _st.S_IMODE(os.stat(tgt).st_mode) == 0o755, "chmod followed a symlink"
-plain = os.path.join(tmp, "plaindir"); main._private_dir(plain); assert _st.S_IMODE(os.stat(plain).st_mode) == 0o700
+plain = os.path.join(main.USER_HOME, "plaindir"); main._private_dir(plain); assert _st.S_IMODE(os.stat(plain).st_mode) == 0o700
 # the config and data folders replaced by symlinks: nothing is written into the target (live.conf, live.log, the library, the manifest folder)
 real_conf = main.CONF_DIR; moved = real_conf + ".real"; os.rename(real_conf, moved)
 bait = os.path.join(tmp, "bait_conf"); os.makedirs(bait, 0o755); os.symlink(bait, real_conf)
