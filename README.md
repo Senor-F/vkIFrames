@@ -6,8 +6,6 @@ vkIFrames is an independent Vulkan layer that sits between a game and the driver
 
 Unlike fixed 2x/3x frame generation, the number of generated frames changes from moment to moment with the game's real frame rate. When the game already reaches the target, the layer steps aside and passes native frames straight through with no added latency.
 
-**Prior art and credits.** vkIFrames is an independent implementation: the pacing engine, the optical flow and the interpolation are written for this project. Its fallback behaviour, showing a single real frame instead of a cross-fade where an interpolation cannot be trusted, is inspired by [afmf-linux](https://github.com/serialexperimentslainnnn/afmf-linux) (MIT licence), which does the same in its interpolation shader.
-
 > **Status: working, experimental.** Tested on a Steam Deck OLED (Game Mode, Proton) and on a Radeon RX 9070 desktop. 45 → 90 fps runs locked (90.0 fps shown, no drops). Motion-based interpolation and an opt-in extrapolation mode exist; image quality around thin or fast-moving structures is still being improved. See [STATUS.md](STATUS.md) for measurements and open items.
 
 ---
