@@ -180,6 +180,9 @@ function Content() {
             {state?.refresh_hz ? `Screen: ${Math.round(state.refresh_hz)} Hz (${state.refresh_src}). Slider up to ${item.max}.` : `Screen refresh rate not detected yet. Slider up to ${item.max}.`}
           </div>
         )}
+        {item.key === "MAX_SYNTHETIC" && Number(state?.status?.["age_s"] ?? 99) <= 5 && Number(state?.status?.["synth_capacity"] ?? 0) > 0 && value > Number(state?.status?.["synth_capacity"]) && (
+          <div style={{ fontStyle: "italic" }}>The running game was set up for at most {String(state?.status?.["synth_capacity"])}. Restart it to use more.</div>
+        )}
         {grey && (item.group === "more" && !values.EXPERIMENTAL
           ? <div style={{ fontStyle: "italic" }}>Greyed out: turn on Experimental to change this.</div>
           : item.greyWhy && <div style={{ fontStyle: "italic" }}>Greyed out: {item.greyWhy}</div>)}

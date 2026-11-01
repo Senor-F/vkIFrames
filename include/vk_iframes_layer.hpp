@@ -324,6 +324,7 @@ struct SwapchainState {
     uint64_t stat_prev_ns{0};
     // frame holding (Stage 3b)
     bool     hold_candidate{false};           // surface, format, usage and image count allow it
+    int      synth_capacity{10};              // most synthetic frames per native frame this swapchain can hold (images granted); k_max never exceeds it
     bool     synth_failed{false};             // creating a synthetic frame failed: held frames continue without synthetic ones
     bool     skip_logged{false};              // "frame holding skipped for this present chain" was logged once
     std::atomic<VkQueue> last_queue{};        // the queue the game presents on (for flushing a held frame from vkWaitForPresentKHR); written by the game thread, read by the presenter thread's idle flush

@@ -110,7 +110,7 @@ Environment variables, read once at start. Defaults in the second column.
 | `VKIFRAME_BASE_FPS_CAP` | `45` (`0` = off) | The layer limits the game's present rate itself (Game Mode, testing). The default 45 suits a 90 Hz screen (exactly x2); for another target pick about half of it, or a third for x3 (30 for 90 Hz), and `0` leaves the game uncapped, then a game that already runs near the target gets few or no generated frames. It waits after each present, so the game samples input as late as it can; `VKIFRAME_CAP_EARLY=1` waits before the present instead (exact intervals, but every frame is older when shown). |
 | `VKIFRAME_MAX_SYNTHETIC` | `3` | Most synthetic frames per native frame (1–4; up to 10 with `VKIFRAME_EXPERIMENTAL=1`). |
 | `VKIFRAME_CMD_BUFFERS` | `8` | Command buffer entries per swapchain (4..32). A GPU-bound game makes the game thread wait on the fence of the oldest entry (`wait_fence_ms` in the stats); more entries let the layer queue further ahead of the GPU before that happens, at the price of more latency in the layer's own work and a little memory. Live: change it in live.conf or the Decky panel while the game runs. |
-| `VKIFRAME_EXPERIMENTAL` | `0` | `1` raises the `MAX_SYNTHETIC` limit from 4 to 10 and sizes the swapchain for it (more images, more memory, untested above 4). Read once when the game starts, from live.conf or the environment. The Decky plugin also uses it to unlock its "More settings". |
+| `VKIFRAME_EXPERIMENTAL` | `0` | `1` raises the `MAX_SYNTHETIC` limit from 4 to 10 (untested above 4). It adds no swapchain images by itself: the swapchain is built for `MAX_SYNTHETIC` as set at game start (live.conf over the environment), at least 4, so values above 4 use more images and memory only when you set them and restart the game. Read once when the game starts, from live.conf or the environment. The Decky plugin also uses it to unlock its "More settings". |
 | `VKIFRAME_MIN_GAIN` | `1.01` | Interpolate only when the game's frame time exceeds the target frame time by this factor. |
 | `VKIFRAME_INTERPOLATE` | `1` (old name `VKIFRAME_WARP`) | `1`: build synthetic frames by interpolating along the optical flow (implies `VKIFRAME_FLOW`; costs about 5 ms of GPU time per native frame at 720p on the Steam Deck). `0`: plain cross-fades, no optical flow. |
 | `VKIFRAME_EXTRAPOLATE` | `0` | `1`: low-latency mode, no frame held back, slots after each native frame show predicted frames (implies `VKIFRAME_INTERPOLATE`). |
@@ -138,7 +138,7 @@ The layer re-reads `live.conf` (`$XDG_CONFIG_HOME/vkiframes/live.conf`, by defau
 |---|---|---|
 | `ENABLED` | 0 / 1 (default 1) | next present (0 = plain bypass: no interpolation, no base-fps cap) |
 | `TARGET_FPS` | 30..1000 | next present (since #45 the output clock re-anchors when the target changes while running; before, a longer period stalled interpolation for as long as the game had been interpolating and a shorter one dropped ticks) |
-| `MAX_SYNTHETIC` | 1..4 (up to 10 with `EXPERIMENTAL`) | next present |
+| `MAX_SYNTHETIC` | 1..4 (up to 10 with `EXPERIMENTAL`) | next present, up to what the running game's swapchain was built for (`synth_capacity` in `status.json`); more needs a game restart |
 | `BASE_FPS_CAP` | 0..90 | next present |
 | `MIN_GAIN` | 1.01..1.5 | next present |
 | `PHASE_LOCK`, `PHASE_OFFSET` | 0 / 1, 0..0.999 | next present |

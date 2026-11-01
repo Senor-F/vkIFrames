@@ -23,6 +23,13 @@ constexpr int kLiveMaxSynthetic = 10;        // hard upper bound of MAX_SYNTHETI
 constexpr int kLiveMaxSyntheticNormal = 4;   // the most without experimental mode
 // The most generated frames this game run can use: 10 when EXPERIMENTAL=1 was set at game start (env or live.conf), else 4. The swapchain is sized for it.
 int LiveMaxSyntheticLimit();
+// Swapchain capacity for synthetic frames. The swapchain is built for C = min(LiveMaxSyntheticLimit(), max(MAX_SYNTHETIC requested at game start, 4)) frames,
+// where the request is MAX_SYNTHETIC in live.conf if present, else the environment's. EXPERIMENTAL only raises the ceiling C can reach. After the swapchain
+// exists LiveSetSynthCapacity(C_eff) records what it can really hold (C limited by the images the driver granted); the live MAX_SYNTHETIC is clamped to it.
+int  LiveRequestedMaxSynthetic();                  // MAX_SYNTHETIC in live.conf as it stands now; 0 when absent
+int  LiveSynthCapacityFor(int env_request);        // C for a swapchain created now
+void LiveSetSynthCapacity(int c_eff);              // called once the granted image count is known (0 = unknown / no frame holding)
+int  LiveSynthCapacity();                          // 0 = unknown
 
 
 // Without VKIFRAME_LOG_FILE the layer's own output goes to live.log (0600, in a 0700 folder; the game's stderr is not touched). Returns false on failure.
