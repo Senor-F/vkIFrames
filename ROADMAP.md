@@ -14,7 +14,7 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
   ```
   Stage 6 adds an implicit-layer manifest for everyday use.
 
-**Order of work now (owner, 2026-11-01, local time zone):** measurement and `bench.json` (done), refresh-rate clamp (done), the benchmark series on the saved-game scene (done), the code-audit fixes (done: all merged on `main` c5230b8, issues #21 to #34 and #41 closed), the margin-0 fix (#37, merged; rerun valid on a stationary scene), and the clock re-anchor on a live target change (#45, merged). Next: the b8-l2 baseline on the current `main` library (the regression check), then fresh frame captures on the Deck for the offline test of a one-sided fill (STATUS.md open item 1), the owner's A/B of the phase lock against the content delay (STATUS.md, findings), the Decky and `live.conf` design decision, the remaining open items in STATUS.md and the GPU and CPU load list in AUDIT.md, then the in-game overlay and `vkiframes-ctl`, and the async compute queue last, only if the measurements show it is worth it (the layer's cost is serial GPU time, so a second queue does not add capacity). A depth buffer from the game is parked.
+**Order of work now (owner, 2026-11-01, local time zone):** measurement and `bench.json` (done), refresh-rate clamp (done), the benchmark series on the saved-game scene (done), the code-audit fixes (done: all merged on `main` c5230b8, issues #21 to #34 and #41 closed), the margin-0 fix (#37, merged; rerun valid on a stationary scene), and the clock re-anchor on a live target change (#45, merged). Next: the b8-l2 baseline on the current `main` library (the regression check), then fresh frame captures on the Deck for the offline test of a one-sided fill (STATUS.md open item 1), the owner's A/B of the phase lock against the content delay (STATUS.md, findings), the Decky and `live.conf` design decision, the remaining open items in STATUS.md and the GPU and CPU load list in AUDIT.md, then the in-game overlay and `vkiframes-ctl`, and the async compute queue last, only if the measurements show it is worth it (the layer's cost is serial GPU time, so a second queue does not add capacity). A depth buffer from the game is parked; so is the hint-provider idea below.
 
 `[x]` done, `[ ]` open, `[~]` partly done.
 
@@ -124,3 +124,14 @@ This roadmap breaks the development of the Vulkan interpolation layer into disti
 ### Testing & Validation Milestone
 - **Test:** Playtest native Linux and Proton games with base rates from 25 FPS to 60+ FPS.
 - **Success Criteria:** Smooth, low-overhead output matching the FPS cap, zero crashes on resize and fullscreen toggles, and transparent bypass when native performance reaches the limit.
+
+---
+
+## Deferred: optional D3D hint provider (parked by the owner, 2026-11-01, local time zone)
+**Goal:** give the layer information it cannot see from the swapchain image alone. Not scheduled; it does not move ahead of the order of work above. It stays within the design decisions: the project stays a Vulkan layer, no DXVK fork, and the layer stays the only presenter.
+
+* **Idea:** an optional proxy DLL in front of DXVK or vkd3d (a `dxgi.dll` or `d3d11.dll` override) that passes the layer, per frame and through a versioned shared-memory channel (the same pattern as `live.conf`): a scene image from before the UI pass, a depth image, a view and projection matrix, and the game's own velocity buffer where one exists. The layer must work as it does today when the proxy is absent.
+* **What it could improve:** a UI-free scene to interpolate with the UI composited over the output (instead of the UI threshold), depth for occlusion strips (STATUS.md open item 1), and a camera-motion prior for flow.
+* **Limits:** nothing is generic; buffers and matrices differ per engine, so most of the gain comes from per-engine or per-game work. Games without a velocity buffer give no motion vectors. D3D9, D3D11 and D3D12 each need their own hooks; D3D12 is the largest. Anti-cheat may reject DLL overrides. Per-draw hooks add game-thread cost.
+* **Cheaper experiment first:** a ReShade-style depth and UI heuristic inside the layer (depth-format images that match the swapchain size and have the most draws, copied before they are cleared; draws to the back buffer after the main depth pass as the UI). It needs no proxy DLL.
+* **Start, when it is taken up:** D3D11 only, one or two games, and a recorded artifact comparison against the flow-only baseline. Continue only if the pre-UI scene and the camera prior give a clear gain.
