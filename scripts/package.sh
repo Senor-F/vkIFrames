@@ -79,6 +79,7 @@ else
     run_in sh -c 'echo "toolchain: $(ldd --version | head -1) | $(g++ --version | head -1) | $(cmake --version | head -1)"; ldd --version | head -1 | grep -q " 2\.35" && g++ --version | head -1 | grep -q " 11\." && cmake --version | head -1 | grep -q " 3\.22"' \
         || fail "not the pinned toolchain (glibc 2.35, GCC 11, CMake 3.22): the glibc floor of the library would be wrong. Use --builder with an Ubuntu 22.04 container"
     [ -n "$VKH" ] || fail "no Vulkan headers: pass --vulkan-headers DIR (the folder that contains vulkan/vk_layer.h) or set VULKAN_INCLUDE_DIR"
+    case "$VKH" in *"'"*) fail "the Vulkan headers path contains a single quote; use another folder";; esac
     VKV=$(grep -h "define VK_HEADER_VERSION " "$VKH/vulkan/vulkan_core.h" | head -1 || true)
     echo "$ME: Vulkan headers: ${VKV:-unknown} ($VKH)"
     build() {   # build <source folder> <build folder> <output file>
@@ -102,7 +103,39 @@ ST="$TMP/stage/$ARCH"; mkdir -p "$ST/scripts" "$ST/manifest"
 cp "$LIB" "$ST/libvkIFrames.so"
 cp "$SRC/manifest/VkLayer_frame_gen.json.in" "$ST/manifest/"
 cp "$SRC/scripts/install.sh" "$SRC/scripts/uninstall.sh" "$SRC/scripts/check_env.sh" "$ST/scripts/"
-cp "$SRC/LICENSE" "$SRC/NOTICE" "$SRC/README.md" "$ST/"
+cp "$SRC/LICENSE" "$ST/"
+{   # NOTICE for this archive: the repository's NOTICE refers to decky/LICENSE, which is not in it
+    cat <<TXT
+This archive holds the layer library only (libvkIFrames.so, Apache-2.0, see LICENSE). The Decky plugin is a separate archive with its own BSD 3-Clause licence and
+the third-party notices. The project's NOTICE follows (its paths refer to the source repository).
+
+TXT
+    cat "$SRC/NOTICE"
+} > "$ST/NOTICE"
+cat > "$ST/README.md" <<TXT
+# vkIFrames $VER
+
+A Vulkan layer that adds in-between frames to games (frame interpolation) on Linux and the Steam Deck. Source and full documentation: $REPO_URL
+
+## What is in this folder
+* \`libvkIFrames.so\`: the layer (x86-64, needs glibc 2.34 or newer; a 64-bit game process).
+* \`scripts/install.sh\`, \`scripts/uninstall.sh\`, \`scripts/check_env.sh\`: install, remove, and a check of the environment.
+* \`manifest/\`: the template of the Vulkan layer manifest that install.sh fills in.
+* \`LICENSE\` (Apache-2.0) and \`NOTICE\`. The Decky Loader panel is a separate archive (\`vkIFrames-decky-$VER.zip\`).
+
+## Install (no root)
+Run \`scripts/install.sh\` as your normal user. It copies the library to \`~/.local/share/vkiframes/\` and writes the manifest \`~/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json\`. It is safe to run again after an upgrade.
+
+## Use
+Add this to a game's launch options (Steam: Properties, General): \`VKIFRAME_ENABLE=1 %command%\`. Without it the layer does nothing. \`VKIFRAME_DISABLE=1\` switches it off for one launch.
+Settings and logs live in \`~/.config/vkiframes/\` (live.conf, live.log, status.json). 32-bit games need \`PROTON_USE_WOW64=1\` too (see the full documentation).
+
+## Remove
+\`scripts/uninstall.sh\` removes the library and the manifest; \`scripts/uninstall.sh --purge\` also deletes \`~/.config/vkiframes\` (it asks first).
+
+## Check the download
+\`sha256sum -c SHA256SUMS\` in the folder that holds the archives and \`SHA256SUMS\`. The checksum file is not signed.
+TXT
 find "$ST" -type d -exec chmod 0755 {} +
 find "$ST" -type f -exec chmod 0644 {} +
 chmod 0755 "$ST/libvkIFrames.so" "$ST"/scripts/*.sh
@@ -118,6 +151,9 @@ ZIP="$OUT/vkIFrames-decky-$VER.zip"
 python3 -I - "$TAR" "$ARCH" <<'PY' || fail "the tar has an unexpected member list"
 import sys, tarfile
 t = tarfile.open(sys.argv[1]); a = sys.argv[2]
+rd = t.extractfile(a + "/README.md").read().decode()
+assert "install.sh" in rd and "VKIFRAME_ENABLE=1" in rd and "cmake -S" not in rd and "Quick start" not in rd, "README.md is not the user README"
+assert "layer library only" in t.extractfile(a + "/NOTICE").read().decode(), "NOTICE has no archive header"
 want = sorted([a, a + "/LICENSE", a + "/NOTICE", a + "/README.md", a + "/libvkIFrames.so", a + "/manifest", a + "/manifest/VkLayer_frame_gen.json.in", a + "/scripts",
                a + "/scripts/check_env.sh", a + "/scripts/install.sh", a + "/scripts/uninstall.sh"])
 got = [m.name for m in t.getmembers()]
