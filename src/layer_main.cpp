@@ -558,6 +558,11 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             FG_LOG_ROUTINE("layer CPU: game thread %.3f ms per frame inside present (CPU time, waits excluded) | presenter thread %.1f %% of one core", cpu_hook, cpu_pres * 100.0);
             FG_LOG_ROUTINE("game thread waits per frame: acquire %.2f ms | in present %.2f ms (gpu lock %.2f, ring slot %.2f, cmd fence %.2f)", w_acq, w_pres, w_lock, w_ring, w_fence);
         }
+        // The cap's sleeps of this second per present with the cap on (late wait after the present, early hold before it). Taken every second, whether or not stats are on, so a row
+        // written after STATS was switched on during the game covers one second and not the whole run.
+        double cap_wait_ms = 0, cap_hold_ms = 0;
+        { const double cn = std::max<double>(1.0, double(sc.cap_n.exchange(0)));
+          cap_wait_ms = double(sc.cap_wait_ns.exchange(0)) / 1e6 / cn; cap_hold_ms = double(sc.cap_hold_ns.exchange(0)) / 1e6 / cn; }
         double flow_ms = 0, pairs_s = 0, interp_ms = 0, gen_s = 0;       // GPU time of the flow and of the interpolation in this second (copied while the readback runs)
         if (sc.gpu) {
             FlowState& fs = sc.gpu->flow;
@@ -582,8 +587,7 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             rec.cpu_game_ms = cpu_hook; rec.presenter_core = cpu_pres;
             rec.wait_lock_ms = w_lock; rec.wait_ring_ms = w_ring; rec.wait_fence_ms = w_fence; rec.wait_acquire_ms = w_acq; rec.wait_present_ms = w_pres;
             rec.dropped = r.dropped;
-            { const double cn = std::max<double>(1.0, double(sc.cap_n.exchange(0)));          // per present with the cap on: the late wait (after the present) and the early hold (before it)
-              rec.cap_wait_ms = double(sc.cap_wait_ns.exchange(0)) / 1e6 / cn; rec.cap_hold_ms = double(sc.cap_hold_ns.exchange(0)) / 1e6 / cn; }
+            rec.cap_wait_ms = cap_wait_ms; rec.cap_hold_ms = cap_hold_ms;
             rec.pid = long(getpid());
             rec.flow_ms = flow_ms; rec.pairs_per_s = pairs_s; rec.interp_ms = interp_ms; rec.generated_per_s = gen_s;
             stats::FillDerived(rec, sc.stat_ft);
@@ -971,9 +975,21 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
         cap_slot_ns = uint64_t(1e9 / cap_fps);
         const uint64_t now0 = NowNs();
         ++sc->cap_n;
-        if (cfg.cap_early) {
+        if (cfg.cap_mode == Config::CapMode::Early) {
             if (sc->cap_next_slot_ns > now0) { SleepUntilNs(sc->cap_next_slot_ns); sc->cap_hold_ns += NowNs() - now0; }
             sc->cap_next_slot_ns = std::max(sc->cap_next_slot_ns + cap_slot_ns, now0);   // never accumulates debt after a stall
+        } else if (cfg.cap_mode == Config::CapMode::Hybrid) {
+            // The game's render time since we handed the thread back, its mean and its mean absolute deviation (frames longer than a slot count too, clamped at two slots:
+            // a game that cannot reach the cap must not be given a lead based on its fast days).
+            if (sc->cap_return_ns) {
+                const double render = std::min(double(now0 - sc->cap_return_ns), 2.0 * double(cap_slot_ns));
+                if (sc->cap_render_ema_ns <= 0.0) { sc->cap_render_ema_ns = render; sc->cap_dev_ns = 0.0; }
+                else { const double err = render - sc->cap_render_ema_ns; sc->cap_render_ema_ns += 0.1 * err; sc->cap_dev_ns = 0.9 * sc->cap_dev_ns + 0.1 * std::fabs(err); }
+            }
+            uint64_t slot_t = sc->cap_next_slot_ns;
+            if (slot_t == 0 || now0 > slot_t + cap_slot_ns) slot_t = now0;               // the first frame, or more than a slot late: the grid restarts here, no debt, no hold
+            if (slot_t > now0) { SleepUntilNs(slot_t); sc->cap_hold_ns += NowNs() - now0; }   // early: the present lands on the grid
+            sc->cap_next_slot_ns = slot_t + cap_slot_ns;
         } else {
             if (sc->cap_return_ns) {                                                       // how long the game took from our return to this present
                 const double render = double(now0 - sc->cap_return_ns);
@@ -1100,8 +1116,9 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
         LogRates(*sc, now);
     }
     if (sc->frames % 300 == 0) FG_LOG("vkQueuePresentKHR (frame %llu)", (unsigned long long)sc->frames);
-    if (cap_slot_ns && !cfg.cap_early) {                        // hold the game back until it should start the frame that will be presented on the next slot
-        const double lead = 1.2 * sc->cap_render_ema_ns;
+    if (cap_slot_ns && cfg.cap_mode != Config::CapMode::Early) {  // hold the game back until it should start the frame that will be presented on the next slot
+        // late: lead = 1.2 x the mean render time; hybrid: the mean plus two mean deviations (the present is then also held to the grid, so a small overshoot costs nothing)
+        const double lead = cfg.cap_mode == Config::CapMode::Hybrid ? sc->cap_render_ema_ns + 2.0 * sc->cap_dev_ns : 1.2 * sc->cap_render_ema_ns;
         if (double(sc->cap_next_slot_ns) > lead) { const uint64_t until = uint64_t(double(sc->cap_next_slot_ns) - lead); if (until > NowNs()) { const uint64_t t0 = NowNs(); SleepUntilNs(until); sc->cap_wait_ns += NowNs() - t0; } }
         sc->cap_return_ns = NowNs();
     }

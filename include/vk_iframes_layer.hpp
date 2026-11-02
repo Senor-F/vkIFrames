@@ -175,6 +175,11 @@ struct Config {
     float pan_lo{0.15f};         // VKIFRAME_PAN_LO / VKIFRAME_PAN_HI: when this share of the flow field is occluded or badly matched the frame starts to cross-fade, fully at the high value (a fast pan; captures: calm 0.04-0.10, pan 0.84; pan_hi <= pan_lo = off)
     float pan_hi{0.35f};
     float ui_mask{0.08f};        // VKIFRAME_UI_MASK_THRESHOLD: static-UI mask; where the 3x3 mean of |A-B| (luma) stays below this the pixel cross-fades instead of warping (0 = off; 0.03 suits film-grain content)
+    // VKIFRAME_CAP_MODE=late|early|hybrid (experiment; default late). late: sleep after the present so the game starts its next frame as late as it can (lowest latency, the
+    // game's render-time jitter reaches the present interval); early: sleep before the present until the grid time (exact intervals, up to a slot of added latency);
+    // hybrid: late sleep with a jitter-aware lead plus a short hold before the present until the grid time (exact intervals, latency = the margin).
+    enum class CapMode { Late, Early, Hybrid };
+    CapMode cap_mode{CapMode::Late};
     bool  cap_early{false};      // VKIFRAME_CAP_EARLY=1: VKIFRAME_BASE_FPS_CAP waits before the present (exact intervals, but the wait adds to every frame's latency); default: after it
     bool  onesided_fill{false};  // VKIFRAME_ONESIDED_FILL=1 (experimental; needs VKIFRAME_EXPERIMENTAL=1 too; read at game start): at occluded pixels take the colour from the one frame that shows the background instead of blending both. Offline it was worse than the default in 21 of 25 triplets on hard pixels
     bool  extrapolate{false};    // VKIFRAME_EXTRAPOLATE=1: no frame is held back; the newest frame is shown at once and the slots until the next one show frames predicted from it (implies flow and warp)
@@ -326,6 +331,13 @@ inline const Config& GetConfig() {
         EnvNumber("PAN_HI", 0.0, 1.0, c.pan_hi);
         EnvNumber("UI_MASK_THRESHOLD", 0.0, 0.5, c.ui_mask);
         EnvFlag("CAP_EARLY", c.cap_early);
+        if (c.cap_early) c.cap_mode = Config::CapMode::Early;
+        if (const char* v = EnvVar("CAP_MODE")) {
+            if (!std::strcmp(v, "late")) c.cap_mode = Config::CapMode::Late;
+            else if (!std::strcmp(v, "early")) c.cap_mode = Config::CapMode::Early;
+            else if (!std::strcmp(v, "hybrid")) c.cap_mode = Config::CapMode::Hybrid;
+            else FG_LOG("VKIFRAME_CAP_MODE=\"%s\" is not late, early or hybrid: ignored", ShownValue(v).c_str());
+        }
         EnvFlag("EXTRAPOLATE", c.extrapolate);
         if (const char* v = EnvVar2("INTERP_BIDIR", "WARP_BIDIR")) EnvFlagValue("INTERP_BIDIR", v, c.interp_bidir);
         if (const char* v = EnvVar2("INTERP_CAND", "WARP_CAND")) EnvNumberValue("INTERP_CAND", v, 0.0, 1.0, c.cand_thr);
@@ -389,6 +401,7 @@ struct SwapchainState : std::enable_shared_from_this<SwapchainState> {
     PairScheduler sched;                      // Stage 3: gate, output clock, per-pair plan
     struct Rates { uint64_t synthetic{0}, shown{0}, native{0}, output{0}, bypass{0}, pair{0}, hold{0}, carrier{0}, dropped{0}, last_ns{0}; } rates;   // window counters
     uint64_t cap_next_slot_ns{0}, cap_this_slot_ns{0}, cap_return_ns{0};   // VKIFRAME_BASE_FPS_CAP: next slot of the grid, when the game was handed back to its thread
+    double   cap_dev_ns{0.0};                 // hybrid cap: EWMA of the absolute deviation of the game's render time from cap_render_ema_ns
     double   cap_render_ema_ns{0.0};          // how long the game takes between our return and its next present
     std::atomic<uint64_t> cpu_hook_ns{0}, cpu_presenter_ns{0};   // CPU time (not waiting) of the game thread inside our present, and of the presenter thread (window totals)
     std::atomic<uint64_t> cap_wait_ns{0}, cap_hold_ns{0}, cap_n{0};   // base-rate cap (window totals): the sleep after a present (late wait), the sleep before it (early hold), presents with the cap on
