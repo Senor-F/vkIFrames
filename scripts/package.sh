@@ -101,7 +101,7 @@ fi
 ARCH="vkIFrames-$VER-linux-x86_64"
 ST="$TMP/stage/$ARCH"; mkdir -p "$ST/scripts" "$ST/manifest"
 cp "$LIB" "$ST/libvkIFrames.so"
-cp "$SRC/manifest/VkLayer_frame_gen.json.in" "$ST/manifest/"
+cp "$SRC/manifest/VkLayer_frame_gen.json.in" "$SRC/manifest/live.conf.template" "$ST/manifest/"
 cp "$SRC/scripts/install.sh" "$SRC/scripts/uninstall.sh" "$SRC/scripts/check_env.sh" "$ST/scripts/"
 cp "$SRC/LICENSE" "$ST/"
 {   # NOTICE for this archive: the repository's NOTICE refers to decky/LICENSE, which is not in it
@@ -122,7 +122,7 @@ This is an alpha release; known issues are listed in the README in the repositor
 ## What is in this folder
 * \`libvkIFrames.so\`: the layer (x86-64, needs glibc 2.34 or newer; a 64-bit game process).
 * \`scripts/install.sh\`, \`scripts/uninstall.sh\`, \`scripts/check_env.sh\`: install, remove, and a check of the environment.
-* \`manifest/\`: the template of the Vulkan layer manifest that install.sh fills in.
+* \`manifest/\`: the template of the Vulkan layer manifest that install.sh fills in, and \`live.conf.template\`, the commented settings file that install.sh creates as \`~/.config/vkiframes/live.conf\` if you have none.
 * \`LICENSE\` (Apache-2.0) and \`NOTICE\`. The Decky Loader panel is a separate archive (\`vkIFrames-decky-$VER.zip\`).
 
 ## Install (no root)
@@ -158,7 +158,7 @@ t = tarfile.open(sys.argv[1]); a = sys.argv[2]
 rd = t.extractfile(a + "/README.md").read().decode()
 assert "install.sh" in rd and "VKIFRAME_ENABLE=1" in rd and "cmake -S" not in rd and "Quick start" not in rd, "README.md is not the user README"
 assert "layer library only" in t.extractfile(a + "/NOTICE").read().decode(), "NOTICE has no archive header"
-want = sorted([a, a + "/LICENSE", a + "/NOTICE", a + "/README.md", a + "/libvkIFrames.so", a + "/manifest", a + "/manifest/VkLayer_frame_gen.json.in", a + "/scripts",
+want = sorted([a, a + "/LICENSE", a + "/NOTICE", a + "/README.md", a + "/libvkIFrames.so", a + "/manifest", a + "/manifest/VkLayer_frame_gen.json.in", a + "/manifest/live.conf.template", a + "/scripts",
                a + "/scripts/check_env.sh", a + "/scripts/install.sh", a + "/scripts/uninstall.sh"])
 got = [m.name for m in t.getmembers()]
 assert got == want, "members: %s" % got

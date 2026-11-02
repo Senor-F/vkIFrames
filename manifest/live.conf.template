@@ -1,0 +1,43 @@
+# vkIFrames settings (live.conf). install.sh created this file because there was none; it will not touch it again.
+#
+# Every line below is a comment, so this file changes nothing until you remove the "# " in front of a setting line (the line that reads KEY=value; the line above
+# it, KEY: ..., explains it). A line that is active here OVERRIDES the same setting in the game's launch options (for example VKIFRAME_TARGET_FPS=90): uncomment
+# only what you want to set from here.
+#
+# * Settings in the first group are picked up within a second while a game runs: just save the file.
+# * Settings in the second group are read once when a game starts: change them, then restart the game.
+# * The Decky panel (Steam Deck) rewrites this whole file when it starts and when you change a setting there: edits made by hand are overwritten then.
+# * Write plain names (TARGET_FPS=90). A value that is not a number (or on/off) is ignored and noted in live.log. The values shown are the built-in defaults.
+# * More about every setting: the README, and the layer's log ~/.config/vkiframes/live.log.
+
+# --- changes apply while the game runs ---
+# ENABLED: 1 = the layer works, 0 = games run as if it were not there; 0 or 1
+# ENABLED=1
+# TARGET_FPS: the frame rate to reach; 30 to 120; the built-in default is 90 on a Steam Deck OLED
+# TARGET_FPS=60
+# MAX_SYNTHETIC: most generated frames between two game frames; 1 to 4
+# MAX_SYNTHETIC=3
+# BASE_FPS_CAP: limit the game's own frame rate to this; 0 = no limit; 0 to 90; choose Target FPS divided by a whole number
+# BASE_FPS_CAP=45
+# MIN_GAIN: generate only when the target is at least this much above the game's rate; 1.01 to 1.5
+# MIN_GAIN=1.01
+# PHASE_LOCK: align generated frames with the game's frames when the ratio is close to a whole number; 0 or 1
+# PHASE_LOCK=1
+# PHASE_OFFSET: where generated frames sit between two game frames; 0 to 0.999
+# PHASE_OFFSET=0.5
+# INTERP_BIDIR: two-sided optical flow; only with OPTICAL_FLOW=1; 0 or 1
+# INTERP_BIDIR=1
+# CMD_BUFFERS: how far the layer may queue ahead of the GPU; 4 to 32
+# CMD_BUFFERS=8
+# SYNTH_MARGIN: keeps generated frames this far from the game's frames; 0 to 0.45
+# SYNTH_MARGIN=0.15
+
+# --- read once when a game starts: change, then restart the game ---
+# OPTICAL_FLOW: 1 = move the in-between frames along the motion; 0 = plain cross-fade; needs a game restart; 0 or 1
+# OPTICAL_FLOW=0
+# EXTRAPOLATE: 1 = low-latency mode, predicts instead of holding a frame; needs a game restart; 0 or 1
+# EXTRAPOLATE=0
+# UI_MASK_THRESHOLD: keeps still parts such as the HUD from being dragged; 0 = off; needs a game restart; 0 to 0.2
+# UI_MASK_THRESHOLD=0.08
+# FLOW_LEVEL: how finely motion is detected, 1 = finest; needs a game restart; 1 to 3
+# FLOW_LEVEL=2

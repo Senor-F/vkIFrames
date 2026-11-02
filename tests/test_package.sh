@@ -28,7 +28,7 @@ import sys,tarfile
 t=tarfile.open(sys.argv[1]); a=sys.argv[2]
 ms=t.getmembers(); names=[m.name for m in ms]
 assert names==sorted(names), names
-assert set(names)=={a,a+\"/LICENSE\",a+\"/NOTICE\",a+\"/README.md\",a+\"/libvkIFrames.so\",a+\"/manifest\",a+\"/manifest/VkLayer_frame_gen.json.in\",a+\"/scripts\",a+\"/scripts/check_env.sh\",a+\"/scripts/install.sh\",a+\"/scripts/uninstall.sh\"}, names
+assert set(names)=={a,a+\"/LICENSE\",a+\"/NOTICE\",a+\"/README.md\",a+\"/libvkIFrames.so\",a+\"/manifest\",a+\"/manifest/VkLayer_frame_gen.json.in\",a+\"/manifest/live.conf.template\",a+\"/scripts\",a+\"/scripts/check_env.sh\",a+\"/scripts/install.sh\",a+\"/scripts/uninstall.sh\"}, names
 assert all(m.uid==0 and m.gid==0 and m.mtime==int(sys.argv[3]) for m in ms)
 " "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" "vkIFrames-$VER-linux-x86_64" "$CT"'
 ok "gzip header has no name or time" '[ "$(head -c 10 "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" | od -An -tx1 | tr -d " \n")" = "1f8b0800000000000203" ] || [ "$(head -c 10 "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" | od -An -tx1 | tr -d " \n" | cut -c1-16)" = "1f8b080000000000" ]'

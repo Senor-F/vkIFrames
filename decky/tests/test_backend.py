@@ -111,6 +111,15 @@ lc = open(main.LIVE_CONF).read(); sj = json.load(open(main.SETTINGS_FILE))
 assert "VKIFRAME_OPTICAL_FLOW=1" in lc and "INTERPOLATE" not in lc and "WARP" not in lc, lc
 assert sj["OPTICAL_FLOW"] == 1 and "INTERPOLATE" not in sj, sj
 up2 = main.Plugin(); run(up2._main()); assert up2.values["OPTICAL_FLOW"] == 1       # and it stays on at the next start
+# install.sh leaves a commented template as live.conf for people without the panel: when the plugin starts, the file becomes the plugin's (header, REV, every key with the
+# VKIFRAME_ prefix), nothing of the template is left, no stray temporary file
+import shutil
+shutil.copyfile(os.path.join(os.path.dirname(root), "manifest", "live.conf.template"), main.LIVE_CONF)
+os.remove(main.SETTINGS_FILE)
+tp = main.Plugin(); run(tp._main())
+tc = open(main.LIVE_CONF).read()
+assert tc.startswith("# written by the vkIFrames Decky plugin") and "REV=" in tc and "VKIFRAME_OPTICAL_FLOW=0" in tc and "install.sh created this file" not in tc, tc
+assert not [f for f in os.listdir(main.CONF_DIR) if ".tmp." in f or f.startswith(".live.conf")], os.listdir(main.CONF_DIR)
 # no stray temp files left behind
 assert not [f for f in os.listdir(main.CONF_DIR) if ".tmp." in f]
 # install with a given library

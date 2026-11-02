@@ -9,7 +9,7 @@ ok() { if eval "$2"; then :; else echo "FAIL: $1 [$2]"; fails=$((fails+1)); fi; 
 
 # a fake release folder: library, manifest template, scripts
 REL="$T/release folder"; mkdir -p "$REL/scripts" "$REL/manifest"
-cp "$REPO/scripts/install.sh" "$REPO/scripts/uninstall.sh" "$REL/scripts/"; cp "$REPO/manifest/VkLayer_frame_gen.json.in" "$REL/manifest/"
+cp "$REPO/scripts/install.sh" "$REPO/scripts/uninstall.sh" "$REL/scripts/"; cp "$REPO/manifest/VkLayer_frame_gen.json.in" "$REPO/manifest/live.conf.template" "$REL/manifest/"
 printf '\177ELFlibrary-A' > "$REL/libvkIFrames.so"
 printf '\177ELFlibrary-B-longer' > "$T/libB.so"
 export HOME="$T/home dir"; mkdir -p "$HOME"; unset XDG_DATA_HOME XDG_CONFIG_HOME
@@ -116,6 +116,65 @@ done
 # a link at XDG_DATA_HOME itself is the user's choice and works
 XL="$T/xdgreal"; mkdir -p "$XL"; ln -s "$XL" "$T/xdglink"
 ok "XDG_DATA_HOME itself may be a link (install, uninstall)" 'XDG_DATA_HOME="$T/xdglink" "$REL/scripts/install.sh" >/dev/null && [ -f "$XL/vkiframes/libvkIFrames.so" ] && XDG_DATA_HOME="$T/xdglink" "$REL/scripts/uninstall.sh" >/dev/null && [ ! -e "$XL/vkiframes" ]'
+
+# 7e. the settings file for people without the Decky panel: install.sh creates ~/.config/vkiframes/live.conf from manifest/live.conf.template when there is none (a
+# comment-only file), never touches an existing one, and whatever goes wrong there is a warning that does not change the exit status or the layer install.
+# shellcheck disable=SC2034  # used inside the eval strings of ok()
+TPL="$REPO/manifest/live.conf.template"
+live_installed() { [ -f "$1/.local/share/vkiframes/libvkIFrames.so" ] && [ -f "$1/.local/share/vulkan/implicit_layer.d/VkLayer_frame_gen.json" ]; }
+active_lines() { grep -c -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$1" || true; }
+H9="$T/home9"; mkdir -p "$H9"
+ok "first install creates live.conf (exit 0, says so)" 'out=$(HOME="$H9" "$REL/scripts/install.sh" 2>&1); [ $? -eq 0 ] && echo "$out" | grep -q "settings file created"'
+ok "it is the template, mode 600, in a 700 folder, no temporary file left" 'cmp -s "$TPL" "$H9/.config/vkiframes/live.conf" && [ "$(mode "$H9/.config/vkiframes/live.conf")" = 600 ] && [ "$(mode "$H9/.config/vkiframes")" = 700 ] && [ "$(ls -A "$H9/.config/vkiframes")" = live.conf ]'
+ok "every line is a comment or blank: no active setting" '[ "$(active_lines "$H9/.config/vkiframes/live.conf")" = 0 ]'
+# shellcheck disable=SC2034
+ino9=$(stat -c %i "$H9/.config/vkiframes/live.conf")
+# shellcheck disable=SC2034
+mt9=$(stat -c %Y "$H9/.config/vkiframes/live.conf")
+ok "a second install leaves it alone (same inode, same time, says so)" 'out=$(HOME="$H9" "$REL/scripts/install.sh" 2>&1); [ $? -eq 0 ] && echo "$out" | grep -q "left as it is" && [ "$(stat -c %i "$H9/.config/vkiframes/live.conf")" = "$ino9" ] && [ "$(stat -c %Y "$H9/.config/vkiframes/live.conf")" = "$mt9" ] && [ "$(ls -A "$H9/.config/vkiframes")" = live.conf ]'
+ok "uninstall keeps it; --purge --yes removes the folder" 'HOME="$H9" "$REL/scripts/uninstall.sh" >/dev/null && [ -f "$H9/.config/vkiframes/live.conf" ] && HOME="$H9" "$REL/scripts/uninstall.sh" --purge --yes >/dev/null && [ ! -e "$H9/.config/vkiframes" ]'
+# an existing file is never touched: one with settings (the Decky panel's), an empty one, one without a trailing newline
+for kind in settings empty partial; do
+    HK="$T/home9-$kind"; mkdir -p "$HK/.config/vkiframes"
+    case $kind in settings) printf '# written by the vkIFrames Decky plugin\nREV=5\nVKIFRAME_TARGET_FPS=75\n' > "$HK/.config/vkiframes/live.conf" ;; empty) : > "$HK/.config/vkiframes/live.conf" ;; partial) printf 'TARGET_FPS=60' > "$HK/.config/vkiframes/live.conf" ;; esac
+    chmod 644 "$HK/.config/vkiframes/live.conf"; touch -d '2020-01-01 00:00:00' "$HK/.config/vkiframes/live.conf"
+    # shellcheck disable=SC2034
+    sumk=$(sha256sum "$HK/.config/vkiframes/live.conf")
+    ok "an existing live.conf ($kind) is untouched: content, mode and time, nothing else created" 'HOME="$HK" "$REL/scripts/install.sh" >/dev/null && [ "$(sha256sum "$HK/.config/vkiframes/live.conf")" = "$sumk" ] && [ "$(mode "$HK/.config/vkiframes/live.conf")" = 644 ] && [ "$(stat -c %Y "$HK/.config/vkiframes/live.conf")" = "$(date -d "2020-01-01 00:00:00" +%s)" ] && [ "$(ls -A "$HK/.config/vkiframes")" = live.conf ] && live_installed "$HK"'
+done
+# a symbolic link anywhere on the way, or at the file: warning, exit 0, nothing written through it, the layer still installed
+for spot in folder ancestor file; do
+    HL="$T/home9-link-$spot"; mkdir -p "$HL" "$T/elsewhere-$spot"
+    case $spot in
+        folder)   mkdir -p "$HL/.config"; ln -s "$T/elsewhere-$spot" "$HL/.config/vkiframes" ;;
+        ancestor) ln -s "$T/elsewhere-$spot" "$HL/.config" ;;
+        file)     mkdir -p "$HL/.config/vkiframes"; ln -s "$T/elsewhere-$spot/target" "$HL/.config/vkiframes/live.conf" ;;
+    esac
+    ok "a symbolic link at the $spot: exit 0, a note, nothing written through it, the layer installed" 'out=$(HOME="$HL" "$REL/scripts/install.sh" 2>&1); [ $? -eq 0 ] && live_installed "$HL" && [ -z "$(ls -A "$T/elsewhere-$spot")" ] && echo "$out" | grep -Eq "symbolic link|left as it is"'
+done
+ok "... and the link at the file is still a link and its target was not created" '[ -L "$T/home9-link-file/.config/vkiframes/live.conf" ] && [ ! -e "$T/elsewhere-file/target" ]'
+# something else at the path: a folder, a FIFO (must not block), the folder is not ours / not writable
+HD="$T/home9-dir"; mkdir -p "$HD/.config/vkiframes/live.conf"
+ok "a folder at the path is left alone (exit 0)" 'HOME="$HD" "$REL/scripts/install.sh" >/dev/null 2>&1; [ $? -eq 0 ] && [ -d "$HD/.config/vkiframes/live.conf" ] && live_installed "$HD"'
+HF="$T/home9-fifo"; mkdir -p "$HF/.config/vkiframes"; mkfifo "$HF/.config/vkiframes/live.conf"
+ok "a FIFO at the path is left alone and does not block" 'timeout 20 env HOME="$HF" "$REL/scripts/install.sh" >/dev/null 2>&1; [ $? -eq 0 ] && [ -p "$HF/.config/vkiframes/live.conf" ] && live_installed "$HF"'
+HR="$T/home9-ro"; mkdir -p "$HR/.config/vkiframes"; chmod 500 "$HR/.config/vkiframes"
+ok "a config folder we cannot write in: exit 0, a note, the layer installed" 'out=$(HOME="$HR" "$REL/scripts/install.sh" 2>&1); rc=$?; chmod 700 "$HR/.config/vkiframes"; [ $rc -eq 0 ] && live_installed "$HR" && echo "$out" | grep -q "note:" && [ ! -e "$HR/.config/vkiframes/live.conf" ]'
+# no template in the release folder: the same
+mv "$REL/manifest/live.conf.template" "$T/tpl.keep"; HM="$T/home9-notpl"; mkdir -p "$HM"
+ok "no template: exit 0, a note, the layer installed, no file" 'out=$(HOME="$HM" "$REL/scripts/install.sh" 2>&1); [ $? -eq 0 ] && live_installed "$HM" && echo "$out" | grep -q "template is missing" && [ ! -e "$HM/.config/vkiframes/live.conf" ]'
+mv "$T/tpl.keep" "$REL/manifest/live.conf.template"
+# XDG_CONFIG_HOME: used when set; a link there, quotes and a newline in the path
+XC="$T/xdg config \"q\" & \$x"; mkdir -p "$XC"; HX="$T/home9-xdg"; mkdir -p "$HX"
+ok "XDG_CONFIG_HOME is used (path with spaces, quotes, & and a dollar sign)" 'HOME="$HX" XDG_CONFIG_HOME="$XC" "$REL/scripts/install.sh" >/dev/null && cmp -s "$TPL" "$XC/vkiframes/live.conf" && [ ! -e "$HX/.config" ]'
+XL="$T/xdgcfgdest"; mkdir -p "$XL"; ln -s "$XL" "$T/xdgcfglink"; HY="$T/home9-xdglink"; mkdir -p "$HY"
+ok "XDG_CONFIG_HOME that is itself a link outside HOME is the user's choice (the file is created in it)" 'HOME="$HY" XDG_CONFIG_HOME="$T/xdgcfglink" "$REL/scripts/install.sh" >/dev/null && [ -f "$XL/vkiframes/live.conf" ]'
+XN="$T/xdg
+newline"; mkdir -p "$XN"; HN="$T/home9-nl"; mkdir -p "$HN"
+ok "a newline in XDG_CONFIG_HOME: exit 0, a note, no file, the layer installed" 'out=$(HOME="$HN" XDG_CONFIG_HOME="$XN" "$REL/scripts/install.sh" 2>&1); [ $? -eq 0 ] && live_installed "$HN" && [ ! -e "$XN/vkiframes/live.conf" ] && echo "$out" | grep -q "control characters"'
+HQ="$T/home9-rel"; mkdir -p "$HQ" "$T/cwd9"
+ok "a relative XDG_CONFIG_HOME is refused as before (exit 1), nothing is created in the current folder or under HOME/.config" '(cd "$T/cwd9" && HOME="$HQ" XDG_CONFIG_HOME=relcfg "$REL/scripts/install.sh" >/dev/null 2>&1; [ $? -eq 1 ]) && [ -z "$(ls -A "$T/cwd9")" ] && [ ! -e "$HQ/.config" ] && ! live_installed "$HQ"'
+ok "--use also creates it" 'HU="$T/home9-use"; mkdir -p "$HU"; HOME="$HU" "$REL/scripts/install.sh" --use "$T/libB.so" >/dev/null && cmp -s "$TPL" "$HU/.config/vkiframes/live.conf"'
 
 # 8. syntax
 ok "bash -n install.sh" 'bash -n "$REPO/scripts/install.sh"'
