@@ -180,16 +180,16 @@
         }
       ]
     ],
-    "greyWhy": "Needs interpolated frames, and is not used in low-latency mode.",
+    "greyWhy": "Needs optical flow, and is not used in low-latency mode.",
     "group": "more"
   },
   {
     "key": "INTERPOLATE",
-    "label": "Interpolated frames",
+    "label": "Optical flow",
     "type": "toggle",
-    "default": 1,
+    "default": 0,
     "needsLayer": "restart",
-    "desc": "Builds in-between frames from motion. Off: a plain cross-fade, which ghosts on movement.",
+    "desc": "Moves the in-between frames along the motion between two game frames. Off: a plain cross-fade (cheap, ghosts on movement). On costs about 5 ms of GPU time per game frame on a Steam Deck.",
     "greyWhen": [
       [
         {
@@ -242,7 +242,7 @@
         }
       ]
     ],
-    "greyWhy": "Needs interpolated frames.",
+    "greyWhy": "Needs optical flow.",
     "group": "more"
   },
   {
@@ -267,7 +267,7 @@
         }
       ]
     ],
-    "greyWhy": "Needs interpolated frames.",
+    "greyWhy": "Needs optical flow.",
     "group": "more"
   },
   {
@@ -316,7 +316,7 @@
         }
       ]
     ],
-    "greyWhy": "Needs interpolated frames.",
+    "greyWhy": "Needs optical flow.",
     "group": "more"
   },
   {

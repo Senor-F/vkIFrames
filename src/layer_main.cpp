@@ -535,7 +535,7 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     }
     FG_LOG_ROUTINE("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
            double(r.native) / secs, double(r.output) / secs, double(r.shown) / secs, sc.gpu ? (GetConfig().extrapolate ? " (extrapolating)" : " (frame holding on)") : "",
-           sc.sched.GateActive() ? "interpolating" : "bypass",
+           sc.sched.GateActive() ? "generating" : "bypass",
            (unsigned long long)r.pair, (unsigned long long)r.synthetic, (unsigned long long)r.bypass, (unsigned long long)r.carrier, (unsigned long long)r.dropped,
            sc.sched.ContentDelayNs() / 1e6);
     if (GetConfig().extrapolate) {
