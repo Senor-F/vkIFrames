@@ -19,7 +19,7 @@
     "step": 5,
     "fine": 1,
     "needsLayer": "live",
-    "desc": "Frame rate to aim for: your screen's refresh rate (90 on the Deck OLED). The slider goes to 120 or your refresh rate, if higher.",
+    "desc": "Frame rate to aim for, usually your screen's refresh rate. The layer never goes above the screen's refresh rate. The built-in value depends on the machine: 90 on a Steam Deck OLED, 60 on a Steam Deck LCD, 120 elsewhere. The slider goes to 600.",
     "greyWhen": [
       [
         {
@@ -63,7 +63,7 @@
     "step": 5,
     "fine": 1,
     "needsLayer": "live",
-    "desc": "Limits the game's own frame rate. Use your Target FPS divided by a whole number (45 or 30 for 90, 30 for 60) so the generated frames come out evenly. 0 = no limit.",
+    "desc": "Limits the game's own frame rate. Use your Target FPS divided by a whole number (45 or 30 for 90, 30 for 60) so the generated frames come out evenly. 0 = no limit. The built-in value depends on the machine: 45 on a Steam Deck OLED, 30 on a Steam Deck LCD, 60 elsewhere.",
     "greyWhen": [
       [
         {

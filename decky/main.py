@@ -379,7 +379,7 @@ class Plugin:
         try:
             with open(DMI_PRODUCT, "r", encoding="utf-8") as f:
                 board = f.read().strip()
-        except OSError:
+        except (OSError, ValueError):                   # no such file, or not text (UnicodeDecodeError is a ValueError)
             board = ""
         # same table as the layer (MachineDefaultsFor in include/vk_iframes_layer.hpp): "machine_defaults" in the schema by DMI board name, the plain default elsewhere
         for i in schema:
