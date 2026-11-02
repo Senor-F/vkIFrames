@@ -33,6 +33,9 @@ assert all(m.uid==0 and m.gid==0 and m.mtime==int(sys.argv[3]) for m in ms)
 " "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" "vkIFrames-$VER-linux-x86_64" "$CT"'
 ok "gzip header has no name or time" '[ "$(head -c 10 "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" | od -An -tx1 | tr -d " \n")" = "1f8b0800000000000203" ] || [ "$(head -c 10 "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" | od -An -tx1 | tr -d " \n" | cut -c1-16)" = "1f8b080000000000" ]'
 ok "contents list covers every file of both archives" '[ "$(wc -l < "$T/a/SHA256SUMS-contents")" -eq "$(( $(tar -tzf "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" | grep -vc "/$") + $(unzip -Z1 "$T/a/vkIFrames-decky-$VER.zip" | wc -l) ))" ]'
+# shellcheck disable=SC2034
+DX='DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%'
+ok "the tar README has the 32-bit and the DXVK launch options, exactly" 'tar -xzOf "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" "vkIFrames-$VER-linux-x86_64/README.md" > "$T/tar-readme.md" && grep -qF "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%" "$T/tar-readme.md" && grep -qF "$DX" "$T/tar-readme.md"'
 ok "the library in the zip is the one in the tar" 'cmp -s <(tar -xzOf "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" "vkIFrames-$VER-linux-x86_64/libvkIFrames.so") <(unzip -p "$T/a/vkIFrames-decky-$VER.zip" vkIFrames/bin/libvkIFrames.so)'
 # refusals, in the clone
 sed -i "s/set(FRAMEGEN_VERSION \"$VER\"/set(FRAMEGEN_VERSION \"$VER-dirty\"/" "$T/clone/CMakeLists.txt"; git -C "$T/clone" -c user.name=t -c user.email=t@invalid commit -q -am "dirty version"
