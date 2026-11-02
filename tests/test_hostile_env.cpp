@@ -52,6 +52,9 @@ int main(int argc, char** argv) {
         setenv("VKIFRAME_TICKMARK", "inf", 1);
         setenv("VKIFRAME_DUMP_FRAMES", "9e99", 1);               // finite: clamped
         setenv("VKIFRAME_PRESENTER", "off", 1);                  // words work like in live.conf
+        setenv("VKIFRAME_PACE_SLEEP", "on", 1);
+        setenv("VKIFRAME_SYNTH", " off\t", 1);                    // blanks around a word are ignored: not "unusable, so the default (on) stays"
+        setenv("VKIFRAME_FLOW_SUBPIXEL", " 0 ", 1);              // and around a number: off
         setenv("VKIFRAME_EXPERIMENTAL", "4294967296", 1);        // non-zero: on (atoi wrapped it to 0)
         // a start-of-game key from live.conf with control characters in its value: the log gets none of them
         const std::string conf = std::string(dir) + "/live.conf";
@@ -59,7 +62,7 @@ int main(int argc, char** argv) {
         setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
         const Config& c = GetConfig();
         CHECK(c.flow_level == d.flow_level && c.cmd_buffers == d.cmd_buffers && c.max_synthetic == d.max_synthetic);
-        CHECK(c.hold && c.tickmark == d.tickmark && c.dump_frames == 60 && !c.presenter);
+        CHECK(c.hold && c.tickmark == d.tickmark && c.dump_frames == 60 && !c.presenter && !c.synth && c.pace_sleep && !c.flow_subpixel);
         CHECK(c.ui_mask == d.ui_mask);
         CHECK(LiveMaxSyntheticLimit() == kLiveMaxSynthetic);
     } else {
