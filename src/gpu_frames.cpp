@@ -528,7 +528,6 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     }
     if (time_interp) {
         dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst + 1);
-        fs.interp_pending[e] = true;
     }
 
     // into the swapchain image (the carrier's image holds a finished frame in PRESENT_SRC; a hidden image has no content)
@@ -543,6 +542,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         if (acquired) { FG_LOG("synth: submit failed after acquiring swapchain image %u", idx); GiveBackAcquired(dt, queue, g, idx, g.acquire[e], true); }
         return VK_ERROR_UNKNOWN;
     }
+    if (time_interp) fs.interp_pending[e] = true;                  // read back when the entry is reused: only for a pass that was submitted
     g.synth.initialized = true;
     DumpMaybeFlush(dt, g, false);
     out_image_index = idx; wait_sem = g.staged[idx];

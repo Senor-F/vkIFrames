@@ -221,7 +221,7 @@ if(FRAMEGEN_BUILD_TESTS)
         set(_capmode_tol tolerant)       # sanitizer builds are slower and noisier: wider limits
     endif()
     foreach(cm late early hybrid)
-        foreach(cf 60 90)
+        foreach(cf 60 90 240)
             add_test(NAME cap_modes_${cm}_${cf} COMMAND test_capmodes $<TARGET_FILE:vkIFrames> ${cm} ${cf} ${_capmode_tol})
         endforeach()
     endforeach()

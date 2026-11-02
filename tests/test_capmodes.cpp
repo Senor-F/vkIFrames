@@ -5,6 +5,8 @@
 //   sustained  render 2.25 slots (25 ms at cap 90): early and hybrid run at the game's own rate (within 10 %); late adds about a slot to every frame (the defect this
 //              experiment measures; the expectation documents it and flips when late is fixed or no longer the default)
 //   stall      steady with one 3-slot frame: the frame after it is at most a slot + 3 ms
+//   startup    the first three intervals of the process: no stall (none above a slot + the render time + tol)
+//   live       the cap is halved in live.conf while the game runs: after a second the intervals are the new, doubled slot
 // usage: test_capmodes <layer library> late|early|hybrid <cap fps> [tolerant]   (tolerant: slack for sanitizer builds)
 #include "clean_env.hpp"
 #include <vulkan/vulkan.h>
@@ -248,6 +250,8 @@ int main(int, char** argv) {
     char dir[] = "/tmp/vkicapmodes_XXXXXX"; if (!mkdtemp(dir)) return 2;
     setenv("VKIFRAME_LOG_FILE", (std::string(dir) + "/layer.log").c_str(), 1);
     setenv("XDG_CONFIG_HOME", dir, 1);
+    const std::string live_conf = std::string(dir) + "/live.conf";
+    setenv("VKIFRAME_LIVE_CONF", live_conf.c_str(), 1);
     setenv("VKIFRAME_TARGET_FPS", "10", 1);                      // below the game's slowest rate here (about 26 fps): the gate stays in bypass, the game's present goes straight to the driver
     setenv("VKIFRAME_BASE_FPS_CAP", argv[3], 1);
     setenv("VKIFRAME_CAP_MODE", mode.c_str(), 1);
@@ -283,7 +287,10 @@ int main(int, char** argv) {
     auto vmax2 = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v.size() < 2 ? 0.0 : v[v.size() - 2]; };
     const bool late = mode == "late";
 
-    auto steady = run(std::vector<double>(50, 3.0), 12);
+    auto first = run(std::vector<double>(50, 3.0), 0);                              // the very first frames of the process
+    std::printf("%s cap %.0f startup:   %.2f %.2f %.2f\n", mode.c_str(), cap, first[0], first[1], first[2]);
+    for (int i = 0; i < 3; ++i) CHECK(first[i] <= slot + 3.0 + tol && first[i] >= 2.5);   // no stall at startup (the late mode sleeps one slot after the first present; the early mode may come early)
+    auto steady = std::vector<double>(first.begin() + 12, first.end());
     std::printf("%s cap %.0f steady:    mean %.2f max %.2f (slot %.2f)\n", mode.c_str(), cap, mean(steady), vmax(steady), slot);
     CHECK(std::fabs(mean(steady) - slot) < 0.03 * slot);
 
@@ -291,14 +298,17 @@ int main(int, char** argv) {
     const double longr = 2.25 * slot;
     auto sustained = run(std::vector<double>(40, longr), 10);
     std::printf("%s cap %.0f sustained: mean %.2f max %.2f (render %.2f)\n", mode.c_str(), cap, mean(sustained), vmax(sustained), longr);
-    if (late) CHECK(mean(sustained) > 1.2 * longr);                                // documents the defect: every frame gets about a slot of sleep
+    if (late && slot >= 8.0) CHECK(mean(sustained) > 1.2 * longr);
+    else if (late) CHECK(mean(sustained) < 1.2 * longr);          // a 4 ms slot: no visible penalty                                // documents the defect: every frame gets about a slot of sleep
     else      CHECK(mean(sustained) < 1.1 * longr + 0.5 && mean(sustained) > 0.9 * longr);
 
     std::vector<double> jr; unsigned seed = 12345; for (int i = 0; i < 120; ++i) { seed = seed * 1103515245u + 12345u; jr.push_back((0.5 + 0.35 * double((seed >> 8) & 0xffff) / 65535.0) * slot); }
     auto jitter = run(jr, 45);
     std::printf("%s cap %.0f jitter:    mean %.2f max %.2f (slot %.2f)\n", mode.c_str(), cap, mean(jitter), vmax(jitter), slot);
     CHECK(std::fabs(mean(jitter) - slot) < 0.03 * slot);
-    if (late) CHECK(vmax2(jitter) > slot + 2.0);                                    // documents the defect: the render jitter reaches the present interval
+    // the late defects need a slot long enough for the sleep and the jitter to matter (at cap 240 the slot is 4 ms: the extra sleep is under a millisecond), so they are pinned for slots of 8 ms and more
+    if (late && slot >= 8.0) CHECK(vmax2(jitter) > slot + 2.0);
+    else if (late) {}                                    // documents the defect: the render jitter reaches the present interval
     else      CHECK(vmax2(jitter) <= slot + tol);
 
     std::vector<double> sr(45, 3.0); sr[25] = 3.0 * slot;
@@ -307,6 +317,15 @@ int main(int, char** argv) {
     CHECK(stall[15] <= slot + 3.0 + (tolerant ? 3.0 : 0.0));
     CHECK(stall[14] <= 4.0 * slot + 3.0);
 
+    {   // live cap change: halve the cap in live.conf (the layer polls it once a second), the intervals follow
+        { std::ofstream f(live_conf, std::ios::binary); f << "REV=1\nBASE_FPS_CAP=" << cap / 2.0 << "\n"; }
+        auto live = run(std::vector<double>(int(2.0 * cap / 2.0 * 1.0) + 60, 3.0), 0);   // about 1 s + 60 frames of the slow slot
+        const size_t n = live.size(); std::vector<double> tail(live.end() - 20, live.end());
+        std::printf("%s cap %.0f live:      tail mean %.2f max %.2f (new slot %.2f)\n", mode.c_str(), cap, mean(tail), vmax(tail), 2.0 * slot);
+        (void)n;
+        CHECK(std::fabs(mean(tail) - 2.0 * slot) < 0.05 * 2.0 * slot);
+        CHECK(vmax2(tail) <= 2.0 * slot + tol + (late ? 3.0 : 0.0));
+    }
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
     for (Fake* f : g_cbs) delete f;

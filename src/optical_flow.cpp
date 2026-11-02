@@ -328,11 +328,12 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
     const float occl_pc[2] = {kOcclThreshold + (skip_bwd ? 1.0f : 0.0f), skip_bwd ? 2.0f : 1.0f};   // threshold, size of the backward field's pixels in forward-field pixels
     dispatch(&FlowState::occlusion, 16, f.fwd[f.fin].extent, occl_pc, sizeof(occl_pc));
     MemBarrier(dt, cb, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, ALL, RW);
+    bool stamped = false;                                                  // the stamps were written: read back when the entry is reused, but only if the submit below succeeds
     if (f.qpool) {
         stamp();   // occlusion done
         f.ts_n = nstamp;
         if (nstamp != FlowState::StampCount(f.fin) && !f.stamp_count_logged) { f.stamp_count_logged = true; FG_LOG("flow: %u timestamps written, %u expected: the stage names in the log may be off", nstamp, FlowState::StampCount(f.fin)); }
-        f.ts_pending[e] = true;
+        stamped = true;
     }
     // VKIFRAME_DUMP: the copies into the pool are recorded in this command buffer, which is submitted anyway: no extra submit, wait or CPU copy
     const bool dumping = GetConfig().dump_pair > 0;
@@ -362,6 +363,7 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
         f.failed = true; FG_LOG("flow: submit failed, the engine is off"); return false;
     }
     f.pair_valid = true;
+    if (stamped) f.ts_pending[e] = true;
     if (dumping) {
         ++g.pairs_flowed;                                                                  // VKIFRAME_DUMP counts the pairs that went through GpuFlow
         if (in_window) {

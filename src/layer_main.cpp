@@ -1002,7 +1002,6 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
                 if (render < double(cap_slot_ns)) sc->cap_render_ema_ns = sc->cap_render_ema_ns > 0.0 ? 0.9 * sc->cap_render_ema_ns + 0.1 * render : render;
             }
             if (sc->cap_next_slot_ns == 0 || now0 > sc->cap_next_slot_ns + cap_slot_ns) sc->cap_next_slot_ns = now0;      // first frame, or after a stall: no debt
-            sc->cap_this_slot_ns = sc->cap_next_slot_ns;
             sc->cap_next_slot_ns += cap_slot_ns;
         }
     }
@@ -1280,6 +1279,7 @@ static VkResult Impl_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(swapchain);
+    if (!dt->WaitForPresentKHR) return VK_ERROR_EXTENSION_NOT_PRESENT;                 // the driver has no vkWaitForPresentKHR (a game cannot legally call it then): do not call a null pointer
     if (!sc) return dt->WaitForPresentKHR(device, swapchain, presentId, timeout);
     {
         std::lock_guard<std::mutex> fl(sc->flow_mu);
@@ -1391,7 +1391,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_GetFenceStatus(VkDevice device, VkFence fenc
 VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
     VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (Run("vkWaitForPresentKHR", [&] { r = Impl_WaitForPresentKHR(device, swapchain, presentId, timeout); })) return r;
-    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->WaitForPresentKHR(device, swapchain, presentId, timeout); });
+    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->WaitForPresentKHR ? dt->WaitForPresentKHR(device, swapchain, presentId, timeout) : VK_ERROR_EXTENSION_NOT_PRESENT; });
     return r;
 }
 
