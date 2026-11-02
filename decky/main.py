@@ -39,7 +39,7 @@ INSTALLED_LIB = os.path.join(DATA_DIR, "libvkIFrames.so")
 BUNDLED_LIB = os.path.join(PLUGIN_DIR, "bin", "libvkIFrames.so")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 SCHEMA_FILE = os.path.join(PLUGIN_DIR, "settings_schema.json")
-DMI_PRODUCT = "/sys/class/dmi/id/product_name"   # "Galileo" = Steam Deck OLED (90 Hz), "Jupiter" = LCD (60 Hz)
+DMI_PRODUCT = "/sys/class/dmi/id/product_name"   # "Galileo" = Steam Deck OLED (90 Hz), "Jupiter" = LCD (60 Hz); the defaults by machine are in settings_schema.json ("machine_defaults")
 DISPLAY_FILE = os.path.join(SETTINGS_DIR, "display.json")   # last refresh rate seen (from the layer or xrandr)
 TARGET_MAX = 600   # the Target FPS slider reaches this: the layer's own limit (a higher value would be clamped by the layer), whatever the screen's refresh rate
 PREFIX = "VKIFRAME_"   # the layer also accepts the old FRAMEGEN_ spelling
@@ -374,13 +374,18 @@ class Plugin:
 
     # ---- settings -------------------------------------------------------
     def _defaults(self):
-        d = {i["key"]: i["default"] for i in _load_schema()}
+        schema = _load_schema()
+        d = {i["key"]: i["default"] for i in schema}
         try:
             with open(DMI_PRODUCT, "r", encoding="utf-8") as f:
-                oled = f.read().strip().startswith("Galileo")
+                board = f.read().strip()
         except OSError:
-            oled = False
-        d["TARGET_FPS"] = 90 if oled else 60            # same rule as the layer: 90 on the Deck OLED, 60 elsewhere
+            board = ""
+        # same table as the layer (MachineDefaultsFor in include/vk_iframes_layer.hpp): "machine_defaults" in the schema by DMI board name, the plain default elsewhere
+        for i in schema:
+            for name, value in i.get("machine_defaults", {}).items():
+                if board.startswith(name):
+                    d[i["key"]] = value
         return d
 
     def _read_settings(self):

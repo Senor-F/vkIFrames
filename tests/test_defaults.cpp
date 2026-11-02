@@ -55,6 +55,20 @@ int main() {
             FAIL("%s: the schema range %g..%g and the layer's %g..%g must be the same (the owner raised these limits)", s.key, s.lo, s.hi, llo, lhi);
         if (check_range && (s.def < s.lo - 1e-9 || s.def > s.hi + 1e-9)) FAIL("%s: the schema's default %g is outside its own range", s.key, s.def);
     }
+    // the table by machine: the layer's (MachineDefaultsFor) against the schema's "machine_defaults" for the two keys that have one, and nothing else may differ by machine
+    {
+        const char* path = "/tmp/vkiframes_test_defaults_dmi";
+        auto board = [&](const char* name) { { std::ofstream o(path, std::ios::trunc); o << name << "\n"; } return MachineDefaultsFor(path); };
+        const MachineDefaults gal = board("Galileo"), jup = board("Jupiter"), other = board("MS-7C94");
+        for (const SchemaRow& s : kSchema) {
+            const bool cap = !std::strcmp(s.key, "BASE_FPS_CAP"), tgt = !std::strcmp(s.key, "TARGET_FPS");
+            if (cap) { CHECK(s.galileo == gal.base_fps_cap && s.jupiter == jup.base_fps_cap && s.def == other.base_fps_cap); }
+            else if (tgt) { CHECK(s.galileo == gal.target_fps && s.jupiter == jup.target_fps && s.def == other.target_fps); }
+            else CHECK(s.galileo == s.def && s.jupiter == s.def);          // no other setting has a machine default
+        }
+        CHECK(gal.base_fps_cap == 45.0f && gal.target_fps == 90.0f && jup.base_fps_cap == 30.0f && jup.target_fps == 60.0f && other.base_fps_cap == 60.0f && other.target_fps == 120.0f);
+        std::remove(path);
+    }
     // the other direction: every live key of the layer is in the schema (STATS is a measurement switch the panel does not show)
     for (int i = 0; i < n; ++i) {
         if (!std::strcmp(rows[i].name, "STATS")) continue;

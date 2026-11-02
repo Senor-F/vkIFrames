@@ -189,6 +189,7 @@ static Env Bring(void* lib, bool loader_callback = true) {
 
 int main(int, char** argv) {
     ClearFramegenEnv();
+    setenv("VKIFRAME_TARGET_FPS", "60", 1);                       // the test is about a 60 fps output; the built-in default depends on the machine
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
     Env e = Bring(lib);
     VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
