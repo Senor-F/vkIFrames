@@ -37,6 +37,19 @@ ok "contents list covers every file of both archives" '[ "$(wc -l < "$T/a/SHA256
 DX='DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%'
 ok "the tar README has the 32-bit and the DXVK launch options, exactly" 'tar -xzOf "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" "vkIFrames-$VER-linux-x86_64/README.md" > "$T/tar-readme.md" && grep -qF "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%" "$T/tar-readme.md" && grep -qF "$DX" "$T/tar-readme.md"'
 ok "the library in the zip is the one in the tar" 'cmp -s <(tar -xzOf "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" "vkIFrames-$VER-linux-x86_64/libvkIFrames.so") <(unzip -p "$T/a/vkIFrames-decky-$VER.zip" vkIFrames/bin/libvkIFrames.so)'
+# the script is checked against the commit it builds (an older or edited package.sh would give other bytes for the same commit): clean tree = the runs above; a modified
+# package.sh is refused; a modified helper in the working tree changes nothing (the helpers come from the checkout of the commit); the commit itself still works
+cp -a "$T/clone" "$T/clone2"
+echo "# local edit" >> "$T/clone2/scripts/package.sh"
+ok "a modified package.sh (uncommitted) is refused, with the reason" 'out=$("$T/clone2/scripts/package.sh" --lib "$T/lib.so" --out "$T/m" --repo-url "$URL" 2>&1); [ $? -ne 0 ] && echo "$out" | grep -q "differs from the one at commit" && [ ! -e "$T/m/SHA256SUMS" ]'
+git -C "$T/clone2" checkout -q -- scripts/package.sh
+echo "# local edit" >> "$T/clone2/decky/scripts/make-zip.sh"; echo "# local edit" >> "$T/clone2/scripts/check_so.sh"
+ok "a modified helper script in the working tree does not matter: the same bytes" '"$T/clone2/scripts/package.sh" --lib "$T/lib.so" --out "$T/h" --repo-url "$URL" >/dev/null 2>&1 && cmp -s "$T/h/vkIFrames-$VER-linux-x86_64.tar.gz" "$T/a/vkIFrames-$VER-linux-x86_64.tar.gz" && cmp -s "$T/h/vkIFrames-decky-$VER.zip" "$T/a/vkIFrames-decky-$VER.zip"'
+# a package.sh that belongs to another revision than --commit is refused: commit an edit of package.sh, then ask for the commit before it
+git -C "$T/clone2" -c user.name=t -c user.email=t@invalid commit -q -am "wip: helpers"
+echo "# committed edit" >> "$T/clone2/scripts/package.sh"; git -C "$T/clone2" -c user.name=t -c user.email=t@invalid commit -q -am "package.sh changed"
+ok "a package.sh of another revision than --commit is refused" 'out=$("$T/clone2/scripts/package.sh" --lib "$T/lib.so" --out "$T/o" --repo-url "$URL" --commit HEAD~1 2>&1); [ $? -ne 0 ] && echo "$out" | grep -q "differs from the one at commit"'
+ok "... and the same file with its own commit builds" '"$T/clone2/scripts/package.sh" --lib "$T/lib.so" --out "$T/o2" --repo-url "$URL" --commit HEAD >/dev/null 2>&1 && [ -f "$T/o2/SHA256SUMS" ]'
 # refusals, in the clone
 sed -i "s/set(FRAMEGEN_VERSION \"$VER\"/set(FRAMEGEN_VERSION \"$VER-dirty\"/" "$T/clone/CMakeLists.txt"; git -C "$T/clone" -c user.name=t -c user.email=t@invalid commit -q -am "dirty version"
 ok "a -dirty version is refused" '! "$P" --lib "$T/lib.so" --out "$T/c" --repo-url "$URL" >/dev/null 2>&1'

@@ -12,7 +12,7 @@
 # --builder is the command that runs a command inside that environment (distrobox, podman exec, ...); without it the host is used and must be that environment.
 # Every build is configured fresh with the version, commit and commit time passed explicitly, so the same commit gives the same bytes: the library is built
 # twice from two checkouts in two folders and the script stops if they differ (--fast skips the second build).
-# Refuses: a version with "-dirty" or "unknown", a Decky package.json version that differs from the project's, a library that fails scripts/check_so.sh
+# Refuses: a package.sh that differs from the one at the --commit revision, a version with "-dirty" or "unknown", a Decky package.json version that differs from the project's, a library that fails scripts/check_so.sh
 # after strip, scripts that fail shellcheck (shellcheck is required), an archive with an unexpected member.
 # --lib PATH (tests only): use that file as the stripped library, skip the build, strip and library checks; the output is marked NOT FOR RELEASE.
 set -eu
@@ -36,6 +36,11 @@ done
 for t in git tar gzip sha256sum python3; do command -v "$t" >/dev/null || fail "$t not found"; done
 SHA=$(git -C "$ROOT" rev-parse --verify "$REV^{commit}") || fail "unknown commit: $REV"
 SHORT=$(git -C "$ROOT" rev-parse --short=10 "$SHA")
+# This file runs from the clone it was started in, but the archives are built from the checkout of $SHA: the user README of the tar, its NOTICE header and the member checks
+# are written by THIS file. A package.sh that differs from the one at that commit (another branch checked out, an uncommitted edit) gives different bytes for the same
+# commit, so it is refused. (A modified helper script in the working tree does not matter: the helpers are taken from the checkout of $SHA.)
+SELF=$(readlink -f "$0")
+git -C "$ROOT" show "$SHA:scripts/package.sh" 2>/dev/null | cmp -s - "$SELF" || fail "this scripts/package.sh differs from the one at commit $SHORT: run the script from a clean checkout of that commit (git switch --detach $SHORT), or commit the change first"
 CT=$(git -C "$ROOT" log -1 --format=%ct "$SHA")
 VER=$(git -C "$ROOT" show "$SHA:CMakeLists.txt" | sed -n 's/.*set(FRAMEGEN_VERSION "\([^"]*\)".*/\1/p' | head -1)
 [ -n "$VER" ] || fail "no FRAMEGEN_VERSION in CMakeLists.txt at $SHORT"
