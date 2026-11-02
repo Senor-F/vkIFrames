@@ -273,12 +273,12 @@ function Content() {
         </PanelSectionRow>
         <LaunchRow text={LAUNCH_PLAIN} note="Plain" onCopy={() => copy(LAUNCH_PLAIN)} />
         <LaunchRow text={LAUNCH_FULL} note="Plain with %command%" onCopy={() => copy(LAUNCH_FULL)} />
-        <LaunchRow text={LAUNCH_32BIT} note="32-bit games (Proton WOW64)" onCopy={() => copy(LAUNCH_32BIT)} />
-        <LaunchRow text={LAUNCH_DXVK_ONLY} note="DXVK without present timing" onCopy={() => copy(LAUNCH_DXVK_ONLY)} />
+        <LaunchRow text={LAUNCH_32BIT} note="32-bit games (Proton WOW64; not every game works)" onCopy={() => copy(LAUNCH_32BIT)} />
+        <LaunchRow text={LAUNCH_DXVK_ONLY} note="DXVK without present timing (not tested by itself)" onCopy={() => copy(LAUNCH_DXVK_ONLY)} />
         <LaunchRow text={LAUNCH_DXVK} note="DXVK without present timing + 32-bit" onCopy={() => copy(LAUNCH_DXVK)} />
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            No extra frames (seen with Batman: Arkham Asylum on Proton - Experimental)? Try GE-Proton, or the DXVK lines. They turn off present timing in DXVK; tested on one game, may change frame pacing. Remove if the game misbehaves.
+            No extra frames (seen with Batman: Arkham Asylum on Proton - Experimental)? Try GE-Proton, or the last line (tested on one game). The DXVK-only line is not tested. They turn off present timing in DXVK; may change frame pacing. Remove if the game misbehaves.
           </div>
         </PanelSectionRow>
       </PanelSection>
