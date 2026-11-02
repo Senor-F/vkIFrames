@@ -62,6 +62,10 @@ int main() {
         CHECK(j.find("\"gpu_share\":0.22500") != std::string::npos && j.find("\"mode\":\"interp\"") != std::string::npos);
         CHECK(j.front() == '{' && j.back() == '}' && j.find('\n') == std::string::npos);
         CHECK(j.find('/') == std::string::npos);                                         // no path in a record
+        stats::Record c = r; c.cap_wait_ms = 7.25; c.cap_hold_ms = 0.5; c.pid = 4242;    // the base-rate cap's sleeps and the writing process
+        const std::string jc = stats::RecordJson(c, 1700000000);
+        CHECK(jc.find("\"cap_wait_ms\":7.250,\"cap_hold_ms\":0.500,\"pid\":4242}") != std::string::npos);
+        CHECK(j.find("\"cap_wait_ms\":0.000,\"cap_hold_ms\":0.000,\"pid\":0}") != std::string::npos);   // the fields are always there
     }
     // ---- the schedule and the derived numbers ----
     {

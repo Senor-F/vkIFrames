@@ -56,13 +56,13 @@ std::string RecordJson(const Record& r, long long unix_s) {
         "\"cpu_game_ms\":%.4f,\"presenter_core\":%.4f,"
         "\"wait_lock_ms\":%.4f,\"wait_ring_ms\":%.4f,\"wait_fence_ms\":%.4f,\"wait_acquire_ms\":%.4f,\"wait_present_ms\":%.4f,"
         "\"flow_ms\":%.4f,\"pairs_per_s\":%.2f,\"interp_ms\":%.4f,\"generated_per_s\":%.2f,\"gpu_share\":%.5f,"
-        "\"late_mean_ms\":%.3f,\"late_max_ms\":%.3f,\"cancelled\":%llu,\"dropped\":%llu}",
+        "\"late_mean_ms\":%.3f,\"late_max_ms\":%.3f,\"cancelled\":%llu,\"dropped\":%llu,\"cap_wait_ms\":%.3f,\"cap_hold_ms\":%.3f,\"pid\":%ld}",
         unix_s, r.secs, r.mode.c_str(), r.bench.c_str(), r.target_fps, r.refresh_hz, r.native_fps, r.shown_fps, r.gen_per_native,
         (unsigned long long)r.frames, r.ft_mean, r.ft_p95, r.ft_p99, r.ft_max,
         r.cpu_game_ms, r.presenter_core,
         r.wait_lock_ms, r.wait_ring_ms, r.wait_fence_ms, r.wait_acquire_ms, r.wait_present_ms,
         r.flow_ms, r.pairs_per_s, r.interp_ms, r.generated_per_s, r.gpu_share,
-        r.late_mean_ms, r.late_max_ms, (unsigned long long)r.cancelled, (unsigned long long)r.dropped);
+        r.late_mean_ms, r.late_max_ms, (unsigned long long)r.cancelled, (unsigned long long)r.dropped, r.cap_wait_ms, r.cap_hold_ms, r.pid);
 }
 
 // ---------------------------------------------------------------- benchmark

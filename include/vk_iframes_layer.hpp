@@ -391,6 +391,7 @@ struct SwapchainState : std::enable_shared_from_this<SwapchainState> {
     uint64_t cap_next_slot_ns{0}, cap_this_slot_ns{0}, cap_return_ns{0};   // VKIFRAME_BASE_FPS_CAP: next slot of the grid, when the game was handed back to its thread
     double   cap_render_ema_ns{0.0};          // how long the game takes between our return and its next present
     std::atomic<uint64_t> cpu_hook_ns{0}, cpu_presenter_ns{0};   // CPU time (not waiting) of the game thread inside our present, and of the presenter thread (window totals)
+    std::atomic<uint64_t> cap_wait_ns{0}, cap_hold_ns{0}, cap_n{0};   // base-rate cap (window totals): the sleep after a present (late wait), the sleep before it (early hold), presents with the cap on
     std::atomic<uint64_t> wait_acquire_ns{0}, wait_present_ns{0}, native_cnt{0};   // game-thread waits (window totals, see LogRates)
     stats::FrameTimes stat_ft;                // VKIFRAME_STATS: present-to-present intervals of this second (only filled while StatsOn())
     uint64_t stat_prev_ns{0};
