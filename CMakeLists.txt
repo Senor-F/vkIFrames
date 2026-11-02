@@ -123,6 +123,14 @@ target_include_directories(vkIFrames PRIVATE include ${FRAMEGEN_GENERATED_DIR})
 target_compile_definitions(vkIFrames PRIVATE FRAMEGEN_VERSION="${FRAMEGEN_VERSION}" FRAMEGEN_COMMIT="${FRAMEGEN_COMMIT}" FRAMEGEN_COMMIT_TIME="${FRAMEGEN_COMMIT_TIME}")
 add_dependencies(vkIFrames layer_shaders)
 target_link_libraries(vkIFrames PRIVATE Vulkan::Headers Threads::Threads)
+# Hardening that must not depend on the distribution's compiler defaults (Ubuntu's GCC turns most of it on by itself; another one may not). Release builds only:
+# FORTIFY_SOURCE needs optimisation, and the sanitizer builds and the plain developer build are not the shipped binary. scripts/check_so.sh checks the result.
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$" AND NOT FRAMEGEN_SANITIZER AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(vkIFrames PRIVATE -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+        target_compile_options(vkIFrames PRIVATE -fcf-protection=full)      # IBT and shadow-stack markers (a no-op on a CPU or kernel without CET)
+    endif()
+endif()
 target_link_options(vkIFrames PRIVATE -Wl,--no-undefined -Wl,--version-script=${CMAKE_SOURCE_DIR}/scripts/layer.map -Wl,--exclude-libs,ALL)   # only the three entry points are exported
 # Full RELRO: the relocation tables and the PLT's GOT are read-only once the library is loaded (all symbols are bound at load, none lazily). scripts/check_so.sh requires it.
 target_link_options(vkIFrames PRIVATE -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)

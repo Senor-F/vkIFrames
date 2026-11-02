@@ -37,6 +37,15 @@ for n in $needed; do
 done
 readelf -d "$LIB" | grep -E 'RPATH|RUNPATH' >/dev/null && bad "RPATH or RUNPATH is set"
 
+# 3b. compiler hardening that was asked for explicitly in CMakeLists.txt (release builds): stack protector and fortified libc calls were really compiled in
+nm -D --undefined-only "$LIB" | awk '{print $NF}' | grep -q '^__stack_chk_fail' || bad "no __stack_chk_fail import: built without -fstack-protector-strong"
+nm -D --undefined-only "$LIB" | awk '{print $NF}' | grep -Eq '^__[a-z_0-9]+_chk(@|$)' || bad "no fortified (*_chk) libc import: built without _FORTIFY_SOURCE or without optimisation"
+if [ "$(uname -m)" = x86_64 ]; then
+    notes=$(readelf -n "$LIB")
+    printf '%s\n' "$notes" | grep -q 'IBT' || bad "no IBT property note: built without -fcf-protection"
+    printf '%s\n' "$notes" | grep -q 'SHSTK' || bad "no SHSTK property note: built without -fcf-protection"
+fi
+
 # 4. hardening: full RELRO (a GNU_RELRO segment and every symbol bound at load, so the GOT is read-only), no executable stack, no text relocations
 readelf -lW "$LIB" | grep -q 'GNU_RELRO' || bad "no GNU_RELRO segment (link with -z relro)"
 readelf -d "$LIB" | grep -qE '\(BIND_NOW\)|\(FLAGS\).*NOW|\(FLAGS_1\).*NOW' || bad "not bound at load: no BIND_NOW / FLAGS NOW (link with -z now): the GOT stays writable"
