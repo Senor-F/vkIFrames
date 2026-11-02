@@ -523,6 +523,9 @@ PairScheduler::Plan PlanAndCount(SwapchainState& sc, uint64_t now) {
 
 void LogRates(SwapchainState& sc, uint64_t now) {
     auto& r = sc.rates;
+    // The rate gate (the scheduler) works out a plan for every present, also on a swapchain where the layer cannot hold frames (an application present chain it cannot carry, or
+    // a failed GPU step): there nothing is generated. "holding" is what is true; the planned output is only reported when it can happen.
+    const bool holding = sc.gpu && !sc.hold_failed;
     if (r.last_ns == 0) { r = {.last_ns = now}; return; }
     if (now - r.last_ns < 1'000'000'000ull) return;
     const double secs = double(now - r.last_ns) / 1e9;
@@ -531,11 +534,11 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     stats::Record rec;
     {
         const double nat = double(r.native) / secs, shown = double(r.shown) / secs;
-        LiveWriteStatus(nat, shown, nat > 0.5 ? std::max(0, int(std::lround(shown / nat)) - 1) : 0, !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass", sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0, StatsBenchLabel());
+        LiveWriteStatus(nat, shown, nat > 0.5 ? std::max(0, int(std::lround(shown / nat)) - 1) : 0, !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? (holding ? "interp" : "passthru") : "bypass", sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0, StatsBenchLabel());
     }
     FG_LOG_ROUTINE("native %.1f fps -> output %.1f fps (planned) | shown %.1f fps%s | %s | pairs %llu (synthetic %llu) bypass %llu carrier-only %llu dropped %llu | content delay %.1f ms",
-           double(r.native) / secs, double(r.output) / secs, double(r.shown) / secs, sc.gpu ? (GetConfig().extrapolate ? " (extrapolating)" : " (frame holding on)") : "",
-           sc.sched.GateActive() ? "generating" : "bypass",
+           double(r.native) / secs, holding || !sc.sched.GateActive() ? double(r.output) / secs : double(r.native) / secs, double(r.shown) / secs, sc.gpu ? (GetConfig().extrapolate ? " (extrapolating)" : " (frame holding on)") : "",
+           sc.sched.GateActive() ? (holding ? "generating" : "pass-through (frame holding off)") : "bypass",
            (unsigned long long)r.pair, (unsigned long long)r.synthetic, (unsigned long long)r.bypass, (unsigned long long)r.carrier, (unsigned long long)r.dropped,
            sc.sched.ContentDelayNs() / 1e6);
     if (GetConfig().extrapolate) {
@@ -572,7 +575,7 @@ void LogRates(SwapchainState& sc, uint64_t now) {
         }
         if (want_stats) {                                      // VKIFRAME_STATS / benchmark: this second as one record (stats.hpp)
             rec.secs = secs; rec.target_fps = EffectiveTargetFps(double(Live().target_fps.load()), sc.refresh_ns, sc.refresh_vrr); rec.refresh_hz = sc.refresh_ns ? 1e9 / double(sc.refresh_ns) : 0.0;
-            rec.mode = !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? "interp" : "bypass";
+            rec.mode = !Live().enabled.load() ? "off" : GetConfig().extrapolate ? "extrap" : sc.sched.GateActive() ? (holding ? "interp" : "passthru") : "bypass";
             rec.native_fps = double(r.native) / secs; rec.shown_fps = double(r.shown) / secs;
             rec.gen_per_native = rec.native_fps > 0.5 ? std::max(0.0, rec.shown_fps / rec.native_fps - 1.0) : 0.0;
             rec.cpu_game_ms = cpu_hook; rec.presenter_core = cpu_pres;

@@ -96,7 +96,8 @@ function statusLine(status: Record<string, unknown> | null): string {
   if (age > 5) return "No recent status: no game running, or the layer is not loaded.";
   const mode = String(status["mode"] ?? "?");
   const k = Number(status["k"] ?? 0);
-  return `${status["native_fps"]} fps from the game → ${status["output_fps"]} fps shown | ${k} generated per game frame | mode: ${mode}`;
+  const modeText = mode === "passthru" ? "pass-through (frame holding off)" : mode;      // the layer cannot hold frames of this game: nothing is generated
+  return `${status["native_fps"]} fps from the game → ${status["output_fps"]} fps shown | ${k} generated per game frame | mode: ${modeText}`;
 }
 
 function Content() {
