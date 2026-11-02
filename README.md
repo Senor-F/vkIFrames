@@ -23,7 +23,7 @@ vkIFrames adds GPU work: an optical-flow pass for every base frame and an interp
 **Good fit**
 - **CPU-bound games.** The game is limited by its CPU side and the GPU has idle time, which can absorb the layer's work. In one Deck run with a 30 fps cap the game's frame time did not change with the layer on (33.40 ms off, 33.38 ms on; benchmark 1 in STATUS.md). The GPU still does the extra work; only the frame time was unaffected.
 - **Games with a forced frame-rate cap** (an in-engine 30 or 45 fps lock, a locked console port, or a limiter you set yourself): the game cannot go faster, so the extra frames are new. Set the cap to the base rate you want (see "Cap your game" under "Trade-offs to know about") and the Target FPS to the display rate, for example 45 to 90. The layer's own cap already defaults to 45; with an in-game limiter as well, the lower of the two wins.
-- **A base rate of 30 fps or more** is the advice, not a limit in the code: below it the picture is smoother but the added latency is more noticeable (about one base frame; the layer reports it as content delay).
+- **A base rate of 30 fps or more** is the advice, not a limit in the code: below it the added latency is more noticeable (about one base frame, 33 ms at 30 fps and 50 ms at 20 fps; the layer reports it as content delay) and the layer may drop frames at the `VKIFRAME_MAX_SYNTHETIC` limit (see STATUS.md).
 
 **Poor fit**
 - **GPU-bound games.** The layer takes GPU time from the game, so the game's own frame rate falls: in one Deck scene (one run of six off/on pairs) 55.6 fps native calculates to about 43 fps (from the frame times) while 90 fps are shown.
