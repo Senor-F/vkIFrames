@@ -2,7 +2,7 @@
 # Steam launch wrapper for Game Mode tests (non-Steam game or a normal game):
 #   Launch options:  [VKIFRAME_BASE_FPS_CAP=40] /home/deck/vkIFrames/scripts/gamemode_launch.sh %command% [game args]
 # Loads the layer through environment variables and writes everything the layer prints to build/gamemode_<time>.log.
-# Optional env (put before the script path): VKIFRAME_TARGET_FPS (default 60), VKIFRAME_BASE_FPS_CAP, VKIFRAME_PRESENTER=0 ...
+# Optional env (put before the script path): VKIFRAME_TARGET_FPS (default: the layer's own, by machine: 90 Deck OLED, 60 Deck LCD, 120 elsewhere), VKIFRAME_BASE_FPS_CAP, VKIFRAME_PRESENTER=0 ...
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 LOG="$ROOT/build/gamemode_$(date +%Y%m%d_%H%M%S).log"
 mkdir -p "$ROOT/build"
@@ -15,5 +15,4 @@ mkdir -p "$ROOT/build"
 export VK_LAYER_PATH="$ROOT/build${VK_LAYER_PATH:+:$VK_LAYER_PATH}"
 export VK_LOADER_LAYERS_ENABLE=VK_LAYER_CUSTOM_frame_gen
 export VKIFRAME_DUMP_DIR="${VKIFRAME_DUMP_DIR:-${FRAMEGEN_DUMP_DIR:-$ROOT/dump}}"
-export VKIFRAME_TARGET_FPS="${VKIFRAME_TARGET_FPS:-${FRAMEGEN_TARGET_FPS:-60}}"
 exec "$@" >>"$LOG" 2>&1

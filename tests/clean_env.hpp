@@ -12,6 +12,7 @@ inline void ClearFramegenEnv() {
     for (char** e = environ; e && *e; ++e)
         if (std::strncmp(*e, "VKIFRAME_", 9) == 0 || std::strncmp(*e, "FRAMEGEN_", 9) == 0) names.emplace_back(*e, std::strchr(*e, '=') ? size_t(std::strchr(*e, '=') - *e) : std::strlen(*e));
     for (const auto& n : names) unsetenv(n.c_str());
+    setenv("VKIFRAME_DMI_FILE", "/nonexistent/dmi", 1);       // the machine defaults (cap, target) are those of "any other machine", whatever the test runs on
     // The layer's default is the plain blend (optical flow is opt-in): the mock drivers cannot run the flow, so the mock tests exercise the hold / synthetic-frame /
     // pacing plumbing with the default (a test that wants the flow sets VKIFRAME_OPTICAL_FLOW itself after this call).
 }

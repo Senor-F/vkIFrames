@@ -88,6 +88,7 @@ assert "VKIFRAME_EXTRAPOLATE=1" in open(main.LIVE_CONF).read()
 dmi = os.path.join(tmp, "dmi"); main.DMI_PRODUCT = dmi
 for board, cap, tgt in (("Galileo\n", 45, 90), ("Jupiter\n", 30, 60), ("MS-7C94\n", 60, 120), ("", 60, 120)):
     open(dmi, "w").write(board); dd = p._defaults(); assert (dd["BASE_FPS_CAP"], dd["TARGET_FPS"]) == (cap, tgt), (board, dd["BASE_FPS_CAP"], dd["TARGET_FPS"])
+open(dmi, "wb").write(b"\xff\xfe\x80 not text\n"); dd = p._defaults(); assert (dd["BASE_FPS_CAP"], dd["TARGET_FPS"]) == (60, 120)   # a board name that is not UTF-8: the other-machine values, no exception
 main.DMI_PRODUCT = os.path.join(tmp, "missing"); dd = p._defaults(); assert (dd["BASE_FPS_CAP"], dd["TARGET_FPS"]) == (60, 120)
 # settings saved under the old names (warp) are carried over to the new ones
 open(main.SETTINGS_FILE, "w").write(json.dumps({"WARP": 0, "WARP_BIDIR": 1}))

@@ -2,6 +2,9 @@
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -210,15 +213,27 @@ inline const char* EnvVar(const char* name) {
 // 60 Hz) cap 30 / target 60, any other machine cap 60 / target 120. VKIFRAME_BASE_FPS_CAP, VKIFRAME_TARGET_FPS and live.conf override them. The Decky plugin
 // (decky/main.py) and decky/settings_schema.json ("machine_defaults") carry the same table; tests/test_defaults.cpp compares the three.
 struct MachineDefaults { float base_fps_cap; float target_fps; };
-inline MachineDefaults MachineDefaultsFor(const char* dmi_file = "/sys/class/dmi/id/product_name") {
+// The file read is /sys/class/dmi/id/product_name; VKIFRAME_DMI_FILE=<path> names another one (a test hook: the tests point it at a file that is not a Deck, so
+// their results do not depend on the machine they run on). It changes only these defaults.
+inline const char* DmiProductFile() {
+    const char* v = std::getenv("VKIFRAME_DMI_FILE");
+    return v && *v ? v : "/sys/class/dmi/id/product_name";
+}
+inline MachineDefaults MachineDefaultsFor(const char* dmi_file = DmiProductFile()) {
     char name[64] = {};
-    if (FILE* f = std::fopen(dmi_file, "r")) { if (!std::fgets(name, sizeof name, f)) name[0] = 0; std::fclose(f); }
+    // open without blocking and only a regular file is read (a FIFO named by VKIFRAME_DMI_FILE would block fopen forever on the game's first Vulkan call)
+    const int fd = ::open(dmi_file, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd >= 0) {
+        struct stat st {};
+        if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) { const ssize_t n = ::read(fd, name, sizeof name - 1); if (n < 0) name[0] = 0; }
+        ::close(fd);
+    }
     if (std::strncmp(name, "Galileo", 7) == 0) return {45.0f, 90.0f};
     if (std::strncmp(name, "Jupiter", 7) == 0) return {30.0f, 60.0f};
     return {60.0f, 120.0f};
 }
-inline float DefaultTargetFps(const char* dmi_file = "/sys/class/dmi/id/product_name") { return MachineDefaultsFor(dmi_file).target_fps; }
-inline float DefaultBaseFpsCap(const char* dmi_file = "/sys/class/dmi/id/product_name") { return MachineDefaultsFor(dmi_file).base_fps_cap; }
+inline float DefaultTargetFps(const char* dmi_file = DmiProductFile()) { return MachineDefaultsFor(dmi_file).target_fps; }
+inline float DefaultBaseFpsCap(const char* dmi_file = DmiProductFile()) { return MachineDefaultsFor(dmi_file).base_fps_cap; }
 // The target the layer works to: TARGET_FPS, but not above the display's refresh rate. A frame shown above a fixed refresh rate only fills the present
 // queue (more latency, nothing more on screen). A variable-refresh display and an unknown refresh rate (refresh_ns == 0) are not limited.
 inline double EffectiveTargetFps(double target_fps, uint64_t refresh_ns, bool vrr) {

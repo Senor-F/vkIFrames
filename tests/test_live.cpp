@@ -64,6 +64,21 @@ int main() {
         CHECK(is("\n", 60.0f, 120.0f));
         CHECK(is("", 60.0f, 120.0f));
         CHECK(MachineDefaultsFor("/nonexistent/dmi").target_fps == 120.0f && MachineDefaultsFor("/nonexistent/dmi").base_fps_cap == 60.0f);
+        Write(dmi, "Galileo\n"); setenv("VKIFRAME_DMI_FILE", dmi.c_str(), 1);              // the hook: the default argument follows VKIFRAME_DMI_FILE
+        CHECK(MachineDefaultsFor().target_fps == 90.0f && DefaultBaseFpsCap() == 45.0f);
+        setenv("VKIFRAME_DMI_FILE", "/nonexistent/dmi", 1);
+        CHECK(MachineDefaultsFor().target_fps == 120.0f);
+        {   // a FIFO (nobody writes to it), a directory and a missing file: no hang, the other-machine row
+            const std::string fifo = std::string(dir) + "/dmi_fifo";
+            unlink(fifo.c_str()); CHECK(mkfifo(fifo.c_str(), 0600) == 0);
+            setenv("VKIFRAME_DMI_FILE", fifo.c_str(), 1);
+            MachineDefaults f = MachineDefaultsFor(); CHECK(f.target_fps == 120.0f && f.base_fps_cap == 60.0f);
+            setenv("VKIFRAME_DMI_FILE", dir, 1);
+            f = MachineDefaultsFor(); CHECK(f.target_fps == 120.0f && f.base_fps_cap == 60.0f);
+            f = MachineDefaultsFor(fifo.c_str()); CHECK(f.target_fps == 120.0f);
+            setenv("VKIFRAME_DMI_FILE", "/nonexistent/dmi", 1);
+            unlink(fifo.c_str());
+        }
         unlink(dmi.c_str());
     }
     LiveSettings& L = Live();
