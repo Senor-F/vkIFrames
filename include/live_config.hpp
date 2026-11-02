@@ -58,4 +58,5 @@ void LiveBenchAck(long long token);
 void LiveBenchRunning(bool on);              // stats.cpp: a benchmark run starts or ends. While one runs, a live.conf write that changes no setting leaves ENABLED to the run (it switches ENABLED itself)
 bool LiveBenchCancel();                       // true once when bench.req was changed to 0 (the request token went from non-zero to zero): stop a running benchmark
 bool LiveWritePrivate(const char* name, const std::string& text);   // temp + rename, 0600, in the 0700 config folder
+bool LiveFramesAppend(const std::string& line);                            // stats-frames.jsonl (VKIFRAME_STATS_FRAMES=1), same folder, mode and cap as stats.jsonl
 bool LiveStatsAppend(const std::string& line, bool allow_rotate = true);   // allow_rotate=false while a benchmark runs: one run's records stay in one file                      // one line of stats.jsonl

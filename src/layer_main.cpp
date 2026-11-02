@@ -589,8 +589,14 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             rec.dropped = r.dropped;
             rec.cap_wait_ms = cap_wait_ms; rec.cap_hold_ms = cap_hold_ms;
             rec.pid = long(getpid());
+            rec.content_delay_ms = sc.sched.ContentDelayNs() / 1e6;
             rec.flow_ms = flow_ms; rec.pairs_per_s = pairs_s; rec.interp_ms = interp_ms; rec.generated_per_s = gen_s;
             stats::FillDerived(rec, sc.stat_ft);
+        }
+        if (want_stats && GetConfig().stats_frames) {          // every frame time of this second, once, from the vector that already exists (no work in the present path)
+            const float capv = (Live().enabled.load() || StatsBenchActive()) ? Live().base_fps_cap.load() : 0.0f;
+            timespec wts; clock_gettime(CLOCK_REALTIME, &wts);
+            (void)LiveFramesAppend(stats::FramesJson(sc.stat_ft, (long long)wts.tv_sec, capv >= 1.0f ? 1000.0 / double(capv) : 0.0, long(getpid())));
         }
         sc.stat_ft.Clear();
     }

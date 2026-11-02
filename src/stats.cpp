@@ -33,6 +33,7 @@ double FrameTimes::Max() const { return ms.empty() ? 0.0 : *std::max_element(ms.
 void FillDerived(Record& r, const FrameTimes& ft) {
     r.frames = ft.Count();
     r.ft_mean = ft.Mean(); r.ft_p95 = Percentile(ft.ms, 0.95); r.ft_p99 = Percentile(ft.ms, 0.99); r.ft_max = ft.Max();
+    { double ss = 0; for (double v : ft.ms) ss += (v - r.ft_mean) * (v - r.ft_mean); r.ft_std_ms = ft.ms.empty() ? 0.0 : std::sqrt(ss / double(ft.ms.size())); }
     r.gpu_share = (r.pairs_per_s * r.flow_ms + r.generated_per_s * r.interp_ms) / 1000.0;
 }
 
@@ -56,13 +57,20 @@ std::string RecordJson(const Record& r, long long unix_s) {
         "\"cpu_game_ms\":%.4f,\"presenter_core\":%.4f,"
         "\"wait_lock_ms\":%.4f,\"wait_ring_ms\":%.4f,\"wait_fence_ms\":%.4f,\"wait_acquire_ms\":%.4f,\"wait_present_ms\":%.4f,"
         "\"flow_ms\":%.4f,\"pairs_per_s\":%.2f,\"interp_ms\":%.4f,\"generated_per_s\":%.2f,\"gpu_share\":%.5f,"
-        "\"late_mean_ms\":%.3f,\"late_max_ms\":%.3f,\"cancelled\":%llu,\"dropped\":%llu,\"cap_wait_ms\":%.3f,\"cap_hold_ms\":%.3f,\"pid\":%ld}",
+        "\"late_mean_ms\":%.3f,\"late_max_ms\":%.3f,\"cancelled\":%llu,\"dropped\":%llu,\"cap_wait_ms\":%.3f,\"cap_hold_ms\":%.3f,\"ft_std_ms\":%.3f,\"content_delay_ms\":%.3f,\"pid\":%ld}",
         unix_s, r.secs, r.mode.c_str(), r.bench.c_str(), r.target_fps, r.refresh_hz, r.native_fps, r.shown_fps, r.gen_per_native,
         (unsigned long long)r.frames, r.ft_mean, r.ft_p95, r.ft_p99, r.ft_max,
         r.cpu_game_ms, r.presenter_core,
         r.wait_lock_ms, r.wait_ring_ms, r.wait_fence_ms, r.wait_acquire_ms, r.wait_present_ms,
         r.flow_ms, r.pairs_per_s, r.interp_ms, r.generated_per_s, r.gpu_share,
-        r.late_mean_ms, r.late_max_ms, (unsigned long long)r.cancelled, (unsigned long long)r.dropped, r.cap_wait_ms, r.cap_hold_ms, r.pid);
+        r.late_mean_ms, r.late_max_ms, (unsigned long long)r.cancelled, (unsigned long long)r.dropped, r.cap_wait_ms, r.cap_hold_ms, r.ft_std_ms, r.content_delay_ms, r.pid);
+}
+
+std::string FramesJson(const FrameTimes& ft, long long unix_s, double slot_ms, long pid) {
+    std::string s = Fmt("{\"t\":%lld,\"pid\":%ld,\"slot_ms\":%.3f,\"us\":[", unix_s, pid, slot_ms);
+    for (size_t i = 0; i < ft.ms.size(); ++i) { char b[24]; std::snprintf(b, sizeof b, i ? ",%lld" : "%lld", (long long)std::llround(ft.ms[i] * 1000.0)); s += b; }
+    s += "]}";
+    return s;
 }
 
 // ---------------------------------------------------------------- benchmark

@@ -509,13 +509,10 @@ bool LiveWritePrivate(const char* name, const std::string& text) {
     return true;
 }
 
-// One line appended to stats.jsonl (0600, private folder, no symlink). One old file is kept when it grows past 8 MB.
-bool LiveStatsAppend(const std::string& line, bool allow_rotate) {
-    static std::mutex mu;
-    static FILE* f = nullptr;
-    static unsigned n = 0;
-    std::lock_guard<std::mutex> l(mu);
-    const std::string dir = ConfDir(), path = dir + "/stats.jsonl";
+// One line appended to a file of the config folder (0600, private folder, no symlink). One old file is kept when it grows past the cap (8 MiB).
+namespace {
+bool AppendCapped(const char* name, FILE*& f, unsigned& n, const std::string& line, bool allow_rotate) {
+    const std::string dir = ConfDir(), path = dir + "/" + name;
     if (dir.empty() || !MakePrivateDir(dir)) return false;
     if (allow_rotate && f && (++n % 60) == 0) {                                   // about every minute: check the size
         struct stat st;
@@ -529,6 +526,21 @@ bool LiveStatsAppend(const std::string& line, bool allow_rotate) {
     if (!f) return false;
     std::fputs(line.c_str(), f); std::fputc('\n', f); std::fflush(f);
     return true;
+}
+}  // namespace
+
+// One line appended to stats.jsonl.
+bool LiveStatsAppend(const std::string& line, bool allow_rotate) {
+    static std::mutex mu; static FILE* f = nullptr; static unsigned n = 0;
+    std::lock_guard<std::mutex> l(mu);
+    return AppendCapped("stats.jsonl", f, n, line, allow_rotate);
+}
+
+// One line appended to stats-frames.jsonl (VKIFRAME_STATS_FRAMES=1: every frame time of a second).
+bool LiveFramesAppend(const std::string& line) {
+    static std::mutex mu; static FILE* f = nullptr; static unsigned n = 0;
+    std::lock_guard<std::mutex> l(mu);
+    return AppendCapped("stats-frames.jsonl", f, n, line, true);
 }
 
 void LiveWriteStatus(double native_fps, double shown_fps, int k, const char* mode, double refresh_hz, const char* bench) {
