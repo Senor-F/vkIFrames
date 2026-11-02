@@ -31,6 +31,14 @@ LAYER_DIR="$DATA_HOME/vulkan/implicit_layer.d"
 MANIFEST="$LAYER_DIR/VkLayer_frame_gen.json"
 LIB_DST="$LIB_DIR/libvkIFrames.so"
 
+# --- the symbolic-link rule (the same text in install.sh and uninstall.sh; tests/test_install.sh compares them) -----------------------------------------
+# The scripts write into and remove from three folders: the library folder, $DATA_HOME/vulkan and $DATA_HOME/vulkan/implicit_layer.d. None of them may be
+# a symbolic link (a file path through a link would reach a folder that was never meant: rm -f and mv follow links in the folders above the file). $DATA_HOME
+# itself may be a link: XDG_DATA_HOME on another disk is the user's own choice. first_link prints the first of the given folders that is a link and returns 0.
+first_link() { local d; for d in "$@"; do if [ -L "$d" ]; then printf '%s' "$d"; return 0; fi; done; return 1; }
+# --- end of the rule ---------------------------------------------------------------------------------------------------------------------------------
+if bad=$(first_link "$LIB_DIR" "$DATA_HOME/vulkan" "$LAYER_DIR"); then fail "$bad is a symbolic link; refusing to write through it (nothing is changed)"; fi
+
 # --- find the library and the manifest template -------------------------------------------------------------------------------------------
 if [ -n "$USE" ]; then SRC=$USE
 elif [ -f "$ROOT/libvkIFrames.so" ]; then SRC=$ROOT/libvkIFrames.so             # release folder

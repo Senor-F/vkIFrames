@@ -93,6 +93,30 @@ ok "uninstall --purge --yes refuses a relative XDG_CONFIG_HOME (exit 1) and remo
 ok "uninstall refuses a relative XDG_DATA_HOME (exit 1)" '(cd "$T/cwd" && XDG_DATA_HOME=rel "$REL/scripts/uninstall.sh" >/dev/null 2>&1; [ $? -eq 1 ])'
 ok "nothing was created under the relative folder" '[ ! -e "$T/cwd/rel/vulkan" ] && [ ! -e "$T/cwd/rel/vkiframes/libvkIFrames.so" ]'
 
+# 7d. a symbolic link in the path: install refuses and changes nothing, uninstall removes nothing through it, and both scripts use the same rule text
+rule_text() { sed -n '/^# --- the symbolic-link rule/,/^# --- end of the rule/p' "$1"; }
+ok "install.sh and uninstall.sh carry the same link rule" '[ -n "$(rule_text "$REPO/scripts/install.sh")" ] && [ "$(rule_text "$REPO/scripts/install.sh")" = "$(rule_text "$REPO/scripts/uninstall.sh")" ]'
+sums() { find "$1" -type f -print0 | sort -z | xargs -0 sha256sum; }
+for LINK in .local/share/vkiframes .local/share/vulkan .local/share/vulkan/implicit_layer.d; do
+    N=$(echo "$LINK" | tr / _); HL="$T/hl$N"; TG="$T/tgt$N"
+    mkdir -p "$HL/.local/share" "$TG/implicit_layer.d"                       # whichever folder the link points at holds files with the layer's names
+    for f in libvkIFrames.so .libvkIFrames.so.stale VkLayer_frame_gen.json implicit_layer.d/VkLayer_frame_gen.json; do echo keep > "$TG/$f"; done
+    case "$LINK" in
+        .local/share/vkiframes) ln -s "$TG" "$HL/.local/share/vkiframes" ;;
+        .local/share/vulkan) ln -s "$TG" "$HL/.local/share/vulkan" ;;
+        *) mkdir -p "$HL/.local/share/vulkan"; ln -s "$TG" "$HL/.local/share/vulkan/implicit_layer.d" ;;
+    esac
+    # shellcheck disable=SC2034  # used inside the eval strings of ok()
+    before=$(sums "$TG")
+    ok "install refuses a link at $LINK (exit 1)" 'HOME="$HL" "$REL/scripts/install.sh" >/dev/null 2>&1; [ $? -eq 1 ]'
+    ok "... and nothing behind it changed" '[ "$(sums "$TG")" = "$before" ]'
+    ok "uninstall with a link at $LINK exits 1" 'HOME="$HL" "$REL/scripts/uninstall.sh" >/dev/null 2>&1; [ $? -eq 1 ]'
+    ok "... and removed nothing behind it" '[ "$(sums "$TG")" = "$before" ]'
+done
+# a link at XDG_DATA_HOME itself is the user's choice and works
+XL="$T/xdgreal"; mkdir -p "$XL"; ln -s "$XL" "$T/xdglink"
+ok "XDG_DATA_HOME itself may be a link (install, uninstall)" 'XDG_DATA_HOME="$T/xdglink" "$REL/scripts/install.sh" >/dev/null && [ -f "$XL/vkiframes/libvkIFrames.so" ] && XDG_DATA_HOME="$T/xdglink" "$REL/scripts/uninstall.sh" >/dev/null && [ ! -e "$XL/vkiframes" ]'
+
 # 8. syntax
 ok "bash -n install.sh" 'bash -n "$REPO/scripts/install.sh"'
 ok "bash -n uninstall.sh" 'bash -n "$REPO/scripts/uninstall.sh"'

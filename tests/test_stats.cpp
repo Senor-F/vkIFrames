@@ -254,6 +254,27 @@ int main() {
         StatsBenchAbort("the game closed its swapchain");
         CHECK(!StatsBenchActive() && Live().enabled.load() == 1);
     }
+    // bench.json is built whole, whatever the length of the reason text, and a bench.json that cannot be written is reported
+    {
+        const std::string bj = std::string(dir) + "/vkiframes/bench.json", lg = std::string(dir) + "/vkiframes/live.log";
+        auto run_and_abort = [&](const char* token, const std::string& reason) {
+            Put(req, std::string(token) + "\n"); Poll();
+            stats::Record r = Second(true); StatsOnSecond(r, g_now);
+            for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }
+            CHECK(StatsBenchActive());
+            StatsBenchAbort(reason.c_str());
+        };
+        const std::string reason = std::string(3000, 'r') + "END";
+        run_and_abort("1700000005", reason);
+        const std::string j = Slurp(bj);
+        CHECK(j.find(reason) != std::string::npos && j.size() > 3000 && j.compare(j.size() - 2, 2, "}\n") == 0);      // the whole text and a closed object (a fixed buffer cut it)
+        unlink(bj.c_str());                                                                    // a folder in the place of bench.json: the rename cannot succeed
+        CHECK(::mkdir(bj.c_str(), 0700) == 0 && ::mkdir((bj + "/x").c_str(), 0700) == 0);
+        run_and_abort("1700000006", "short");
+        CHECK(Slurp(lg).find("bench.json could NOT be written") != std::string::npos);
+        CHECK(!StatsBenchActive() && Live().enabled.load() == 1);                              // the run still ended and ENABLED is back
+        rmdir((bj + "/x").c_str()); rmdir(bj.c_str());
+    }
     // STATS=1 alone: records, no run
     Put(conf, "REV=6\nSTATS=1\n");
     Poll();

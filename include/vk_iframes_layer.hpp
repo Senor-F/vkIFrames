@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -140,7 +141,7 @@ struct DeviceDispatch {
     bool             sync2{false};              // synchronization2 is enabled and its entry points resolve (needed to capture and hold)
     std::vector<uint32_t> queue_families;       // families the device was created with
     std::mutex       fence_mu;                  // held_fences: application present fences of frames the layer is holding
-    std::vector<std::pair<uint64_t, struct SwapchainState*>> held_fences;
+    std::vector<std::pair<uint64_t, std::weak_ptr<struct SwapchainState>>> held_fences;   // weak: a fence-wait thread takes a shared_ptr under fence_mu, so the state outlives its flush even when the swapchain is destroyed meanwhile
     bool             timing_supported{false};   // present timing + present id 2 + calibrated timestamps are enabled on this device
 #define X(name) PFN_vk##name name{};
     FRAMEGEN_DEVICE_FUNCS(X)
@@ -309,7 +310,7 @@ template <class T> struct AtomicPtr {
     T& operator*() const { return *p.load(std::memory_order_acquire); }
 };
 
-struct SwapchainState {
+struct SwapchainState : std::enable_shared_from_this<SwapchainState> {
     VkSwapchainKHR handle{};
     std::mutex flow_mu;                       // the hold/pair/flush logic of one swapchain (present hook, fence and present-wait hooks)
     std::atomic<uint64_t> last_present_ns{0}, acquire_wait_since_ns{0}, wait_present_since_ns{0}, wait_present_id{0};   // watchdog
@@ -378,7 +379,8 @@ void UnregisterInstance(void* key);
 void UnregisterDevice(void* key);
 
 SwapchainState* RegisterSwapchain(VkSwapchainKHR handle);   // replaces any state under the same handle
-SwapchainState* FindSwapchain(VkSwapchainKHR handle);
+SwapchainState* FindSwapchain(VkSwapchainKHR handle);   // no ownership: only for the thread that owns the swapchain's use (present, acquire, destroy)
+std::shared_ptr<SwapchainState> FindSwapchainShared(VkSwapchainKHR handle);
 void            DestroySwapchainState(VkSwapchainKHR handle);
 
 // Every queue gets a mutex: vkQueueSubmit/Present/... on one queue must not overlap between the game thread and our presenter.

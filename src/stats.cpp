@@ -1,4 +1,5 @@
 #include "stats.hpp"
+#include <cstdarg>
 
 #include "live_config.hpp"
 #include "vk_iframes_layer.hpp"
@@ -35,9 +36,21 @@ void FillDerived(Record& r, const FrameTimes& ft) {
     r.gpu_share = (r.pairs_per_s * r.flow_ms + r.generated_per_s * r.interp_ms) / 1000.0;
 }
 
+// printf into a std::string of the size it needs: bench.json is written whole, whatever the length of the reason text or the numbers.
+static std::string Fmt(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static std::string Fmt(const char* fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt); va_copy(ap2, ap);
+    const int n = std::vsnprintf(nullptr, 0, fmt, ap);
+    va_end(ap);
+    std::string out;
+    if (n > 0) { out.resize(size_t(n) + 1); std::vsnprintf(out.data(), out.size(), fmt, ap2); out.resize(size_t(n)); }
+    va_end(ap2);
+    return out;
+}
+
 std::string RecordJson(const Record& r, long long unix_s) {
-    char b[1400];
-    std::snprintf(b, sizeof b,
+    return Fmt(
         "{\"t\":%lld,\"secs\":%.3f,\"mode\":\"%s\",\"bench\":\"%s\",\"target_fps\":%.1f,\"refresh_hz\":%.2f,\"native_fps\":%.2f,\"shown_fps\":%.2f,\"gen_per_native\":%.3f,"
         "\"frames\":%llu,\"ft_mean_ms\":%.3f,\"ft_p95_ms\":%.3f,\"ft_p99_ms\":%.3f,\"ft_max_ms\":%.3f,"
         "\"cpu_game_ms\":%.4f,\"presenter_core\":%.4f,"
@@ -50,7 +63,6 @@ std::string RecordJson(const Record& r, long long unix_s) {
         r.wait_lock_ms, r.wait_ring_ms, r.wait_fence_ms, r.wait_acquire_ms, r.wait_present_ms,
         r.flow_ms, r.pairs_per_s, r.interp_ms, r.generated_per_s, r.gpu_share,
         r.late_mean_ms, r.late_max_ms, (unsigned long long)r.cancelled, (unsigned long long)r.dropped);
-    return b;
 }
 
 // ---------------------------------------------------------------- benchmark
@@ -169,25 +181,20 @@ std::string Bench::Json() const {
     const Agg off = Aggregate(false), on = Aggregate(true);
     const bool ok = state_ == State::Complete && off.seconds > 0 && on.seconds > 0;
     auto agg = [](const Agg& a) {
-        char b[900];
-        std::snprintf(b, sizeof b,
+        return Fmt(
             "{\"seconds\":%d,\"frames\":%llu,\"frame_time_mean_ms\":%.3f,\"frame_time_p95_ms\":%.3f,\"frame_time_p99_ms\":%.3f,\"frame_time_max_ms\":%.3f,"
             "\"native_fps\":%.2f,\"shown_fps\":%.2f,\"game_cpu_ms_per_frame\":%.4f,\"presenter_core_share\":%.4f,\"game_wait_ms_per_frame\":%.4f,"
             "\"gpu_share\":%.5f,\"gpu_flow_share\":%.5f,\"gpu_interp_share\":%.5f,\"flow_ms_per_pair\":%.4f,\"interp_ms_per_generated\":%.4f}",
             a.seconds, (unsigned long long)a.frames, a.ft_mean, a.ft_p95, a.ft_p99, a.ft_max, a.native_fps, a.shown_fps, a.cpu_game_ms, a.presenter_core, a.wait_game_ms,
             a.gpu_share, a.gpu_flow_share, a.gpu_interp_share, a.flow_ms, a.interp_ms);
-        return std::string(b);
     };
     const char* status = state_ == State::Complete ? "complete" : state_ == State::Aborted ? "aborted" : "idle";
-    std::string j;
-    char b[1500];
-    std::snprintf(b, sizeof b,
+    std::string j = Fmt(
         "{\n\"version\":1,\n\"status\":\"%s\",\n\"reason\":\"%s\",\n"
         "\"notes\":\"generated_per_s and interp_ms count interpolation passes: the pass draws every shown frame (k + 1 per native frame, k = gen_per_native). By default every one of them is a synthetic frame: SYNTH_MARGIN (0.15) keeps t away from 0 and 1, so the frame at the start of a pair is a synthetic one, not the native frame. With SYNTH_MARGIN=0 that frame is the native frame itself and costs no pass. A 60 s segment has about 59 one-second records: 2 settle, about 57 counted, and one at the switch that belongs to neither. layer_cost_pairs_ms is on minus off for each pair; layer_cost_within_noise compares the mean with the 95 %% t interval of the pairs. async_gain_upper_bound_ms equals the layer cost and is NOT an achievable gain: in a GPU-bound game the cost is the layer own GPU time, which a second queue does not remove.\",\n"
         "\"schedule\":{\"warmup_s\":%.0f,\"segment_s\":%.0f,\"repeats\":%d,\"settle_s_left_out_per_segment\":%.0f,\"order\":\"warm-up (layer on), then pairs of segments, off then on in the first pair and on then off in the second, and so on\"},\n"
         "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"cmd_buffers\":%d,\"flow_level\":%d,\"synth_margin\":%.2f,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
         status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, cmd_buffers_, flow_level_, synth_margin_, refresh_);
-    j += b;
     j += "\"off\":" + agg(off) + ",\n\"on\":" + agg(on) + ",\n\"derived\":";
     if (!ok) {
         j += "null\n}\n";
@@ -203,11 +210,10 @@ std::string Bench::Json() const {
     char spread[200];
     if (sp.n >= 2) std::snprintf(spread, sizeof spread, "\"layer_cost_pairs_mean_ms\":%.3f,\"layer_cost_se_ms\":%.3f,\"layer_cost_within_noise\":%s", sp.mean, sp.se, sp.within_noise ? "true" : "false");
     else           std::snprintf(spread, sizeof spread, "\"layer_cost_pairs_mean_ms\":%.3f,\"layer_cost_se_ms\":null,\"layer_cost_within_noise\":null", sp.mean);
-    std::snprintf(b, sizeof b,
+    j += Fmt(
         "{\"layer_cost_mean_ms\":%.3f,\"layer_cost_p95_ms\":%.3f,\"layer_cost_p99_ms\":%.3f,\"layer_cost_pairs_ms\":%s,%s,\"gpu_share\":%.5f,\"flow_share_of_gpu\":%.4f,"
         "\"game_cpu_ms_per_frame\":%.4f,\"presenter_core_share\":%.4f,\"async_gain_upper_bound_ms\":%.3f}\n}\n",
         cost, on.ft_p95 - off.ft_p95, on.ft_p99 - off.ft_p99, pairs.c_str(), spread, gpu, gpu > 0 ? on.gpu_flow_share / gpu : 0.0, on.cpu_game_ms, on.presenter_core, cost);
-    j += b;
     return j;
 }
 
@@ -223,7 +229,8 @@ std::atomic<int> g_bench_active{0};
 std::string g_last_state;                              // "", done, aborted (for status.json)
 
 void Finish(bool restore) {
-    LiveWritePrivate("bench.json", g_bench.Json());
+    const bool written = LiveWritePrivate("bench.json", g_bench.Json());
+    if (!written) FG_LOG("benchmark: bench.json could NOT be written (config folder missing, not private or not writable): the numbers are in stats.jsonl; the panel and scripts/vkiframes-bench.sh show an older bench.json or none");
     const bool complete = g_bench.GetState() == stats::Bench::State::Complete;
     if (restore) Live().enabled = g_bench.Restore();
     g_bench_active = 0; LiveBenchRunning(false);

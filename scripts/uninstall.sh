@@ -24,19 +24,32 @@ CONF_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 [ "${DATA_HOME#/}" != "$DATA_HOME" ] || { echo "$ME: XDG_DATA_HOME is not an absolute path" >&2; exit 1; }
 [ "${CONF_HOME#/}" != "$CONF_HOME" ] || { echo "$ME: XDG_CONFIG_HOME is not an absolute path" >&2; exit 1; }
 CONF_DIR="$CONF_HOME/vkiframes"
-MANIFEST="$DATA_HOME/vulkan/implicit_layer.d/VkLayer_frame_gen.json"
+LAYER_DIR="$DATA_HOME/vulkan/implicit_layer.d"
+MANIFEST="$LAYER_DIR/VkLayer_frame_gen.json"
 LIB_DIR="$DATA_HOME/vkiframes"
 rc=0
+
+# --- the symbolic-link rule (the same text in install.sh and uninstall.sh; tests/test_install.sh compares them) -----------------------------------------
+# The scripts write into and remove from three folders: the library folder, $DATA_HOME/vulkan and $DATA_HOME/vulkan/implicit_layer.d. None of them may be
+# a symbolic link (a file path through a link would reach a folder that was never meant: rm -f and mv follow links in the folders above the file). $DATA_HOME
+# itself may be a link: XDG_DATA_HOME on another disk is the user's own choice. first_link prints the first of the given folders that is a link and returns 0.
+first_link() { local d; for d in "$@"; do if [ -L "$d" ]; then printf '%s' "$d"; return 0; fi; done; return 1; }
+# --- end of the rule ---------------------------------------------------------------------------------------------------------------------------------
 rm_file() {   # a regular file or a symlink at that path (unlink never follows)
     if [ -e "$1" ] || [ -L "$1" ]; then
         if rm -f -- "$1"; then echo "removed $1"; else echo "$ME: could not remove $1" >&2; rc=1; fi
     else echo "not present: $1"; fi
 }
 
-rm_file "$MANIFEST"
-rm_file "$LIB_DIR/libvkIFrames.so"
-rm -f -- "$LIB_DIR"/.libvkIFrames.so.* 2>/dev/null || true       # a temporary copy left by an interrupted install
-if [ -d "$LIB_DIR" ] && [ ! -L "$LIB_DIR" ] && rmdir "$LIB_DIR" 2>/dev/null; then echo "removed $LIB_DIR"; fi
+# a link in the path: nothing is removed through it (the rest is still done), and the exit code says so
+if bad=$(first_link "$DATA_HOME/vulkan" "$LAYER_DIR"); then echo "$ME: $bad is a symbolic link; the manifest is not removed through it (remove $MANIFEST yourself if it is yours)" >&2; rc=1
+else rm_file "$MANIFEST"; fi
+if bad=$(first_link "$LIB_DIR"); then echo "$ME: $bad is a symbolic link; the library is not removed through it (remove its libvkIFrames.so yourself if it is yours)" >&2; rc=1
+else
+    rm_file "$LIB_DIR/libvkIFrames.so"
+    rm -f -- "$LIB_DIR"/.libvkIFrames.so.* 2>/dev/null || true       # a temporary copy left by an interrupted install
+    if [ -d "$LIB_DIR" ] && rmdir "$LIB_DIR" 2>/dev/null; then echo "removed $LIB_DIR"; fi
+fi
 
 echo "left in place:"
 left=0
