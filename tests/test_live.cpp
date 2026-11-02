@@ -200,6 +200,14 @@ int main() {
         Write(conf, "REV=32\nTARGET_FPS=75\n"); Touch(conf, 64); Poll();
     }
 
+    // REV is only logged; a value that is not a whole number is ignored and said so, it is not read as a prefix or as 0 or as a wrapped number
+    Write(conf, "REV=40\nTARGET_FPS=75\n"); Touch(conf, 66); Poll();
+    Write(conf, "REV=12abc\nTARGET_FPS=76\n"); Touch(conf, 68); Poll();
+    Write(conf, "REV=99999999999999999999999\nTARGET_FPS=77\n"); Touch(conf, 70); Poll();
+    Write(conf, "REV=-5\nTARGET_FPS=78\n"); Touch(conf, 72); Poll();
+    CHECK(L.target_fps == 78.0f);                                 // the settings in those files still applied
+    Write(conf, "REV=41\nTARGET_FPS=75\n"); Touch(conf, 74); Poll();
+
     unlink(conf.c_str());                                         // removing the file reverts everything
     Poll();
     CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8 && L.synth_margin == 0.15f);
@@ -207,6 +215,8 @@ int main() {
     const std::string text = Slurp(log);
     CHECK(text.find("startup setting EXTRAPOLATE=1") != std::string::npos);
     CHECK(text.find("session start") != std::string::npos);
+    CHECK(text.find("REV=\"12abc\" is not a whole number") != std::string::npos && text.find("REV=\"99999999999999999999999\" is not a whole number") != std::string::npos && text.find("REV=\"-5\" is not a whole number") != std::string::npos);
+    CHECK(text.find("REV 40,") != std::string::npos && text.find("REV 41,") != std::string::npos);            // the last good number stays, then the next good one
     CHECK(text.find("CHANGE TARGET_FPS: 90 -> 60") != std::string::npos);
     CHECK(text.find("CHANGE ENABLED: 1 -> 0") != std::string::npos);
     CHECK(text.find("clamped to the range") != std::string::npos);
