@@ -25,6 +25,31 @@ endif()
 message(STATUS "vkIFrames ${FRAMEGEN_VERSION}, commit ${FRAMEGEN_COMMIT}, commit time ${FRAMEGEN_COMMIT_TIME}")
 add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=.)   # no build folder in the binary
 
+# Developer builds with a sanitizer (never the release binary; package.sh does not pass this):
+#   -DFRAMEGEN_SANITIZER=address   AddressSanitizer + UndefinedBehaviorSanitizer
+#   -DFRAMEGEN_SANITIZER=thread    ThreadSanitizer
+# The C++ runtime stays dynamic then (the sanitizers want the shared runtime), and every ctest test runs with the options below; see README, "Sanitizer builds".
+set(FRAMEGEN_SANITIZER "" CACHE STRING "Developer builds only: address (ASan+UBSan) or thread (TSan); empty = none")
+if(FRAMEGEN_SANITIZER)
+    if(NOT FRAMEGEN_SANITIZER MATCHES "^(address|thread)$")
+        message(FATAL_ERROR "FRAMEGEN_SANITIZER must be address or thread (or empty)")
+    endif()
+    set(FRAMEGEN_STATIC_RUNTIME OFF CACHE BOOL "Link libstdc++ and libgcc statically" FORCE)
+    if(FRAMEGEN_SANITIZER STREQUAL "address")
+        add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g)
+        add_link_options(-fsanitize=address,undefined)
+    else()
+        add_compile_options(-fsanitize=thread -g)
+        add_link_options(-fsanitize=thread)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12)
+            # GCC 11's libtsan does not know pthread_cond_clockwait, which std::condition_variable::wait_for/wait_until use with libstdc++ 11: every condition-variable
+            # wait looked like a "double lock" and the data it guards like a race. Telling libstdc++ not to use it (plain pthread_cond_timedwait) removes those false reports.
+            file(WRITE ${CMAKE_BINARY_DIR}/tsan_gcc11_condvar.h "#include <bits/c++config.h>\n#undef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT\n")
+            add_compile_options(-include ${CMAKE_BINARY_DIR}/tsan_gcc11_condvar.h)
+        endif()
+    endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -100,7 +125,7 @@ target_link_libraries(vkIFrames PRIVATE Vulkan::Headers Threads::Threads)
 target_link_options(vkIFrames PRIVATE -Wl,--no-undefined -Wl,--version-script=${CMAKE_SOURCE_DIR}/scripts/layer.map -Wl,--exclude-libs,ALL)   # only the three entry points are exported
 # The C++ runtime is linked statically (release): the layer then needs no libstdc++/libgcc_s from the host or the game's container, and its runtime
 # symbols stay hidden. Only glibc is a dependency (floor GLIBC_2.34). Turn it off for sanitizer builds (ASan wants the shared runtime).
-option(FRAMEGEN_STATIC_RUNTIME "Link libstdc++ and libgcc statically" ON)
+option(FRAMEGEN_STATIC_RUNTIME "Link libstdc++ and libgcc statically" ON)   # (forced OFF by FRAMEGEN_SANITIZER)
 if(FRAMEGEN_STATIC_RUNTIME)
     target_link_options(vkIFrames PRIVATE -static-libstdc++ -static-libgcc)
 endif()
@@ -206,6 +231,8 @@ if(FRAMEGEN_BUILD_TESTS)
     find_program(FRAMEGEN_PYTHON python3)
     if(FRAMEGEN_PYTHON)
         add_test(NAME script_plugin_agreement COMMAND ${FRAMEGEN_PYTHON} -I ${CMAKE_SOURCE_DIR}/decky/tests/test_script_agreement.py)
+        add_test(NAME decky_backend COMMAND ${FRAMEGEN_PYTHON} -I ${CMAKE_SOURCE_DIR}/decky/tests/test_backend.py)
+        add_test(NAME decky_ancestor_symlinks COMMAND ${FRAMEGEN_PYTHON} -I ${CMAKE_SOURCE_DIR}/decky/tests/test_ancestor_symlinks.py)
     endif()
     add_executable(test_stats tests/test_stats.cpp src/stats.cpp src/live_config.cpp)
     target_include_directories(test_stats PRIVATE include ${FRAMEGEN_GENERATED_DIR})
@@ -236,6 +263,19 @@ if(FRAMEGEN_BUILD_TESTS)
     # keep the tests out of the user's ~/.config/vkiframes/live.log
     set_tests_properties(live_config mock_loader mock_timing mock_hold mock_synth mock_extrap mock_pacer PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg")
     set_tests_properties(stats_bench PROPERTIES ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_BINARY_DIR}/xdg-stats")
+    if(FRAMEGEN_SANITIZER)
+        # Options for every test. ASan: no leak report (the layer leaves a few objects on purpose when a presenter thread is detached at exit); UBSan stops at the first finding.
+        # TSan: tests/tsan.supp hides the races on the mock drivers' own recording variables (the mock functions m_* run on the presenter thread, the test reads the records
+        # afterwards); every other report fails the test (exitcode 66).
+        get_property(_all_tests DIRECTORY PROPERTY TESTS)
+        foreach(_t ${_all_tests})
+            if(FRAMEGEN_SANITIZER STREQUAL "address")
+                set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:exitcode=66" "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:exitcode=66")
+            else()
+                set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/tsan.supp:exitcode=66:second_deadlock_stack=1")
+            endif()
+        endforeach()
+    endif()
 endif()
 
 # offline scoring of interpolation methods on captured frames (tools/interp_eval); not part of the layer

@@ -3,6 +3,11 @@
 Writes the layer's live config file and installs/uninstalls the Vulkan layer manifest.
 Standard library only (Decky runs a frozen Python).
 Live config protocol: see LIVECONF.md.
+
+Observed on a Deck (Decky Loader 3.3.1, plugin.json `"flags": []`): the backend runs as the user, and the plugin's files, live.conf and settings are owned by
+the user. A setup could still start it as root, so the file code is written for that case too: every folder the user controls is reached folder by folder with
+O_NOFOLLOW from the home folder down (see _open_dir), nothing is created, written, chmodded, chowned or removed through a symbolic link anywhere below the
+home folder, and what the backend creates is given to the user.
 """
 import asyncio
 import errno
@@ -95,31 +100,9 @@ def _layer_running():
         return False
 
 
-def _log(msg):
-    """One line in live.log (the layer writes there too): wall-clock time, 'plugin', the message."""
-    try:
-        _private_dir(CONF_DIR)
-        t = time.time()
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
-        try:                                                   # live.log is capped like the layer's copy of it: past 8 MiB it becomes live.log.1 (one old file is kept)
-            st0 = os.lstat(LIVE_LOG)
-            if stat.S_ISREG(st0.st_mode) and st0.st_size > LOG_CAP_BYTES and not _layer_running():
-                os.replace(LIVE_LOG, LIVE_LOG + ".1")
-        except FileNotFoundError:
-            pass
-        fd = os.open(LIVE_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            st = os.fstat(fd)
-            if stat.S_ISREG(st.st_mode) and (st.st_mode & 0o077):      # open() sets the mode only on creation: a file an older version left at 0644 is tightened
-                os.fchmod(fd, 0o600)
-            f.write("%s plugin  %s\n" % (stamp, msg))
-        _give_to_user(LIVE_LOG)
-    except OSError:
-        pass
-
-
 def _owner():
-    """uid/gid of the user whose home this is. Decky runs the backend as root; the game runs as that user and the layer ignores files owned by anyone else."""
+    """uid/gid of the user whose home this is. Observed: the backend runs as that user (Decky Loader 3.3.1, flags []). The code stays safe if a setup starts
+    it as root: it then writes only into folders the user owns, never follows a symbolic link below the home folder, and gives what it creates to the user."""
     try:
         st = os.stat(USER_HOME)
         return st.st_uid, st.st_gid
@@ -127,65 +110,101 @@ def _owner():
         return None
 
 
-def _give_to_user(path):
+def _give_to_user_fd(fd):
     own = _owner()
-    if own and os.geteuid() == 0 and path.startswith(USER_HOME.rstrip("/") + "/"):
+    if own and os.geteuid() == 0:
         try:
-            os.chown(path, own[0], own[1], follow_symlinks=False)
+            os.fchown(fd, own[0], own[1])
         except OSError:
             pass
 
 
-def _makedirs(path, mode=0o755):
-    """Like os.makedirs, but every folder created under the user's home belongs to that user."""
-    todo = []
-    p = path
-    while p and not os.path.isdir(p):
-        todo.append(p)
-        p = os.path.dirname(p)
-    for d in reversed(todo):
-        try:
-            os.mkdir(d, mode)
-        except FileExistsError:
-            pass
-        _give_to_user(d)
-
-
-def _real_dir(path):
-    """Raises OSError unless `path` is a real directory (not a symlink) owned by the user or root. Root writes into these folders, so a symlink
-    planted in place of one (or a folder of another user) must not be followed."""
-    st = os.lstat(path)
+def _open_dir(path, create=False, mode=0o755, private=False):
+    """An open file descriptor for the folder `path`, which must be the home folder or below it. Every component below the home folder is opened with
+    O_NOFOLLOW|O_DIRECTORY relative to the one before it: a symbolic link anywhere in the path (also an ancestor such as ~/.local/share) is refused with an
+    OSError, and nothing is created, chmodded, chowned or unlinked through it. Each folder must belong to the user (or root). The home folder itself may be
+    reached through a link (/home may be a link on some systems). With create, missing folders are made (the last one with `mode`, or 0700 with `private`;
+    the ones above it 0755) and given to the user when the backend runs as root; private also sets the last folder to 0700. Callers do every file operation
+    relative to the returned descriptor and close it."""
+    home = USER_HOME.rstrip("/") or "/"
+    rel = os.path.relpath(path, home)
+    if rel == ".":
+        parts = []
+    elif rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
+        raise OSError(errno.EINVAL, "not inside the home folder: %s" % path)
+    else:
+        parts = rel.split(os.sep)
     own = _owner()
-    if not stat.S_ISDIR(st.st_mode):
-        raise OSError(errno.ENOTDIR, "not a real directory (a symlink or a file): %s" % path)
-    if st.st_uid not in ({own[0]} if own else set()) | {0, os.geteuid()}:
-        raise OSError(errno.EPERM, "folder belongs to another user: %s" % path)
+    allowed = ({own[0]} if own else set()) | {0, os.geteuid()}
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            try:
+                nfd = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, (0o700 if private else mode) if last else 0o755, dir_fd=fd)
+                    if own and os.geteuid() == 0:
+                        os.chown(part, own[0], own[1], dir_fd=fd, follow_symlinks=False)
+                except FileExistsError:
+                    pass
+                nfd = os.open(part, flags, dir_fd=fd)
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise OSError(errno.ELOOP, "a symbolic link or not a folder: %s" % os.path.join(home, *parts[:i + 1]))
+                raise
+            os.close(fd)
+            fd = nfd
+            if os.fstat(fd).st_uid not in allowed:
+                raise OSError(errno.EPERM, "folder belongs to another user: %s" % os.path.join(home, *parts[:i + 1]))
+        if private and parts and own:
+            try:
+                if os.fstat(fd).st_uid == own[0]:                  # only a folder of the user: a root-owned folder that was already there keeps its mode
+                    os.fchmod(fd, 0o700)
+            except OSError:
+                pass
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_any_dir(path, create=False):
+    """Like _open_dir for a folder under the home folder (the plugin's settings folder lives in ~/homebrew/settings on a Deck: a link anywhere on the way is
+    refused). A folder outside the home folder (only in tests) is Decky's own location and is opened as given."""
+    home = USER_HOME.rstrip("/") or "/"
+    rel = os.path.relpath(path, home)
+    if not (rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel)):
+        return _open_dir(path, create=create)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
 
 
 def _private_dir(path):
-    """A folder only the user can enter (config, data): created 0700, owned by the user. Raises OSError if the path is a symlink, not a folder
-    or belongs to someone else: the callers then write nothing there (root must not follow the link or change the mode of its target)."""
-    _makedirs(path, 0o700)
-    _real_dir(path)
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)       # ELOOP for a symlink
-        try:
-            os.fchmod(fd, 0o700)
-        finally:
-            os.close(fd)
-    except OSError:
-        pass
-    _give_to_user(path)
+    """A folder only the user can enter (config, data): created 0700, owned by the user. Raises OSError if any part of the path below the home folder is a
+    symbolic link, is not a folder or belongs to someone else: the callers then write nothing there."""
+    os.close(_open_dir(path, create=True, private=True))
 
 
 def _read_user_file(path, limit=None, tail=None):
-    """Bytes of a regular file in the user's folders, or None. Root reads these, so a symlink in their place is refused (O_NOFOLLOW), as is
-    anything that is not a regular file or belongs to neither the user nor root. With a limit, a bigger file is refused (None); with a tail,
+    """Bytes of a regular file in the user's folders, or None. A symlink in the path or as the file is refused (every component is opened with O_NOFOLLOW),
+    as is anything that is not a regular file or belongs to neither the user nor root. With a limit, a bigger file is refused (None); with a tail,
     only the last `tail` bytes are read."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        dfd = _open_any_dir(os.path.dirname(path))
     except OSError:
         return None
+    try:
+        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=dfd)
+    except OSError:
+        return None
+    finally:
+        os.close(dfd)
     try:
         st = os.fstat(fd)
         own = _owner()
@@ -203,49 +222,88 @@ def _read_user_file(path, limit=None, tail=None):
         os.close(fd)
 
 
+def _log(msg):
+    """One line in live.log (the layer writes there too): wall-clock time, 'plugin', the message."""
+    try:
+        dfd = _open_dir(CONF_DIR, create=True, private=True)
+    except OSError:
+        return
+    try:
+        name = os.path.basename(LIVE_LOG)
+        t = time.time()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
+        try:                                                   # live.log is capped like the layer's copy of it: past 8 MiB it becomes live.log.1 (one old file is kept)
+            st0 = os.lstat(name, dir_fd=dfd)
+            if stat.S_ISREG(st0.st_mode) and st0.st_size > LOG_CAP_BYTES and not _layer_running():
+                os.replace(name, name + ".1", src_dir_fd=dfd, dst_dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        fd = os.open(name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode) and (st.st_mode & 0o077):      # open() sets the mode only on creation: a file an older version left at 0644 is tightened
+                os.fchmod(fd, 0o600)
+            f.write("%s plugin  %s\n" % (stamp, msg))
+            _give_to_user_fd(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
 def _clean_stale_tmp():
     """Temporary files an earlier version (or a crash) left next to the settings: 'name.tmp.<pid>'. Regular files only, in our own folders."""
     for d in (CONF_DIR, SETTINGS_DIR):
         try:
-            names = os.listdir(d)
+            dfd = _open_any_dir(d)
         except OSError:
             continue
-        for n in names:
-            if ".tmp." in n and n.rsplit(".", 1)[-1].isdigit():
-                p = os.path.join(d, n)
-                try:
-                    if stat.S_ISREG(os.lstat(p).st_mode):
-                        os.unlink(p)
-                except OSError:
-                    pass
+        try:
+            for n in os.listdir(dfd):
+                if ".tmp." in n and n.rsplit(".", 1)[-1].isdigit():
+                    try:
+                        if stat.S_ISREG(os.lstat(n, dir_fd=dfd).st_mode):
+                            os.unlink(n, dir_fd=dfd)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        finally:
+            os.close(dfd)
 
 
-def _atomic_write(path, text, user_dir=True):
-    _makedirs(os.path.dirname(path))
-    if user_dir:
-        _real_dir(os.path.dirname(path))                  # a symlink in place of the folder is refused, nothing is written
-    # (Decky reloading the plugin while the old process still runs would share this name; unlink + O_EXCL below fail closed, no file is overwritten in place)
-    tmp = path + ".tmp"                                   # one fixed name (this process is the only writer): a crash leaves at most one file, which the next write replaces
+def _atomic_write(path, text, user_dir=True, dir_mode=0o700):
+    """Writes `text` to `path` by a temporary file in the same folder and a rename. With user_dir (the user's folders under the home folder) the folder is
+    reached through _open_dir: no symbolic link in the path is followed, and the temporary file, the mode, the owner and the rename are all relative to the
+    folder's descriptor. Without it, `path` is in the plugin's own settings folder (Decky's)."""
+    d, name = os.path.dirname(path), os.path.basename(path)
+    dfd = _open_dir(d, create=True, mode=dir_mode) if user_dir else _open_any_dir(d, create=True)
     try:
-        os.unlink(tmp)                                    # a leftover or planted file (or symlink) at the temporary name goes; unlink never follows
-    except FileNotFoundError:
-        pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-        os.fchmod(f.fileno(), 0o644 if path == MANIFEST else 0o600)   # the Vulkan loader reads the manifest; everything else is private
-    _give_to_user(tmp)
-    os.replace(tmp, path)  # atomic: the layer never sees a half-written file
+        # (Decky reloading the plugin while the old process still runs would share this name; unlink + O_EXCL below fail closed, no file is overwritten in place)
+        tmp = name + ".tmp"                                   # one fixed name (this process is the only writer): a crash leaves at most one file, which the next write replaces
+        try:
+            os.unlink(tmp, dir_fd=dfd)                        # a leftover or planted file (or symlink) at the temporary name goes; unlink never follows
+        except FileNotFoundError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+            os.fchmod(f.fileno(), 0o644 if path == MANIFEST else 0o600)   # the Vulkan loader reads the manifest; everything else is private
+            _give_to_user_fd(f.fileno())
+        os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)  # atomic: the layer never sees a half-written file
+    finally:
+        os.close(dfd)
 
 
 def _check_library(path):
-    """A library the manifest will point at is loaded into every game: it must be a .so owned by the user (or root) that nobody else can write."""
+    """A library the manifest will point at is loaded into every game: it must be a .so owned by the user (or root) that nobody else can write. Returns the real
+    path that was checked (the caller writes that one into the manifest, not the name it was given, which could be repointed after the check)."""
     real = os.path.realpath(path)
     if not re.search(r"\.so(\.[0-9]+)*$", os.path.basename(real)):     # libx.so, libx.so.1, libx.so.1.2 (not x.so.txt)
         raise ValueError("not a shared library (.so): %s" % path)
-    if any(c in path for c in '"\\\n\r') or any(ord(c) < 32 for c in path):
+    if any(c in real for c in '"\\\n\r') or any(ord(c) < 32 for c in real):
         raise ValueError("unsafe characters in the library path")
     st = os.stat(real)
     own = _owner()
@@ -253,6 +311,7 @@ def _check_library(path):
         raise ValueError("library is owned by another user: %s" % path)
     if st.st_mode & 0o022:
         raise ValueError("library is writable by group or others: %s" % path)
+    return real
 
 
 class Plugin:
@@ -266,10 +325,10 @@ class Plugin:
     # ---- screen refresh rate -> upper end of the Target FPS slider ---------
     def _load_display(self):
         try:
-            with open(DISPLAY_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f)
+            raw = _read_user_file(DISPLAY_FILE, 65536)
+            d = json.loads(raw.decode("utf-8", errors="replace")) if raw is not None else None
             self.refresh_hz, self.refresh_src = float(d["refresh_hz"]), "saved"
-        except (OSError, ValueError, KeyError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             pass
 
     def _target_max(self):
@@ -330,9 +389,11 @@ class Plugin:
         vals = self._defaults()
         RENAMED = {"WARP": "INTERPOLATE", "WARP_BIDIR": "INTERP_BIDIR"}   # saved by an older version of the plugin
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-        except (OSError, ValueError):
+            raw = _read_user_file(SETTINGS_FILE, 1048576)             # no symbolic link on the way, only the user's own regular file
+            saved = json.loads(raw.decode("utf-8", errors="replace")) if raw is not None else None
+        except ValueError:
+            return vals
+        if saved is None:
             return vals
         if not isinstance(saved, dict):
             return vals
@@ -357,7 +418,10 @@ class Plugin:
                  "REV=%d" % self.rev]
         for item in self._schema():
             lines.append("%s%s=%s" % (PREFIX, item["key"], self.values[item["key"]]))
-        _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n", user_dir=False)    # the plugin's own folder: always
+        try:
+            _atomic_write(SETTINGS_FILE, json.dumps(self.values, indent=2) + "\n", user_dir=False)    # the plugin's own folder
+        except OSError as e:                                # a link on the way to it, or no write access: the settings are not kept for the next start, live.conf still is
+            decky.logger.error("settings.json not written: %s", e)
         try:
             _private_dir(CONF_DIR)
             _atomic_write(LIVE_CONF, "\n".join(lines) + "\n")
@@ -462,10 +526,10 @@ class Plugin:
     def _layer_info(self):
         lib = None
         try:
-            with open(MANIFEST, "r", encoding="utf-8") as f:
-                lib = json.load(f)["layer"]["library_path"]
-        except (OSError, ValueError, KeyError):
-            pass
+            raw = _read_user_file(MANIFEST, 65536)                 # no symbolic link in the path, nothing but the user's own regular file
+            lib = json.loads(raw.decode("utf-8", errors="replace"))["layer"]["library_path"] if raw is not None else None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            lib = None
         return {
             "installed": lib is not None and os.path.exists(lib),
             "manifest": MANIFEST,
@@ -479,27 +543,30 @@ class Plugin:
         if lib_path:
             if not os.path.isabs(lib_path) or not os.path.isfile(lib_path):
                 raise ValueError("library not found: %s" % lib_path)
-            _check_library(lib_path)
-            target = lib_path
+            target = _check_library(lib_path)               # the real path that was checked goes into the manifest, not the name that could be repointed afterwards
         else:
             if not os.path.exists(BUNDLED_LIB):
                 raise ValueError("no libvkIFrames.so bundled in the plugin's bin/ folder")
             try:
-                _private_dir(DATA_DIR)
+                dfd = _open_dir(DATA_DIR, create=True, private=True)     # no symbolic link anywhere below the home folder; every step below is relative to dfd
             except OSError as e:
                 raise ValueError("the data folder is not a private folder of the user: %s" % e)
-            tmp = INSTALLED_LIB + ".new"
             try:
-                os.unlink(tmp)                               # a leftover or planted file (or symlink) goes; unlink never follows
-            except FileNotFoundError:
-                pass
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o755)
-            with os.fdopen(fd, "wb") as out, open(BUNDLED_LIB, "rb") as src:
-                shutil.copyfileobj(src, out)
-                out.flush()
-                os.fchmod(out.fileno(), 0o755)
-            _give_to_user(tmp)
-            os.replace(tmp, INSTALLED_LIB)
+                final = os.path.basename(INSTALLED_LIB)
+                tmp = final + ".new"
+                try:
+                    os.unlink(tmp, dir_fd=dfd)                       # a leftover or planted file (or symlink) goes; unlink never follows
+                except FileNotFoundError:
+                    pass
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o755, dir_fd=dfd)
+                with os.fdopen(fd, "wb") as out, open(BUNDLED_LIB, "rb") as src:
+                    shutil.copyfileobj(src, out)
+                    out.flush()
+                    os.fchmod(out.fileno(), 0o755)
+                    _give_to_user_fd(out.fileno())
+                os.replace(tmp, final, src_dir_fd=dfd, dst_dir_fd=dfd)
+            finally:
+                os.close(dfd)
             target = INSTALLED_LIB
         manifest = {
             "file_format_version": "1.1.2",
@@ -519,16 +586,22 @@ class Plugin:
                 "disable_environment": {"VKIFRAME_DISABLE": "1"},
             },
         }
-        _atomic_write(MANIFEST, json.dumps(manifest, indent=2) + "\n")
+        _atomic_write(MANIFEST, json.dumps(manifest, indent=2) + "\n", dir_mode=0o755)
         decky.logger.info("layer manifest written, library %s", target)
         return self._layer_info()
 
     def _remove_layer(self):
-        for p in (MANIFEST, INSTALLED_LIB):
+        for p in (MANIFEST, INSTALLED_LIB, INSTALLED_LIB + ".new"):
             try:
-                os.remove(p)
+                dfd = _open_dir(os.path.dirname(p))                  # a symbolic link anywhere in the path: nothing is removed through it
+            except OSError:
+                continue
+            try:
+                os.unlink(os.path.basename(p), dir_fd=dfd)
             except OSError:
                 pass
+            finally:
+                os.close(dfd)
 
     async def uninstall_layer(self):
         self._remove_layer()
