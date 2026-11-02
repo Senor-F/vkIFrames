@@ -130,7 +130,9 @@ Run \`scripts/install.sh\` as your normal user. It copies the library to \`~/.lo
 
 ## Use
 Add this to a game's launch options (Steam: Properties, General): \`VKIFRAME_ENABLE=1 %command%\`. Without it the layer does nothing. \`VKIFRAME_DISABLE=1\` switches it off for one launch.
-Settings and logs live in \`~/.config/vkiframes/\` (live.conf, live.log, status.json). 32-bit games need \`PROTON_USE_WOW64=1\` too (see the full documentation).
+Settings and logs live in \`~/.config/vkiframes/\` (live.conf, live.log, status.json).
+32-bit games: \`PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%\`.
+If the layer loads but shows no extra frames (seen with Batman: Arkham Asylum on Proton - Experimental), try GE-Proton, or \`DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%\` (tested on one game, a short run; it may change the game's frame pacing; remove it if the game misbehaves).
 
 ## Remove
 \`scripts/uninstall.sh\` removes the library and the manifest; \`scripts/uninstall.sh --purge\` also deletes \`~/.config/vkiframes\` (it asks first).

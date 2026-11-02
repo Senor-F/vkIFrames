@@ -51,6 +51,7 @@ const startBench = callable<[], { token: number }>("start_bench");
 const LAUNCH_PLAIN = "VKIFRAME_ENABLE=1";
 const LAUNCH_FULL = "VKIFRAME_ENABLE=1 %command%";
 const LAUNCH_32BIT = "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%";   // 32-bit games: Proton runs them inside a 64-bit process, so the 64-bit layer can load
+const LAUNCH_DXVK = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%';   // Proton - Experimental, game loads the layer but gets no extra frames: DXVK stops using present timing (a workaround, tested in one game)
 
 function describeValue(item: SchemaItem, v: number): string {
   if ((item.key === "BASE_FPS_CAP" || item.key === "UI_MASK_THRESHOLD") && v === 0) return "off";
@@ -275,6 +276,16 @@ function Content() {
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
             32-bit games need the third one: the layer is 64-bit, and PROTON_USE_WOW64=1 runs the game in a 64-bit process (Proton 10 or Experimental). Tested in one game only (Tomb Raider (2013)); not every 32-bit game works.
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => copy(LAUNCH_DXVK)}>
+            Copy if no extra frames appear (Proton - Experimental): {LAUNCH_DXVK}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.75 }}>
+            If the layer loads but shows no extra frames (seen with Batman: Arkham Asylum on Proton - Experimental), try GE-Proton, or this launch option. It disables present timing in DXVK; tested on one game, may change the game's frame pacing. Remove it if the game misbehaves.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
