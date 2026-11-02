@@ -12,7 +12,6 @@ home folder, and what the backend creates is given to the user.
 import asyncio
 import errno
 import json
-import math
 import re
 import os
 import shutil
@@ -42,7 +41,7 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 SCHEMA_FILE = os.path.join(PLUGIN_DIR, "settings_schema.json")
 DMI_PRODUCT = "/sys/class/dmi/id/product_name"   # "Galileo" = Steam Deck OLED (90 Hz), "Jupiter" = LCD (60 Hz)
 DISPLAY_FILE = os.path.join(SETTINGS_DIR, "display.json")   # last refresh rate seen (from the layer or xrandr)
-TARGET_FLOOR = 120   # the Target FPS slider reaches at least this, or the screen's refresh rate when that is higher
+TARGET_MAX = 600   # the Target FPS slider reaches this: the layer's own limit (a higher value would be clamped by the layer), whatever the screen's refresh rate
 PREFIX = "VKIFRAME_"   # the layer also accepts the old FRAMEGEN_ spelling
 
 
@@ -332,10 +331,10 @@ class Plugin:
             pass
 
     def _target_max(self):
-        return max(TARGET_FLOOR, int(math.ceil(self.refresh_hz)))
+        return TARGET_MAX
 
     def _schema(self, status=None):
-        """The schema with the Target FPS maximum set to the higher of 120 and the screen's refresh rate."""
+        """The schema, with the Target FPS maximum the layer's own limit (600)."""
         schema = _load_schema()
         for item in schema:
             if item["key"] == "TARGET_FPS":
@@ -352,13 +351,12 @@ class Plugin:
             hz = await asyncio.to_thread(_xrandr_hz)
             src = "xrandr"
         if hz > 0 and (round(hz, 1) != round(self.refresh_hz, 1) or src != self.refresh_src):
-            old = self._target_max()
             self.refresh_hz, self.refresh_src = hz, src
             try:
                 _atomic_write(DISPLAY_FILE, json.dumps({"refresh_hz": hz, "source": src}) + "\n", user_dir=False)
             except OSError:
                 pass
-            _log("display: refresh rate %.1f Hz (%s); Target FPS slider now reaches %d (was %d)" % (hz, src, self._target_max(), old))
+            _log("display: refresh rate %.1f Hz (%s)" % (hz, src))
 
     async def _main(self):
         _clean_stale_tmp()

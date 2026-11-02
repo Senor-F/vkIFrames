@@ -24,7 +24,7 @@ enum Key { kEnabled, kTargetFps, kMaxSynthetic, kBaseFpsCap, kMinGain, kPhaseLoc
 
 struct KeyInfo { const char* name; bool toggle; double lo, hi; };   // ranges as in settings_schema.json on the decky-plugin branch
 constexpr KeyInfo kInfo[kKeys] = {
-    {"ENABLED", true, 0, 1}, {"TARGET_FPS", false, 30, 1000}, {"MAX_SYNTHETIC", false, 1, kLiveMaxSyntheticNormal}, {"BASE_FPS_CAP", false, 0, 90},
+    {"ENABLED", true, 0, 1}, {"TARGET_FPS", false, 30, 600}, {"MAX_SYNTHETIC", false, 1, kLiveMaxSyntheticNormal}, {"BASE_FPS_CAP", false, 0, 240},
     {"MIN_GAIN", false, 1.01, 1.5}, {"PHASE_LOCK", true, 0, 1}, {"PHASE_OFFSET", false, 0.0, 0.999}, {"INTERP_BIDIR", true, 0, 1}, {"CMD_BUFFERS", false, 4, 32}, {"SYNTH_MARGIN", false, 0.0, 0.45},
     {"STATS", true, 0, 1},
 };

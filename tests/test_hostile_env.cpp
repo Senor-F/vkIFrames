@@ -40,9 +40,9 @@ int main(int argc, char** argv) {
         CHECK(c.synth_margin == d.synth_margin && c.phase_offset == d.phase_offset && c.min_gain == d.min_gain && c.ui_mask == d.ui_mask);
         CHECK(c.conf_lo == d.conf_lo && c.conf_hi == d.conf_hi && c.pan_lo == d.pan_lo && c.pan_hi == d.pan_hi);
         CHECK(c.interp_guide == d.interp_guide && c.cand_thr == d.cand_thr);
-        CHECK(c.target_fps == 1000.0f);
+        CHECK(c.target_fps == 600.0f);
         CHECK(c.base_fps_cap == 0.0f);
-        CHECK(Live().base_fps_cap.load() == 0.0f && Live().target_fps.load() == 1000.0f);
+        CHECK(Live().base_fps_cap.load() == 0.0f && Live().target_fps.load() == 600.0f);
     } else if (mode == "c") {
         // whole-number and on/off settings follow the same rule as the float ones: not a number = ignored (the default stays), a number is clamped
         setenv("VKIFRAME_FLOW_LEVEL", "nan", 1);
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
         setenv("VKIFRAME_PAN_HI", "1e-1", 1);
         const Config& c = GetConfig();
         CHECK(c.target_fps == 1.0f);
-        CHECK(c.base_fps_cap == 90.0f);
+        CHECK(c.base_fps_cap == 240.0f);
         CHECK(c.synth_margin == 0.45f && c.min_gain == 1.5f && c.pan_hi == 0.1f);
     }
     std::fflush(stderr);

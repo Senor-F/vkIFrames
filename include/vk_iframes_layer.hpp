@@ -304,13 +304,13 @@ inline const Config& GetConfig() {
         // VKIFRAME_LOG_FILE=<path>: append everything the layer prints (and the game's own stderr) to that file; for runs without the launch script
         if (const char* v = EnvVar("LOG_FILE"); v && *v) { FILE* r_ = std::freopen(v, "a", stderr); (void)r_; }
         else (void)LiveLogOpen();                     // default: one log, ~/.config/vkiframes/live.log, shared with the settings changes
-        EnvNumber("TARGET_FPS", 1.0, 1000.0, c.target_fps);
+        EnvNumber("TARGET_FPS", 1.0, 600.0, c.target_fps);
         EnvNumber("SYNTH_MARGIN", 0.0, 0.45, c.synth_margin);
         EnvNumber("PHASE_OFFSET", 0.0, 0.999, c.phase_offset);
         EnvFlag("PHASE_LOCK", c.phase_lock);
         EnvNumber("MIN_GAIN", 1.01, 2.0, c.min_gain);
         EnvInt("MAX_SYNTHETIC", 1, 10, c.max_synthetic);
-        EnvNumber("BASE_FPS_CAP", 0.0, 90.0, c.base_fps_cap);
+        EnvNumber("BASE_FPS_CAP", 0.0, 240.0, c.base_fps_cap);
         if (c.base_fps_cap < 1.0f) c.base_fps_cap = 0.0f;                      // below 1 fps is not a cap anybody means: off (a 1/x second sleep per frame would freeze the game)
         EnvFlag("HOLD", c.hold);
         EnvFlag("SYNTH", c.synth);
