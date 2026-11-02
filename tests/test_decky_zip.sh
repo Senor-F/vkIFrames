@@ -16,6 +16,9 @@ ok "byte-identical" 'cmp -s "$T/a/$Z" "$T/b/$Z"'
 ok "package.json inside has the project version" '[ "$(unzip -p "$T/a/$Z" vkIFrames/package.json | python3 -I -c "import json,sys; print(json.load(sys.stdin)[\"version\"])")" = "$VERSION" ]'
 ok "the repository package.json has it too" '[ "$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))[\"version\"])" "$REPO/decky/package.json")" = "$VERSION" ]'
 ok "plugin.json has name, author, flags, api_version and no root flag" 'unzip -p "$T/a/$Z" vkIFrames/plugin.json | python3 -I -c "import json,sys; d=json.load(sys.stdin); assert d[\"name\"] and d[\"author\"] and d[\"api_version\"]==1 and \"root\" not in d[\"flags\"]"'
+# shellcheck disable=SC2034
+DX='DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%'
+ok "the zip README has the 32-bit and the DXVK launch options, exactly" 'unzip -p "$T/a/$Z" vkIFrames/README.md > "$T/zip-readme.md" && grep -qF "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%" "$T/zip-readme.md" && grep -qF "$DX" "$T/zip-readme.md"'
 ok "main.py compiles" 'unzip -p "$T/a/$Z" vkIFrames/main.py > "$T/main.py" && python3 -I -m py_compile "$T/main.py"'
 ok "library mode 755, others 644, one top folder" 'python3 -I -c "
 import zipfile,sys
