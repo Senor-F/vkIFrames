@@ -44,7 +44,7 @@ Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `stat
 | same Deck | a 2D side-scrolling shooter (45 fps cap, 90 fps target) | works |
 | Radeon RX 9070 desktop (RADV), SteamOS | a test application only; no game run with the layer | works for the test application |
 
-All runs started from Steam in Game Mode with Proton; Desktop Mode is not verified.
+Game runs for the table started from Steam in Game Mode with Proton. Desktop Mode was checked once, with one game: the layer reported 90 fps shown and KWin's "Show FPS" effect also counted 90, while the Steam overlay's counter showed 45, the game's own rate. If the Steam overlay shows the base rate in Desktop Mode, check with KWin's "Show FPS" effect before concluding that the layer does nothing. The layer reads the refresh rate from the Vulkan driver (`VK_EXT_present_timing`). If the distribution's Vulkan driver does not offer that extension, as on the Steam Deck today, `refresh_hz` shows 0 in Game Mode and Desktop Mode alike, and the refresh-rate limit on `TARGET_FPS` does not apply; set `TARGET_FPS` yourself.
 
 ## Reporting a problem
 
