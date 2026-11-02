@@ -12,6 +12,7 @@
 #include <mutex>
 #include <new>
 #include <thread>
+#include <unistd.h>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -581,6 +582,9 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             rec.cpu_game_ms = cpu_hook; rec.presenter_core = cpu_pres;
             rec.wait_lock_ms = w_lock; rec.wait_ring_ms = w_ring; rec.wait_fence_ms = w_fence; rec.wait_acquire_ms = w_acq; rec.wait_present_ms = w_pres;
             rec.dropped = r.dropped;
+            { const double cn = std::max<double>(1.0, double(sc.cap_n.exchange(0)));          // per present with the cap on: the late wait (after the present) and the early hold (before it)
+              rec.cap_wait_ms = double(sc.cap_wait_ns.exchange(0)) / 1e6 / cn; rec.cap_hold_ms = double(sc.cap_hold_ns.exchange(0)) / 1e6 / cn; }
+            rec.pid = long(getpid());
             rec.flow_ms = flow_ms; rec.pairs_per_s = pairs_s; rec.interp_ms = interp_ms; rec.generated_per_s = gen_s;
             stats::FillDerived(rec, sc.stat_ft);
         }
@@ -966,8 +970,9 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
     if (cap_fps > 0.0f) {
         cap_slot_ns = uint64_t(1e9 / cap_fps);
         const uint64_t now0 = NowNs();
+        ++sc->cap_n;
         if (cfg.cap_early) {
-            if (sc->cap_next_slot_ns > now0) SleepUntilNs(sc->cap_next_slot_ns);
+            if (sc->cap_next_slot_ns > now0) { SleepUntilNs(sc->cap_next_slot_ns); sc->cap_hold_ns += NowNs() - now0; }
             sc->cap_next_slot_ns = std::max(sc->cap_next_slot_ns + cap_slot_ns, now0);   // never accumulates debt after a stall
         } else {
             if (sc->cap_return_ns) {                                                       // how long the game took from our return to this present
@@ -1097,7 +1102,7 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
     if (sc->frames % 300 == 0) FG_LOG("vkQueuePresentKHR (frame %llu)", (unsigned long long)sc->frames);
     if (cap_slot_ns && !cfg.cap_early) {                        // hold the game back until it should start the frame that will be presented on the next slot
         const double lead = 1.2 * sc->cap_render_ema_ns;
-        if (double(sc->cap_next_slot_ns) > lead) { const uint64_t until = uint64_t(double(sc->cap_next_slot_ns) - lead); if (until > NowNs()) SleepUntilNs(until); }
+        if (double(sc->cap_next_slot_ns) > lead) { const uint64_t until = uint64_t(double(sc->cap_next_slot_ns) - lead); if (until > NowNs()) { const uint64_t t0 = NowNs(); SleepUntilNs(until); sc->cap_wait_ns += NowNs() - t0; } }
         sc->cap_return_ns = NowNs();
     }
     return r;
