@@ -9,3 +9,6 @@ keeps its own BSD 3-Clause license (see decky/LICENSE).
 The SPIR-V shaders embedded in the library are compiled from the project's own
 GLSL sources in shaders/ (glslangValidator is a build tool, not part of the
 library).
+
+The library links the GCC C++ runtime (libstdc++) and libgcc statically
+(version 11.4, GPL-3.0 with the GCC Runtime Library Exception).

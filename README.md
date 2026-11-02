@@ -145,6 +145,8 @@ For each native frame the game presents, the layer:
 
 The math and module breakdown are in [DESIGN.md](DESIGN.md).
 
+**Where the method comes from.** It is built on standard, published techniques for motion estimation and motion-compensated interpolation (image pyramid, block matching with sub-pixel refinement, forward/backward consistency, flow-guided blending). The layer and the shaders were written for this project. To our knowledge, no code was taken from another frame-generation project.
+
 ### Extrapolation mode (lower latency)
 
 Interpolation needs the *next* native frame before it can show anything in between, so it adds about one native frame of delay (68 ms at 15 fps, about 24 ms at 45 fps). With `VKIFRAME_EXTRAPOLATE=1` nothing is held back: the newest native frame is shown on the next output slot and the slots until the following frame show that frame moved forward along its own backward flow. Added delay drops to under one output frame (about 11 ms at 90 Hz). The price is prediction errors: wrong guesses are visible when a real frame replaces them, and appearing or reversing motion cannot be predicted. Opt-in and experimental. Offline, on captured start / stop / reversal frames the prediction rarely overshoots (the fallbacks turn it back into repeating the newest frame), but then it also gains nothing; the gain is on steady motion (error 33–44 % lower). The log line `extrapolation: predicted frames not shown …` counts predicted frames that were cancelled before their slot and how late the native frame went out.
