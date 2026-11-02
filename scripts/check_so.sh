@@ -1,5 +1,5 @@
 #!/bin/sh
-# Release checks on the layer library: exports, imports, glibc floor, no C++ runtime dependency, no personal strings.
+# Release checks on the layer library: exports, imports, glibc floor, no C++ runtime dependency, hardening (full RELRO, bind now, no executable stack), no personal strings.
 # usage: scripts/check_so.sh path/to/libvkIFrames.so      exit 0 = all checks pass, 1 = at least one failed, 2 = usage / tool missing
 set -u
 LIB=${1:-}
@@ -32,7 +32,13 @@ needed=$(readelf -d "$LIB" | awk '/NEEDED/ {gsub(/[][]/,"",$NF); print $NF}')
 echo "$needed" | grep -E 'libstdc\+\+|libgcc_s' >/dev/null && bad "NEEDED lists the C++ runtime or libgcc_s: $(printf '%s' "$needed" | tr '\n' ' ')"
 readelf -d "$LIB" | grep -E 'RPATH|RUNPATH' >/dev/null && bad "RPATH or RUNPATH is set"
 
-# 4. no personal strings: home folders, the user name, the host name
+# 4. hardening: full RELRO (a GNU_RELRO segment and every symbol bound at load, so the GOT is read-only), no executable stack, no text relocations
+readelf -lW "$LIB" | grep -q 'GNU_RELRO' || bad "no GNU_RELRO segment (link with -z relro)"
+readelf -d "$LIB" | grep -qE '\(BIND_NOW\)|\(FLAGS\).*NOW|\(FLAGS_1\).*NOW' || bad "not bound at load: no BIND_NOW / FLAGS NOW (link with -z now): the GOT stays writable"
+readelf -lW "$LIB" | grep 'GNU_STACK' | grep -q 'RWE' && bad "the stack is executable"
+readelf -d "$LIB" | grep -q 'TEXTREL' && bad "the library has text relocations"
+
+# 5. no personal strings: home folders, the user name, the host name
 s=$(strings -a "$LIB")
 echo "$s" | grep -F '/home/' >/dev/null && bad "a string contains /home/"
 echo "$s" | grep -F '/Users/' >/dev/null && bad "a string contains /Users/"
