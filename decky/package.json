@@ -25,6 +25,10 @@
     "tslib": "^2.7.0"
   },
   "pnpm": {
-    "peerDependencyRules": { "ignoreMissing": ["react", "react-dom"] }
+    "peerDependencyRules": { "ignoreMissing": ["react", "react-dom"] },
+    "overrides": {
+      "minimatch@<11.0.1": "^11.0.1",
+      "glob@<14.0.2": "^14.0.2"
+    }
   }
 }
