@@ -27,6 +27,6 @@
 - The project stays a Vulkan layer. No DXVK fork. A proxy DLL front end is deferred.
 - No web page and no listening network port.
 - The core layer and the Decky plugin stay.
-- In-game UI: the hotkeys F7 (open the menu) and F8 (layer on/off) open an in-game overlay. Users can change the keys. The overlay uses the same live settings file as the Decky plugin (see decky/LIVECONF.md), so the logic is shared. A command-line vkiframes-ctl also writes that file. This comes after the work in the order below.
+- In-game UI: the hotkeys F7 (open the menu) and F8 (layer on/off) open an in-game overlay. Users can change the keys. The overlay uses the same live settings file as the Decky plugin (see decky/LIVECONF.md), so the logic is shared. A command-line vkiframes-ctl also writes that file. Owner decision, 2026-11-01: this work starts now, ahead of items (3) and (4) below, and the UI must sit outside the part of the layer that holds, captures and interpolates frames, so it is never in the held, dumped or flow-input frames. The design is decided with the owner before any code.
 - Order of work (owner decision, 2026-10-30): (1) measurement logic and bench.json; (2) refresh-rate clamp; (3) GPU and CPU load, after the owner has run bench.json on the Deck; (4) async queue last, only if bench.json shows it is worth it.
 - Settings use the VKIFRAME_* names. The old FRAMEGEN_* names are still read as a fallback.
