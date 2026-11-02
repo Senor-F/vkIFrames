@@ -172,6 +172,8 @@ ok "XDG_CONFIG_HOME that is itself a link outside HOME is the user's choice (the
 XN="$T/xdg
 newline"; mkdir -p "$XN"; HN="$T/home9-nl"; mkdir -p "$HN"
 ok "a newline in XDG_CONFIG_HOME: exit 0, a note, no file, the layer installed" 'out=$(HOME="$HN" XDG_CONFIG_HOME="$XN" "$REL/scripts/install.sh" 2>&1); [ $? -eq 0 ] && live_installed "$HN" && [ ! -e "$XN/vkiframes/live.conf" ] && echo "$out" | grep -q "control characters"'
+HQ="$T/home9-rel"; mkdir -p "$HQ" "$T/cwd9"
+ok "a relative XDG_CONFIG_HOME is refused as before (exit 1), nothing is created in the current folder or under HOME/.config" '(cd "$T/cwd9" && HOME="$HQ" XDG_CONFIG_HOME=relcfg "$REL/scripts/install.sh" >/dev/null 2>&1; [ $? -eq 1 ]) && [ -z "$(ls -A "$T/cwd9")" ] && [ ! -e "$HQ/.config" ] && ! live_installed "$HQ"'
 ok "--use also creates it" 'HU="$T/home9-use"; mkdir -p "$HU"; HOME="$HU" "$REL/scripts/install.sh" --use "$T/libB.so" >/dev/null && cmp -s "$TPL" "$HU/.config/vkiframes/live.conf"'
 
 # 8. syntax

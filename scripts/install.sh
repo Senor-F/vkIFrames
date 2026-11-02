@@ -108,7 +108,8 @@ echo "Use it per game with the launch option:  VKIFRAME_ENABLE=1 %command%"
 # layer install above. A file that exists is never touched (not even an empty one, not the Decky panel's); the file is published without clobbering anything
 # (a hard link fails when the name is taken), mode 0600 in a 0700 folder we create, and no folder on the way below $HOME may be a symbolic link.
 create_live_conf() {
-    local tpl="$ROOT/manifest/live.conf.template" cfg="${XDG_CONFIG_HOME:-$HOME/.config}" dir file tmp="" p
+    local tpl="$ROOT/manifest/live.conf.template" cfg dir file tmp="" p
+    case "${XDG_CONFIG_HOME:-}" in /*) cfg=$XDG_CONFIG_HOME ;; *) cfg=$HOME/.config ;; esac      # the layer's own rule (live_config.cpp ConfDir): an absolute XDG_CONFIG_HOME, else $HOME/.config
     dir="$cfg/vkiframes"; file="$dir/live.conf"
     [ -f "$tpl" ] || { echo "$ME: note: the settings template is missing ($tpl): no live.conf created" >&2; return 1; }
     if have_ctrl "$dir"; then echo "$ME: note: the config folder path has control characters: no live.conf created" >&2; return 1; fi

@@ -15,12 +15,18 @@ def ok(name, cond):
         print("FAIL:", name); fails += 1
 
 ok("no active line (every line is blank or a comment)", all(l.strip() == "" or l.lstrip().startswith("#") for l in tpl))
+# uncommenting a setting line leaves a bare KEY=value (nothing after the value), exactly as the header tells the user to do
+unc = [re.sub(r"^# ([A-Z][A-Z_]*=)", r"\1", l) for l in tpl]
+ok("an uncommented line is KEY=value and nothing else", all(re.match(r"^[A-Z][A-Z_]*=\S+$", l) for l in unc if re.match(r"^[A-Z][A-Z_]*=", l)))
 rows, group = {}, None
-for l in tpl:
+for i, l in enumerate(tpl):
     if l.startswith("# --- changes apply"): group = "live"
     elif l.startswith("# --- read once"): group = "restart"
-    m = re.match(r"^# ([A-Z][A-Z_]*)=(\S+)\s+\((.*)\)\s*$", l)
-    if m: rows[m.group(1)] = (m.group(2), m.group(3), group)
+    m = re.match(r"^# ([A-Z][A-Z_]*)=(\S+)\s*$", l)                 # the setting line: remove "# " and it is KEY=value
+    if m:
+        d = re.match(r"^# " + m.group(1) + r": (.*)$", tpl[i - 1])        # the explanation is the line above, never on the setting line
+        ok(m.group(1) + " has its explanation on the line above", d is not None)
+        rows[m.group(1)] = (m.group(2), d.group(1) if d else "", group)
 excluded = {"EXPERIMENTAL", "ONESIDED_FILL"}          # the experimental gate and what it unlocks: not offered in a template
 ok("the keys are the schema's, without the experimental ones", set(rows) == set(by_key) - excluded)
 ok("no old name (INTERPOLATE, WARP)", "INTERPOLATE" not in rows and "WARP" not in rows and "INTERPOLATE" not in "\n".join(tpl).replace("INTERP_BIDIR", ""))
