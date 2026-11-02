@@ -14,7 +14,7 @@ namespace {
 std::mutex& g_mutex = *new std::mutex;
 auto& g_instances  = *new std::unordered_map<void*, std::unique_ptr<InstanceDispatch>>;
 auto& g_devices    = *new std::unordered_map<void*, std::unique_ptr<DeviceDispatch>>;
-auto& g_swapchains = *new std::unordered_map<uint64_t, std::unique_ptr<SwapchainState>>;   // keyed by the swapchain handle
+auto& g_swapchains = *new std::unordered_map<uint64_t, std::shared_ptr<SwapchainState>>;   // keyed by the swapchain handle
 struct QueueInfo { uint32_t family; void* device; std::unique_ptr<std::mutex> mu; };
 auto& g_queues     = *new std::unordered_map<void*, std::unique_ptr<QueueInfo>>;               // VkQueue -> family, owning device, mutex
 
@@ -85,10 +85,15 @@ void UnregisterDevice(void* key)   { std::lock_guard l(g_mutex); g_devices.erase
 
 static uint64_t SwapchainKey(VkSwapchainKHR h) { return uint64_t(reinterpret_cast<uintptr_t>(h)); }
 SwapchainState* RegisterSwapchain(VkSwapchainKHR handle) {
-    auto s = std::make_unique<SwapchainState>();
+    auto s = std::make_shared<SwapchainState>();
     s->handle = handle;
     std::lock_guard l(g_mutex);
     return (g_swapchains[SwapchainKey(handle)] = std::move(s)).get();
+}
+std::shared_ptr<SwapchainState> FindSwapchainShared(VkSwapchainKHR handle) {
+    std::lock_guard l(g_mutex);
+    auto it = g_swapchains.find(SwapchainKey(handle));
+    return it == g_swapchains.end() ? nullptr : it->second;
 }
 SwapchainState* FindSwapchain(VkSwapchainKHR handle) {
     std::lock_guard l(g_mutex);
@@ -114,7 +119,14 @@ void LeakQueues(void* device_key) { std::lock_guard l(g_mutex); for (auto it = g
 void UnregisterQueues(void* device_key) { std::lock_guard l(g_mutex); for (auto it = g_queues.begin(); it != g_queues.end();) it = it->second->device == device_key ? g_queues.erase(it) : std::next(it); }
 void DestroySwapchainState(VkSwapchainKHR handle) { std::lock_guard l(g_mutex); g_swapchains.erase(SwapchainKey(handle)); }
 // A presenter thread that could not be stopped still holds pointers to these objects: forget them without freeing (a deliberate leak at shutdown).
-void LeakSwapchainState(VkSwapchainKHR handle) { std::lock_guard l(g_mutex); auto it = g_swapchains.find(SwapchainKey(handle)); if (it == g_swapchains.end()) return; (void)it->second.release(); g_swapchains.erase(it); }
+void LeakSwapchainState(VkSwapchainKHR handle) {
+    static auto& leaked = *new std::vector<std::shared_ptr<SwapchainState>>;       // one more reference that is never dropped
+    std::lock_guard l(g_mutex);
+    auto it = g_swapchains.find(SwapchainKey(handle));
+    if (it == g_swapchains.end()) return;
+    leaked.push_back(it->second);
+    g_swapchains.erase(it);
+}
 void LeakDevice(void* key) { std::lock_guard l(g_mutex); auto it = g_devices.find(key); if (it == g_devices.end()) return; (void)it->second.release(); g_devices.erase(it); }
 
 FRAMEGEN_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
