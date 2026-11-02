@@ -13,11 +13,11 @@
 # --- changes apply while the game runs ---
 # ENABLED: 1 = the layer works, 0 = games run as if it were not there; 0 or 1
 # ENABLED=1
-# TARGET_FPS: the frame rate to reach; 30 to 120; the built-in default is 90 on a Steam Deck OLED
+# TARGET_FPS: the frame rate to reach; 30 to 600; the built-in default is 90 on a Steam Deck OLED
 # TARGET_FPS=60
 # MAX_SYNTHETIC: most generated frames between two game frames; 1 to 4
 # MAX_SYNTHETIC=3
-# BASE_FPS_CAP: limit the game's own frame rate to this; 0 = no limit; 0 to 90; choose Target FPS divided by a whole number
+# BASE_FPS_CAP: limit the game's own frame rate to this; 0 = no limit; 0 to 240; choose Target FPS divided by a whole number
 # BASE_FPS_CAP=45
 # MIN_GAIN: generate only when the target is at least this much above the game's rate; 1.01 to 1.5
 # MIN_GAIN=1.01

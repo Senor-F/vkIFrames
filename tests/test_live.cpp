@@ -74,11 +74,11 @@ int main() {
 
     Write(conf, "REV=2\nTARGET_FPS=9999\nMAX_SYNTHETIC=9\nMIN_GAIN=abc\nPHASE_OFFSET=-3\nBASE_FPS_CAP=500\nNONSENSE=1\nWARP=1\nINTERPOLATE=1\nOPTICAL_FLOW=1\nWARP_BIDIR=0\nFLOW_LEVEL=1\nno equals sign\nENABLED=0\n"); Touch(conf, 5);
     Poll();
-    CHECK(L.target_fps == 1000.0f);                                // clamped to the schema range
+    CHECK(L.target_fps == 600.0f);                                 // clamped to the schema range
     CHECK(L.max_synthetic == kLiveMaxSyntheticNormal);   // without EXPERIMENTAL at game start the cap is 4
     CHECK(L.min_gain == 1.01f);                                   // invalid value: the previous (startup) value stays
     CHECK(L.phase_offset == 0.0f);
-    CHECK(L.base_fps_cap == 90.0f);
+    CHECK(L.base_fps_cap == 240.0f);
     CHECK(L.enabled == 0);
     CHECK(L.interp_bidir == 0);                                   // the old key name WARP_BIDIR works too                                     // dropped from the file: back to the environment value
 
@@ -118,7 +118,11 @@ int main() {
         Put("BASE_FPS_CAP=0.0001\n"); CHECK(L.base_fps_cap == 0.0f);
         Put("BASE_FPS_CAP=0.99\n");   CHECK(L.base_fps_cap == 0.0f);
         Put("BASE_FPS_CAP=1\n");      CHECK(L.base_fps_cap == 1.0f);
-        Put("BASE_FPS_CAP=500\n");    CHECK(L.base_fps_cap == 90.0f);
+        Put("BASE_FPS_CAP=500\n");    CHECK(L.base_fps_cap == 240.0f);
+        Put("BASE_FPS_CAP=120\n");    CHECK(L.base_fps_cap == 120.0f);                  // a cap of 120 is no longer clamped to 90
+        Put("BASE_FPS_CAP=240\n");    CHECK(L.base_fps_cap == 240.0f);
+        Put("TARGET_FPS=600\n");      CHECK(L.target_fps == 600.0f);
+        Put("TARGET_FPS=601\n");      CHECK(L.target_fps == 600.0f);
         // a file over 64 KiB: the complete lines inside the first 64 KiB are used, the line cut by the limit is dropped (not read as TARGET_FPS=8), the rest is ignored
         {
             std::string big = "MAX_SYNTHETIC=2\n";

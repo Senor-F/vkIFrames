@@ -21,25 +21,27 @@ assert "VKIFRAME_TARGET_FPS=60" in conf and "VKIFRAME_PHASE_LOCK=1" in conf, con
 rev0 = p.rev
 p.experimental = True        # these checks change gated settings
 # clamp and step
-run(p.set_value("TARGET_FPS", 999)); assert p.values["TARGET_FPS"] == 120
+run(p.set_value("TARGET_FPS", 999)); assert p.values["TARGET_FPS"] == 600
 run(p.set_value("MIN_GAIN", 1.123)); assert p.values["MIN_GAIN"] == 1.12, p.values["MIN_GAIN"]
 run(p.set_value("MAX_SYNTHETIC", 0)); assert p.values["MAX_SYNTHETIC"] == 1
 run(p.set_value("INTERP_BIDIR", True)); assert p.values["INTERP_BIDIR"] == 1
-assert p.rev > rev0 and "VKIFRAME_TARGET_FPS=120" in open(main.LIVE_CONF).read()
+assert p.rev > rev0 and "VKIFRAME_TARGET_FPS=600" in open(main.LIVE_CONF).read()
 # persistence
-p2 = main.Plugin(); run(p2._main()); assert p2.values["TARGET_FPS"] == 120
-# Target FPS maximum = the higher of 120 and the screen's refresh rate
+p2 = main.Plugin(); run(p2._main()); assert p2.values["TARGET_FPS"] == 600
+# Target FPS maximum = the layer's limit (600), whatever the screen's refresh rate
 assert main._parse_xrandr("Screen 0\nDP-1 connected primary 2560x1440\n   2560x1440    143.97*+ 120.00  59.95\n   1920x1080    60.00 ") == 143.97
 assert main._parse_xrandr("eDP-1 connected\n   800x1280   90.00*+  60.00\n") == 90.0 and main._parse_xrandr("") == 0.0
 def tmax(hz):
     p.refresh_hz = hz; return [i for i in p._schema() if i["key"] == "TARGET_FPS"][0]["max"]
-assert tmax(0) == 120 and tmax(90) == 120 and tmax(120) == 120 and tmax(143.97) == 144 and tmax(240) == 240
+assert tmax(0) == 600 and tmax(90) == 600 and tmax(240) == 600 and tmax(599.2) == 600 and tmax(700) == 600 and tmax(1000) == 600
+run(p.set_value("BASE_FPS_CAP", 500)); assert p.values["BASE_FPS_CAP"] == 240      # the cap reaches 240
+run(p.set_value("BASE_FPS_CAP", 120)); assert p.values["BASE_FPS_CAP"] == 120
 status = {"refresh_hz": 165.0, "age_s": 1}
 run(p._update_display(status)); assert p.refresh_hz == 165.0 and p.refresh_src == "layer"
-run(p.set_value("TARGET_FPS", 999)); assert p.values["TARGET_FPS"] == 165
+run(p.set_value("TARGET_FPS", 999)); assert p.values["TARGET_FPS"] == 600
 assert json.load(open(main.DISPLAY_FILE))["refresh_hz"] == 165.0
 assert "display: refresh rate 165.0 Hz (layer)" in open(main.LIVE_LOG).read()
-q = main.Plugin(); run(q._main()); assert q.refresh_hz == 165.0 and q.values["TARGET_FPS"] == 165   # remembered across restarts
+q = main.Plugin(); run(q._main()); assert q.refresh_hz == 165.0 and q.values["TARGET_FPS"] == 600   # the refresh rate is remembered across restarts, the limit is 600
 p.refresh_hz = 0.0; p.refresh_src = ""; run(p.set_value("TARGET_FPS", 60))
 p.experimental = False
 # Experimental gates the "more" settings and widens Most generated frames to 10
@@ -78,7 +80,7 @@ run(p.reset_values()); assert p.values["TARGET_FPS"] == 60
 p.experimental = True
 # the verbose log records every change, who made it and when it applies
 log = open(main.LIVE_LOG).read()
-assert "plugin  panel: TARGET_FPS 60 -> 120" in log and "asked for 999, clamped" in log and "all settings reset" in log, log
+assert "plugin  panel: TARGET_FPS 60 -> 600" in log and "asked for 999, clamped" in log and "all settings reset" in log, log
 assert any("TARGET_FPS" in l for l in run(p.get_log(10)))
 run(p.set_value("EXTRAPOLATE", 1)); assert "read when the next game starts" in open(main.LIVE_LOG).read()
 assert "VKIFRAME_EXTRAPOLATE=1" in open(main.LIVE_CONF).read()

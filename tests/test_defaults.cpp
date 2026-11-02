@@ -51,6 +51,8 @@ int main() {
         if (have && std::fabs(s.def - ld) > 1e-6 && !Known(s.key)) FAIL("%s: default in the schema = %g, in the layer = %g", s.key, s.def, ld);
         if (have && std::fabs(s.def - ld) <= 1e-6 && Known(s.key)) FAIL("%s: listed as a known difference but the defaults agree now: remove it from the list", s.key);
         if (check_range && (s.lo < llo - 1e-9 || s.hi > lhi + 1e-9)) FAIL("%s: the schema range %g..%g is not inside the layer's %g..%g (the layer would clamp what the panel sends)", s.key, s.lo, s.hi, llo, lhi);
+        if (check_range && (!std::strcmp(s.key, "TARGET_FPS") || !std::strcmp(s.key, "BASE_FPS_CAP")) && (std::fabs(s.lo - llo) > 1e-9 || std::fabs(s.hi - lhi) > 1e-9))
+            FAIL("%s: the schema range %g..%g and the layer's %g..%g must be the same (the owner raised these limits)", s.key, s.lo, s.hi, llo, lhi);
         if (check_range && (s.def < s.lo - 1e-9 || s.def > s.hi + 1e-9)) FAIL("%s: the schema's default %g is outside its own range", s.key, s.def);
     }
     // the other direction: every live key of the layer is in the schema (STATS is a measurement switch the panel does not show)
