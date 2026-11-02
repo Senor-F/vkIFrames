@@ -86,7 +86,7 @@ A layer cannot show a frame *between* two frames the game has already presented,
 * The layer returns from the game's `vkQueuePresentKHR` immediately but does **not** present the game's image. It keeps that real swapchain image *held* (acquired, unpresented).
 * When the next native frame arrives, the layer emits the output ticks that now have both neighbours (§2.D). The held real image **carries the first tick** of the pair (§4.2), and the new frame becomes the held one.
 * In bypass (§2.B) nothing is held: the previous held frame (if any) is flushed and the new frame is presented right away.
-* **Latency cost:** about one base frame time whenever interpolating. This is inherent to interpolation.
+* **Latency cost:** one to one and a half base frames whenever interpolating (one held frame plus a jitter buffer of at most half a base frame; the log shows it as content delay). This is inherent to interpolation and shrinks only with a higher base rate.
 * **Flush rules:** a held frame is presented if the gap since the last native present exceeds the clamp (100 ms), when the swapchain is destroyed, or when interpolation switches to bypass.
 
 ### 4.2 Per-frame flow (inside the `vkQueuePresentKHR` hook)
@@ -132,7 +132,7 @@ At a near-integer ratio of base to target (within 0.03 of a whole number of at l
 
 ## 6. Known Limitations and Open Questions
 
-* **Input latency** rises by about one base frame time while interpolating (§4.1).
+* **Input latency** rises by one to one and a half base frames while interpolating (§4.1).
 * **Games should be frame-capped** at their intended base rate. An uncapped game is back-pressured by the swapchain, which couples its rate to the layer's output and can make the measured frame time oscillate.
 * **`VK_KHR_present_id` / `present_wait` games:** the game's present IDs (and swapchain-maintenance fences and per-present modes) are carried with the held frame and attached when it is finally presented, one frame late. DXVK waits for every present it makes, so the layer answers a `vkWaitForPresentKHR` for the held frame's own id at once, a deliberate deviation from the specification; older ids and fences are real waits that flush the held frame first (STAGE3.md addenda). Present id 2 or present timing in the application's chain leaves that swapchain in passthrough.
 * **One swapchain per present call** is interpolated; multi-swapchain presents pass through.
