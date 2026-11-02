@@ -51,7 +51,20 @@ const startBench = callable<[], { token: number }>("start_bench");
 const LAUNCH_PLAIN = "VKIFRAME_ENABLE=1";
 const LAUNCH_FULL = "VKIFRAME_ENABLE=1 %command%";
 const LAUNCH_32BIT = "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%";   // 32-bit games: Proton runs them inside a 64-bit process, so the 64-bit layer can load
+const LAUNCH_DXVK_ONLY = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" VKIFRAME_ENABLE=1 %command%';   // the same without WOW64 (not tested separately: the tested line is the one below)
 const LAUNCH_DXVK = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%';   // Proton - Experimental, game loads the layer but gets no extra frames: DXVK stops using present timing (a workaround, tested in one game)
+
+// One launch option to copy: the whole line on a small font that wraps anywhere (the lines are long), a one-line note under it.
+function LaunchRow({ text, note, onCopy }: { text: string; note: string; onCopy: () => void }) {
+  return (
+    <PanelSectionRow>
+      <ButtonItem layout="below" onClick={onCopy}>
+        <span style={{ fontSize: 11, lineHeight: 1.25, whiteSpace: "normal", wordBreak: "break-all" }}>{text}</span>
+        <div style={{ fontSize: 10, opacity: 0.75, marginTop: 2 }}>{note}</div>
+      </ButtonItem>
+    </PanelSectionRow>
+  );
+}
 
 function describeValue(item: SchemaItem, v: number): string {
   if ((item.key === "BASE_FPS_CAP" || item.key === "UI_MASK_THRESHOLD") && v === 0) return "off";
@@ -255,42 +268,17 @@ function Content() {
       <PanelSection title="Launch options">
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            Put this in the game's launch options (Properties → General). The plugin does not set it for you. Settings are changed here, not there.
+            Copy one into the game's launch options (Properties → General). The plugin never sets it. Already have options? Put VKIFRAME_ENABLE=1 before %command%.
           </div>
         </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => copy(LAUNCH_PLAIN)}>
-            Copy: {LAUNCH_PLAIN}
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => copy(LAUNCH_FULL)}>
-            Copy: {LAUNCH_FULL}
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => copy(LAUNCH_32BIT)}>
-            Copy for 32-bit games: {LAUNCH_32BIT}
-          </ButtonItem>
-        </PanelSectionRow>
+        <LaunchRow text={LAUNCH_PLAIN} note="Plain" onCopy={() => copy(LAUNCH_PLAIN)} />
+        <LaunchRow text={LAUNCH_FULL} note="Plain with %command%" onCopy={() => copy(LAUNCH_FULL)} />
+        <LaunchRow text={LAUNCH_32BIT} note="32-bit games (Proton WOW64)" onCopy={() => copy(LAUNCH_32BIT)} />
+        <LaunchRow text={LAUNCH_DXVK_ONLY} note="DXVK without present timing" onCopy={() => copy(LAUNCH_DXVK_ONLY)} />
+        <LaunchRow text={LAUNCH_DXVK} note="DXVK without present timing + 32-bit" onCopy={() => copy(LAUNCH_DXVK)} />
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.75 }}>
-            32-bit games need the third one: the layer is 64-bit, and PROTON_USE_WOW64=1 runs the game in a 64-bit process (Proton 10 or Experimental). Tested in one game only (Tomb Raider (2013)); not every 32-bit game works.
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => copy(LAUNCH_DXVK)}>
-            Copy if no extra frames appear (Proton - Experimental): {LAUNCH_DXVK}
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: 11, opacity: 0.75 }}>
-            If the layer loads but shows no extra frames (seen with Batman: Arkham Asylum on Proton - Experimental), try GE-Proton, or this launch option. It disables present timing in DXVK; tested on one game, may change the game's frame pacing. Remove it if the game misbehaves.
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: 11, opacity: 0.75 }}>
-            No other launch options? Copy the second one. Already have some, e.g. MANGOHUD=1 %command%? Copy the first and put it before %command%: MANGOHUD=1 VKIFRAME_ENABLE=1 %command%
+            No extra frames (seen with Batman: Arkham Asylum on Proton - Experimental)? Try GE-Proton, or the DXVK lines. They turn off present timing in DXVK; tested on one game, may change frame pacing. Remove if the game misbehaves.
           </div>
         </PanelSectionRow>
       </PanelSection>

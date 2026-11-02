@@ -19,6 +19,7 @@ expected = {
     "LAUNCH_PLAIN": "VKIFRAME_ENABLE=1",
     "LAUNCH_FULL": "VKIFRAME_ENABLE=1 %command%",
     "LAUNCH_32BIT": "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%",
+    "LAUNCH_DXVK_ONLY": 'DXVK_CONFIG="dxvk.enablePresentTiming = False" VKIFRAME_ENABLE=1 %command%',
     "LAUNCH_DXVK": 'DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%',
 }
 for k, v in expected.items():
@@ -28,7 +29,8 @@ dx = const("LAUNCH_DXVK") or ""
 ok("the DXVK line ends with %command% and holds VKIFRAME_ENABLE=1", dx.endswith(" %command%") and "VKIFRAME_ENABLE=1" in dx)
 ok("quotes in the DXVK line are balanced", dx.count('"') == 2)
 ok("each constant is copied by a button and nowhere else", all(len(re.findall(r"copy\(" + k + r"\)", src)) == 1 for k in expected))
-ok("the button shows the whole line", "{LAUNCH_DXVK}" in src)
+ok("each button shows the whole line", len(re.findall(r"<LaunchRow text=\{LAUNCH_[A-Z0-9_]+\}", src)) == 5)
+ok("five launch buttons", len(re.findall(r"<LaunchRow ", src)) == 5)
 ok("the plugin never sets a launch option (no LAUNCH constant is passed to a backend call)", not re.search(r"callable<[^>]*>\(\"[a-z_]*launch", src))
 print("launch options: ok" if not fails else "launch options: %d FAILED" % fails)
 sys.exit(1 if fails else 0)
