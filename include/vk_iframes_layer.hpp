@@ -274,6 +274,14 @@ inline void EnvFlagValue(const char* name, const char* v, bool& dst) {
     if (!ParseFlag(v, dst)) FG_LOG("VKIFRAME_%s=\"%s\" is not a usable value (a number, or true/false, on/off, yes/no): ignored, the default stays", name, ShownValue(v).c_str());
 }
 inline void EnvFlag(const char* name, bool& dst) { if (const char* v = EnvVar(name)) EnvFlagValue(name, v, dst); }
+// VKIFRAME_COST_WARN: the ratio (layer GPU time / game frame time) above which the cost warning counts a window. The same number rule as the other settings;
+// missing, not a number, or not above 0: 1.0.
+inline double CostWarnFromEnv(const char* v) {
+    double x;
+    if (v && ParseFiniteNumber(v, x) && x > 0.0) return x;
+    if (v) FG_LOG("VKIFRAME_COST_WARN=\"%s\" is not a usable number above 0: ignored, the default 1.0 stays", ShownValue(v).c_str());
+    return 1.0;
+}
 inline const Config& GetConfig() {
     static const Config c = [] {
         Config c;

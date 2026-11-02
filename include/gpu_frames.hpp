@@ -49,10 +49,17 @@ struct FlowState {
     // GPU time of the engine (timestamp queries, read back when a command buffer entry is reused)
     VkQueryPool qpool{};
     float       ts_period_ns{0.0f};
-    static constexpr uint32_t kQSlots = 10;          // timestamps per command buffer entry: 0..7 flow stage boundaries, 8..9 the interpolation pass
+    // Timestamp slots per command buffer entry: kFlowStamps for the flow stage boundaries (0..7), then kInterpStamps for the interpolation pass (8..9).
+    static constexpr uint32_t kFlowStamps = 8, kInterpStamps = 2, kQSlots = kFlowStamps + kInterpStamps, kInterpFirst = kFlowStamps;
+    static_assert(kInterpFirst + kInterpStamps == kQSlots, "the interpolation slots are the last ones of an entry");
+    static_assert(1 + 1 + 1 + (kLevels - 1) + 1 <= kFlowStamps, "start, pyramid, coarse, one per refine level, occlusion must fit");
+    // Stamps one flow pass writes for the finished level fin (0 = level 1): start, pyramid, coarse, one per refine level (kLevels - 1 - fin), occlusion.
+    static constexpr uint32_t StampCount(uint32_t fin) { return 1 + 1 + 1 + (kLevels - 1 - fin) + 1; }
+    bool        stamp_count_logged{false};           // a pass wrote a different number of stamps than StampCount said: logged once
+    uint32_t    stamps_dropped{0};                   // flow stamps that did not fit (never expected: the static_assert above); logged once
     bool        ts_pending[kMaxCmdBuffers]{};
     uint32_t    ts_n{0};                             // stamps written by one flow pass: start, pyramid, coarse, one per refine level, end
-    double      stage_sum[8]{};                      // per interval between stamps
+    double      stage_sum[kFlowStamps]{};                    // per interval between stamps
     double      ms_sum{0.0}, ms_max{0.0};
     uint32_t    ms_count{0};
     bool        interp_pending[kMaxCmdBuffers]{};
@@ -61,6 +68,7 @@ struct FlowState {
     // GPU time of the current second (read and cleared by LogRates): feeds the cost warning and VKIFRAME_STATS; two atomic adds per pair / generated frame
     std::atomic<uint64_t> stat_flow_ns{0}, stat_flow_n{0}, stat_interp_ns{0}, stat_interp_n{0};
 };
+static_assert(FlowState::StampCount(0) <= FlowState::kFlowStamps, "the finest finished level writes the most stamps: they must fit");
 
 struct GpuState {
     static constexpr VkFormat kRingFormat = VK_FORMAT_R16G16B16A16_SFLOAT;

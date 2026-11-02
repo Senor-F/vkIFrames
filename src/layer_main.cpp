@@ -552,7 +552,7 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             flow_ms = fn ? double(fns) / 1e6 / double(fn) : 0.0; pairs_s = double(fn) / secs;
             interp_ms = in ? double(ins) / 1e6 / double(in) : 0.0; gen_s = double(in) / secs;
             // One warning per swapchain: the layer's own GPU work is longer than the game's frame time (3 seconds in a row), so the game cannot keep its frame rate.
-            static const double kCostWarn = [] { const char* v = EnvVar("COST_WARN"); const double x = v ? std::atof(v) : 1.0; return x > 0.0 ? x : 1.0; }();
+            static const double kCostWarn = CostWarnFromEnv(EnvVar("COST_WARN"));
             const double ratio = LayerCostRatio(double(fns) / 1e6, double(ins) / 1e6, secs);
             sc.cost_over_windows = ratio > kCostWarn ? sc.cost_over_windows + 1 : 0;
             if (sc.cost_over_windows >= 3 && !sc.cost_warned) {

@@ -253,7 +253,7 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
     constexpr auto ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     constexpr auto RW = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
     if (f.qpool) {
-        dt.CmdResetQueryPool(cb, f.qpool, FlowState::kQSlots * e, 8);
+        dt.CmdResetQueryPool(cb, f.qpool, FlowState::kQSlots * e, FlowState::kFlowStamps);
         dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.qpool, FlowState::kQSlots * e);
     }
     // first use: all engine images move to GENERAL
@@ -290,7 +290,11 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
         dt.CmdDispatch(cb, (out.width + 15) / 16, (out.height + 15) / 16, 1);
     };
     uint32_t nstamp = 1;
-    auto stamp = [&] { if (f.qpool && nstamp < 8) dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.qpool, FlowState::kQSlots * e + nstamp++); };
+    auto stamp = [&] {
+        if (!f.qpool) return;
+        if (nstamp < FlowState::kFlowStamps) dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.qpool, FlowState::kQSlots * e + nstamp++);
+        else if (f.stamps_dropped++ == 0) FG_LOG("flow: more timestamps than slots (%u): the stage times are incomplete (the flow itself is not affected)", FlowState::kFlowStamps);
+    };
     auto step = [&] { MemBarrier(dt, cb, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, CS, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT); };
 
     dispatch(&FlowState::luma, 0, f.pyr[0][0].extent, nullptr, 0);
@@ -321,6 +325,7 @@ bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFra
     if (f.qpool) {
         stamp();   // occlusion done
         f.ts_n = nstamp;
+        if (nstamp != FlowState::StampCount(f.fin) && !f.stamp_count_logged) { f.stamp_count_logged = true; FG_LOG("flow: %u timestamps written, %u expected: the stage names in the log may be off", nstamp, FlowState::StampCount(f.fin)); }
         f.ts_pending[e] = true;
     }
     // VKIFRAME_DUMP: the copies into the pool are recorded in this command buffer, which is submitted anyway: no extra submit, wait or CPU copy

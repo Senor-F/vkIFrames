@@ -209,7 +209,14 @@ void Apply(const char* why, const std::string& text, bool present) {
             const size_t eq = line.find('=');
             if (eq == std::string::npos) { ++bad; Note("line %d ignored (no '='): \"%.60s\"", lineno, line.c_str()); continue; }
             std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
-            if (key == "REV") { g_rev = std::strtoull(val.c_str(), nullptr, 10); continue; }
+            if (key == "REV") {                      // only logged: a whole number, anything else is ignored (and said so) instead of read as a prefix or as 0
+                errno = 0; char* end = nullptr;
+                const bool digits = !val.empty() && val.size() <= 20 && val.find_first_not_of("0123456789") == std::string::npos;
+                const unsigned long long r = digits ? std::strtoull(val.c_str(), &end, 10) : 0;
+                if (digits && errno == 0 && end && !*end) g_rev = r;
+                else Note("REV=\"%s\" is not a whole number: ignored (it is only logged)", ShownValue(val.c_str()).c_str());
+                continue;
+            }
             for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
             NormalizeKey(key);
             if (key == "BENCH") {                       // an older plugin or script: a benchmark request is now the file bench.req, never a setting

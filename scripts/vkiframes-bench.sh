@@ -10,6 +10,9 @@ set -euo pipefail
 umask 077
 dir="${XDG_CONFIG_HOME:-$HOME/.config}/vkiframes"
 req="$dir/bench.req"
+# A symbolic link at the folder or at the request file would send the write (and the chmod) somewhere else: refuse, before anything is created or changed.
+if [ -L "$dir" ]; then echo "$0: $dir is a symbolic link: refused (remove it or point XDG_CONFIG_HOME elsewhere)" >&2; exit 1; fi
+if [ -L "$req" ]; then echo "$0: $req is a symbolic link: refused (remove it)" >&2; exit 1; fi
 mkdir -p "$dir"; chmod 700 "$dir"
 
 wait=1

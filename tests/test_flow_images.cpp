@@ -34,6 +34,9 @@ static void VKAPI_CALL F_DestroyView(VkDevice, VkImageView, const VkAllocationCa
 static void Reset() { f_format_has_transfer_src = true; f_driver_refuses_flag = f_driver_refuses_all = f_alloc_fails = false; f_creates = f_with_flag = f_views = f_images_live = f_mems_live = f_format_queries = 0; f_last_usage = 0; }
 
 int main() {
+    // timestamp slots (#F3): a flow pass at every finished level (FLOW_LEVEL 1..3, i.e. fin 0..2) fits its slots, and the interpolation slots are the last two
+    for (uint32_t fin = 0; fin <= 2; ++fin) { if (FlowState::StampCount(fin) > FlowState::kFlowStamps) { std::printf("FAIL: %u stamps at fin %u\n", FlowState::StampCount(fin), fin); return 1; } }
+    if (FlowState::StampCount(0) != 7 || FlowState::StampCount(2) != 5 || FlowState::kQSlots != 10 || FlowState::kInterpFirst != 8) { std::printf("FAIL: timestamp slot values changed\n"); return 1; }
     InstanceDispatch inst; inst.GetPhysicalDeviceFormatProperties = F_FormatProps; inst.GetPhysicalDeviceMemoryProperties = F_MemProps;
     DeviceDispatch dt; dt.instance = &inst;
     dt.CreateImage = F_CreateImage; dt.DestroyImage = F_DestroyImage; dt.GetImageMemoryRequirements = F_GetReq; dt.AllocateMemory = F_Alloc; dt.FreeMemory = F_Free;

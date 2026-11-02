@@ -27,9 +27,14 @@ fi
 # (weak undefined references, such as the libitm hooks of the static runtime, are not dependencies)
 if nm -D --undefined-only "$LIB" | awk '$1 == "U" {print $2}' | grep -E '^_Z' >/dev/null; then bad "undefined C++ symbols (the runtime is not static)"; fi
 
-# 3. dynamic section: no C++ runtime / libgcc library, no run path
+# 3. dynamic section: only these libraries (glibc's own: libc, libm and the dynamic loader), so no C++ runtime, libgcc_s or anything else the host may lack or replace; no run path
 needed=$(readelf -d "$LIB" | awk '/NEEDED/ {gsub(/[][]/,"",$NF); print $NF}')
-echo "$needed" | grep -E 'libstdc\+\+|libgcc_s' >/dev/null && bad "NEEDED lists the C++ runtime or libgcc_s: $(printf '%s' "$needed" | tr '\n' ' ')"
+for n in $needed; do
+    case "$n" in
+        libc.so.6|libm.so.6|ld-linux-x86-64.so.2) ;;
+        *) bad "NEEDED lists $n, which is not one of libc.so.6, libm.so.6, ld-linux-x86-64.so.2 (the C++ runtime and libgcc_s must be linked statically)" ;;
+    esac
+done
 readelf -d "$LIB" | grep -E 'RPATH|RUNPATH' >/dev/null && bad "RPATH or RUNPATH is set"
 
 # 4. hardening: full RELRO (a GNU_RELRO segment and every symbol bound at load, so the GOT is read-only), no executable stack, no text relocations
