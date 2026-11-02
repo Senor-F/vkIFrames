@@ -1171,25 +1171,29 @@ static VkResult Impl_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapcha
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(swapchain);
-    if (!sc || !sc->gpu || !sc->presenter) return dt->AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex);
+    if (!sc || !sc->gpu || !sc->presenter) { t_guard_forwarded = true; return dt->AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex); }
     GpuState* g = sc->gpu;
     struct Mark { SwapchainState* s; uint64_t t0; explicit Mark(SwapchainState* x) : s(x), t0(NowNs()) { s->acquire_wait_since_ns = t0; } ~Mark() { s->acquire_wait_since_ns = 0; s->wait_acquire_ns += NowNs() - t0; } } mark(sc);
     return PolledAcquire(timeout, [&] {
         std::lock_guard<std::mutex> l(g->acquire_mu);           // the presenter acquires hidden images on the same swapchain
-        return dt->AcquireNextImageKHR(device, swapchain, 0, sem, fence, pIndex);
+        const VkResult r = dt->AcquireNextImageKHR(device, swapchain, 0, sem, fence, pIndex);
+        if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) t_guard_forwarded = true;     // an image was acquired and the semaphore or fence will be signalled: the guard must not acquire again
+        return r;
     });
 }
 static VkResult Impl_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(info->swapchain);
-    if (!sc || !sc->gpu || !sc->presenter) return dt->AcquireNextImage2KHR(device, info, pIndex);
+    if (!sc || !sc->gpu || !sc->presenter) { t_guard_forwarded = true; return dt->AcquireNextImage2KHR(device, info, pIndex); }
     GpuState* g = sc->gpu;
     struct Mark { SwapchainState* s; uint64_t t0; explicit Mark(SwapchainState* x) : s(x), t0(NowNs()) { s->acquire_wait_since_ns = t0; } ~Mark() { s->acquire_wait_since_ns = 0; s->wait_acquire_ns += NowNs() - t0; } } mark(sc);
     VkAcquireNextImageInfoKHR once = *info; once.timeout = 0;
     return PolledAcquire(info->timeout, [&] {
         std::lock_guard<std::mutex> l(g->acquire_mu);
-        return dt->AcquireNextImage2KHR(device, &once, pIndex);
+        const VkResult r = dt->AcquireNextImage2KHR(device, &once, pIndex);
+        if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) t_guard_forwarded = true;
+        return r;
     });
 }
 
@@ -1304,6 +1308,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice d, const VkSwapc
     return VK_ERROR_OUT_OF_HOST_MEMORY;
 }
 
+// The destroy fallbacks below are the plain driver destroy: if the body failed before its own call to the next layer, this skips the device idle wait, the
+// layer's state is not cleaned (it is leaked) and a presenter thread is not stopped. That is acceptable on the out-of-memory path: the game is closing the object.
 VKAPI_ATTR void VKAPI_CALL Hook_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* a) {
     void* key = GetKey(instance);                                 // read before the handle dies
     t_guard_forwarded = false;
@@ -1325,13 +1331,17 @@ VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchain
 
 VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore sem, VkFence fence, uint32_t* pIndex) {
     VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    t_guard_forwarded = false;
     if (Run("vkAcquireNextImageKHR", [&] { r = Impl_AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex); })) return r;
+    if (t_guard_forwarded) return VK_ERROR_OUT_OF_HOST_MEMORY;          // the real acquire already ran and signalled: a second one would signal the semaphore twice
     Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex); });
     return r;
 }
 VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
     VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    t_guard_forwarded = false;
     if (Run("vkAcquireNextImage2KHR", [&] { r = Impl_AcquireNextImage2KHR(device, info, pIndex); })) return r;
+    if (t_guard_forwarded) return VK_ERROR_OUT_OF_HOST_MEMORY;
     Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->AcquireNextImage2KHR(device, info, pIndex); });
     return r;
 }
