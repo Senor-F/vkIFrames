@@ -61,7 +61,7 @@
     "step": 5,
     "fine": 1,
     "needsLayer": "live",
-    "desc": "Limits the game's own frame rate so frames can be added evenly, e.g. 30 or 45 fps for a 90 Hz screen. 0 = no limit.",
+    "desc": "Limits the game's own frame rate. Use your Target FPS divided by a whole number (45 or 30 for 90, 30 for 60) so the generated frames come out evenly. 0 = no limit.",
     "greyWhen": [
       [
         {
@@ -101,7 +101,7 @@
     "type": "toggle",
     "default": 1,
     "needsLayer": "live",
-    "desc": "Aligns generated frames with the game's frames for even spacing.",
+    "desc": "Aligns generated frames with the game's frames for even spacing, when the ratio of Target FPS to the game's frame rate is close to a whole number.",
     "greyWhen": [
       [
         {
