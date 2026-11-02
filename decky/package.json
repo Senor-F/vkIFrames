@@ -1,6 +1,6 @@
 {
   "name": "vkiframes-decky",
-  "version": "0.1.0-alpha.2",
+  "version": "0.2.0-dev",
   "description": "Decky Loader plugin: install the vkIFrames Vulkan layer and change its settings while a game runs",
   "type": "module",
   "scripts": {
