@@ -100,7 +100,7 @@ All shaders use `local_size 16x16`. Bounds are always clamped: out-of-range `ima
 
 ### A. Pyramid (`shaders/flow_luma.comp`, `shaders/flow_down.comp`)
 
-Pyramid level 1 is not the ring image itself, as the first design had it: `flow_luma.comp` reads the RGBA16F ring image and writes the **luma** (Rec. 709 weights 0.2126 / 0.7152 / 0.0722) of a 2x2 box average, so level 1 is half resolution. `flow_down.comp` makes levels 2 to 4 by the 2x2 average of the level above. Sizes round up and reads clamp to the edge. Both mirror `flowref::Down`. The pyramid exists for A and for B (`FlowState::pyr[2][4]`, `R32F`).
+Pyramid level 1 is not the ring image itself, as the first design had it: `flow_luma.comp` reads the RGBA16F ring image and writes the **luma** (Rec. 709 weights 0.2126 / 0.7152 / 0.0722; `flow_interp.comp` computes its own luma with the Rec. 601 weights 0.299 / 0.587 / 0.114) of a 2x2 box average, so level 1 is half resolution. `flow_down.comp` makes levels 2 to 4 by the 2x2 average of the level above. Sizes round up and reads clamp to the edge. Both mirror `flowref::Down`. The pyramid exists for A and for B (`FlowState::pyr[2][4]`, `R32F`).
 
 ```glsl
 float luma(ivec2 q, ivec2 m) { return dot(imageLoad(u_src, min(q, m)).rgb, vec3(0.2126, 0.7152, 0.0722)); }
