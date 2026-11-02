@@ -354,7 +354,7 @@ struct SwapchainState : std::enable_shared_from_this<SwapchainState> {
     std::atomic<uint64_t> last_present_ns{0}, acquire_wait_since_ns{0}, wait_present_since_ns{0}, wait_present_id{0};   // watchdog
     std::mutex mu;                            // guards rates and the timing state below (game thread and presenter thread both touch them)
     std::atomic<int> pending_error{0};        // first error of a presenter-thread present, returned to the game by its next present
-    struct Presenter* presenter{nullptr};     // Stage 3c-ii: thread that presents the planned ticks at their times
+    std::atomic<struct Presenter*> presenter{nullptr};   // Stage 3c-ii: thread that presents the planned ticks at their times; written by the game thread (flow_mu), read without it by the acquire hooks
     // present timing (Stage 2)
     bool     timing_enabled{false};
     VkPresentStageFlagsEXT stage{0};          // the one present stage we query and target

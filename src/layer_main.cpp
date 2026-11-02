@@ -858,10 +858,24 @@ void PresenterMain(DeviceDispatch* dt, SwapchainState* sc, Presenter* p) {
                 if (last && now - last > 2'000'000'000ull && now - wd_logged > 5'000'000'000ull) {
                     wd_logged = now;
                     const uint64_t aw = sc->acquire_wait_since_ns.load(), pw = sc->wait_present_since_ns.load();
-                    FG_LOG_ROUTINE("watchdog: no present for %.1f s | frames %llu | held %d (id %llu fence %d) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
-                           (now - last) / 1e9, (unsigned long long)sc->frames, sc->gpu ? int(sc->gpu->held.valid) : -1,
-                           (unsigned long long)(sc->gpu ? sc->gpu->held.present_id : 0), sc->gpu ? int(sc->gpu->held.fence != VK_NULL_HANDLE) : 0,
-                           aw ? (now - aw) / 1e9 : 0.0, pw ? (now - pw) / 1e9 : 0.0, (unsigned long long)sc->wait_present_id.load());
+                    // The frame count (sc->mu) and the held frame (flow_mu) belong to the game thread; this log line only looks at them when it can take the locks at once,
+                    // and with the presenter's own mutex released (the game thread takes flow_mu and then that mutex, never the other way round).
+                    unsigned long long frames = 0; int held = -2; unsigned long long held_id = 0; int held_fence = 0; bool known = false;
+                    l.unlock();
+                    {
+                        std::unique_lock<std::mutex> ml(sc->mu, std::try_to_lock);
+                        std::unique_lock<std::mutex> fl(sc->flow_mu, std::try_to_lock);
+                        if (ml.owns_lock() && fl.owns_lock()) {
+                            known = true; frames = sc->frames;
+                            held = sc->gpu ? int(sc->gpu->held.valid) : -1; held_id = sc->gpu ? sc->gpu->held.present_id : 0; held_fence = sc->gpu ? int(sc->gpu->held.fence != VK_NULL_HANDLE) : 0;
+                        }
+                    }
+                    l.lock();
+                    if (known) FG_LOG_ROUTINE("watchdog: no present for %.1f s | frames %llu | held %d (id %llu fence %d) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
+                           (now - last) / 1e9, frames, held, held_id, held_fence, aw ? (now - aw) / 1e9 : 0.0, pw ? (now - pw) / 1e9 : 0.0, (unsigned long long)sc->wait_present_id.load());
+                    else FG_LOG_ROUTINE("watchdog: no present for %.1f s | the game thread holds its locks (frame state not read) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
+                           (now - last) / 1e9, aw ? (now - aw) / 1e9 : 0.0, pw ? (now - pw) / 1e9 : 0.0, (unsigned long long)sc->wait_present_id.load());
+                    if (p->stop.load() || !p->q.empty()) break;
                 }
             }
             if (p->stop.load()) break;
@@ -1018,7 +1032,7 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
         }
         r = plain_present();
     } else if (plan.kind == PairScheduler::Kind::Bypass) {
-        if (cfg.extrapolate) { ++sc->job_gen; if (sc->presenter) { { std::lock_guard<std::mutex> l(sc->presenter->mu); } sc->presenter->cv.notify_all(); } }   // predicted frames still queued are stale now
+        if (cfg.extrapolate) { ++sc->job_gen; if (sc->presenter) { { std::lock_guard<std::mutex> l(sc->presenter.load()->mu); } sc->presenter.load()->cv.notify_all(); } }   // predicted frames still queued are stale now
         DrainPresenter(*sc);
         if (sc->gpu->last.valid) { GpuUnpin(*sc->gpu, sc->gpu->last.slot); sc->gpu->last.valid = false; }
         VkResult rf = plan.flush_held || sc->gpu->held.valid ? PresentHeld(*dt, queue, *sc, now) : VK_SUCCESS;
@@ -1045,8 +1059,8 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
             if (!have_prev) plan.n = std::min(plan.n, 1);
             PresentJob job{a, b, plan, queue, true, ++sc->job_gen};
             if (sc->presenter) {
-                { std::lock_guard<std::mutex> l(sc->presenter->mu); sc->presenter->q.push_back(job); }
-                sc->presenter->cv.notify_all();
+                { std::lock_guard<std::mutex> l(sc->presenter.load()->mu); sc->presenter.load()->q.push_back(job); }
+                sc->presenter.load()->cv.notify_all();
             } else {
                 ExecuteExtrap(*dt, *sc, job, nullptr);                                  // synchronous (VKIFRAME_PRESENTER=0)
             }
@@ -1057,8 +1071,8 @@ static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
             GpuPin(*sc->gpu, b.slot);                                                   // B stays held for the next pair and is used by this one
             sc->gpu->held = b; HeldFenceAdd(*dt, *sc, b);
             if (sc->presenter) {
-                { std::lock_guard<std::mutex> l(sc->presenter->mu); sc->presenter->q.push_back(job); }
-                sc->presenter->cv.notify_all();
+                { std::lock_guard<std::mutex> l(sc->presenter.load()->mu); sc->presenter.load()->q.push_back(job); }
+                sc->presenter.load()->cv.notify_all();
             } else {
                 ExecutePair(*dt, *sc, job, nullptr);                                    // synchronous (VKIFRAME_PRESENTER=0)
             }
