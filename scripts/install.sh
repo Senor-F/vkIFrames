@@ -102,3 +102,41 @@ mv -f -- "$TMPM" "$MANIFEST"
 trap - EXIT
 echo "manifest written:   $MANIFEST -> $TARGET"
 echo "Use it per game with the launch option:  VKIFRAME_ENABLE=1 %command%"
+
+# --- the settings file for people without the Decky panel: a template of comment lines, created only when there is no live.conf ---------------------
+# The LAST step and best effort: whatever goes wrong here (a link, another owner, no space, no template) is a warning and never changes the exit status or the
+# layer install above. A file that exists is never touched (not even an empty one, not the Decky panel's); the file is published without clobbering anything
+# (a hard link fails when the name is taken), mode 0600 in a 0700 folder we create, and no folder on the way below $HOME may be a symbolic link.
+create_live_conf() {
+    local tpl="$ROOT/manifest/live.conf.template" cfg="${XDG_CONFIG_HOME:-$HOME/.config}" dir file tmp="" p
+    dir="$cfg/vkiframes"; file="$dir/live.conf"
+    [ -f "$tpl" ] || { echo "$ME: note: the settings template is missing ($tpl): no live.conf created" >&2; return 1; }
+    if have_ctrl "$dir"; then echo "$ME: note: the config folder path has control characters: no live.conf created" >&2; return 1; fi
+    p=$dir                                           # the folder and every folder above it that lies below $HOME must not be a link
+    case "$p" in "$HOME"/*) while [ "$p" != "$HOME" ] && [ -n "$p" ]; do
+                                if [ -L "$p" ]; then echo "$ME: note: $p is a symbolic link: no live.conf created" >&2; return 1; fi
+                                p=${p%/*}
+                            done ;;
+                 *) if [ -L "$p" ]; then echo "$ME: note: $p is a symbolic link: no live.conf created" >&2; return 1; fi ;;
+    esac
+    if [ -e "$file" ] || [ -L "$file" ]; then echo "settings file already there, left as it is: $file"; return 0; fi
+    if [ ! -d "$dir" ]; then
+        # shellcheck disable=SC2174  # -m applies to the deepest folder only; the umask keeps any parent we have to create private too
+        ( umask 077; mkdir -p -m 0700 "$dir" ) 2>/dev/null || { echo "$ME: note: cannot create $dir: no live.conf created" >&2; return 1; }
+    fi
+    if [ ! -d "$dir" ] || [ -L "$dir" ] || [ "$(stat -c %u "$dir")" != "$(id -u)" ]; then echo "$ME: note: $dir is not a folder of yours: no live.conf created" >&2; return 1; fi
+    tmp=$( umask 077; mktemp "$dir/.live.conf.new.XXXXXX" 2>/dev/null ) || { echo "$ME: note: cannot write in $dir: no live.conf created" >&2; return 1; }
+    if cp -- "$tpl" "$tmp" 2>/dev/null && chmod 0600 "$tmp" 2>/dev/null && ln -- "$tmp" "$file" 2>/dev/null; then
+        rm -f -- "$tmp"
+    else
+        rm -f -- "$tmp"
+        echo "$ME: note: could not create $file (it may have appeared meanwhile): left as it is" >&2; return 1
+    fi
+    if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c %u "$file")" = "$(id -u)" ]; then
+        echo "settings file created: $file (every line is a comment; see its header)"
+    else
+        echo "$ME: note: $file is not a regular file of yours: please check it" >&2; return 1
+    fi
+}
+create_live_conf || echo "$ME: the layer is installed; only the settings file could not be created (see above)" >&2
+exit 0
