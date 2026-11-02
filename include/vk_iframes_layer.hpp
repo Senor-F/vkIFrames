@@ -180,6 +180,7 @@ struct Config {
     // hybrid: late sleep with a jitter-aware lead plus a short hold before the present until the grid time (exact intervals, latency = the margin).
     enum class CapMode { Late, Early, Hybrid };
     CapMode cap_mode{CapMode::Late};
+    bool  stats_frames{false};   // VKIFRAME_STATS_FRAMES=1 (with stats on): every frame time of each second goes to stats-frames.jsonl as well
     bool  cap_early{false};      // VKIFRAME_CAP_EARLY=1: VKIFRAME_BASE_FPS_CAP waits before the present (exact intervals, but the wait adds to every frame's latency); default: after it
     bool  onesided_fill{false};  // VKIFRAME_ONESIDED_FILL=1 (experimental; needs VKIFRAME_EXPERIMENTAL=1 too; read at game start): at occluded pixels take the colour from the one frame that shows the background instead of blending both. Offline it was worse than the default in 21 of 25 triplets on hard pixels
     bool  extrapolate{false};    // VKIFRAME_EXTRAPOLATE=1: no frame is held back; the newest frame is shown at once and the slots until the next one show frames predicted from it (implies flow and warp)
@@ -331,6 +332,7 @@ inline const Config& GetConfig() {
         EnvNumber("PAN_HI", 0.0, 1.0, c.pan_hi);
         EnvNumber("UI_MASK_THRESHOLD", 0.0, 0.5, c.ui_mask);
         EnvFlag("CAP_EARLY", c.cap_early);
+        EnvFlag("STATS_FRAMES", c.stats_frames);
         if (c.cap_early) c.cap_mode = Config::CapMode::Early;
         if (const char* v = EnvVar("CAP_MODE")) {
             if (!std::strcmp(v, "late")) c.cap_mode = Config::CapMode::Late;

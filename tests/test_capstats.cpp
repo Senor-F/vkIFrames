@@ -1,13 +1,16 @@
 // The base-rate cap's sleeps are measured and reported: stats.jsonl rows carry the pid of the writing process, cap_wait_ms (mean sleep after the present, the late
 // wait, the default) and cap_hold_ms (mean sleep before the present, VKIFRAME_CAP_EARLY=1). A mock game thread renders for 3 ms and presents at cap 30 (slot 33.3 ms),
 // so the sleep is about a slot minus the render time.
-// usage: test_capstats <layer library> late|early
+// With "frames" (VKIFRAME_STATS_FRAMES=1) stats-frames.jsonl gets one line a second with every frame time in microseconds, the pid and the cap's slot, and the stats rows have
+// ft_std_ms and content_delay_ms.
+// usage: test_capstats <layer library> late|early|frames
 #include "clean_env.hpp"
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <map>
@@ -231,7 +234,7 @@ static double Field(const std::string& line, const char* key) { const size_t p =
 
 int main(int, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const bool early = std::string(argv[2]) == "early";
+    const bool early = std::string(argv[2]) == "early", frames_mode = std::string(argv[2]) == "frames";   // frames: late mode with VKIFRAME_STATS_FRAMES=1
     ClearFramegenEnv();
     char dir[] = "/tmp/vkicapstats_XXXXXX"; if (!mkdtemp(dir)) return 2;
     setenv("VKIFRAME_LOG_FILE", (std::string(dir) + "/layer.log").c_str(), 1);
@@ -239,6 +242,7 @@ int main(int, char** argv) {
     setenv("VKIFRAME_STATS", "1", 1);
     setenv("VKIFRAME_BASE_FPS_CAP", "30", 1);
     if (early) setenv("VKIFRAME_CAP_EARLY", "1", 1);
+    if (frames_mode) setenv("VKIFRAME_STATS_FRAMES", "1", 1);
     g_main_thread = pthread_self();
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
     Env e = Bring(lib);
@@ -267,6 +271,24 @@ int main(int, char** argv) {
         const double wait = Field(line, "\"cap_wait_ms\":"), hold = Field(line, "\"cap_hold_ms\":"), pid = Field(line, "\"pid\":");
         CHECK(long(pid) == long(getpid()));                                           // every row names its process
         if (early ? (hold > 20.0 && hold < 34.0 && wait == 0.0) : (wait > 20.0 && wait < 34.0 && hold == 0.0)) ++good;
+    }
+    if (frames_mode) {
+        const std::string fr = Slurp(std::string(dir) + "/vkiframes/stats-frames.jsonl");
+        int lines = 0, okl = 0;
+        for (size_t pos = 0; pos < fr.size();) {
+            size_t nl = fr.find('\n', pos); if (nl == std::string::npos) nl = fr.size();
+            const std::string line = fr.substr(pos, nl - pos); pos = nl + 1;
+            if (line.empty()) continue;
+            ++lines;
+            const size_t us = line.find("\"us\":[");
+            int count = 0; double sum = 0;
+            if (us != std::string::npos) for (const char* p = line.c_str() + us + 6; *p && *p != ']';) { sum += std::atof(p); ++count; while (*p && *p != ',' && *p != ']') ++p; if (*p == ',') ++p; }
+            if (long(Field(line, "\"pid\":")) == long(getpid()) && std::fabs(Field(line, "\"slot_ms\":") - 1000.0 / 30.0) < 0.01 && count >= 25 && count <= 32 && std::fabs(sum / count - 33333.0) < 1500.0) ++okl;
+        }
+        CHECK(lines >= 2 && okl >= 1);                                                // the full seconds: about 30 frame times near one slot, the pid, the slot
+        CHECK(stats.find("\"ft_std_ms\":") != std::string::npos && stats.find("\"content_delay_ms\":") != std::string::npos);
+    } else {
+        CHECK(Slurp(std::string(dir) + "/vkiframes/stats-frames.jsonl").empty());       // off unless asked for
     }
     CHECK(rows >= 2 && good >= 1);                                                    // the full seconds show the sleep of the mode in use, and only that one
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);

@@ -39,10 +39,15 @@ struct Record {
     double late_mean_ms{0}, late_max_ms{0};             // native frame lateness against its slot (extrapolation mode only, else 0)
     uint64_t cancelled{0}, dropped{0};
     double cap_wait_ms{0}, cap_hold_ms{0};              // base-rate cap, mean per present with the cap on: the sleep after the present (late wait), the sleep before it (early hold)
+    double ft_std_ms{0};                                // standard deviation of the second's frame times (population), ms
+    double content_delay_ms{0};                         // the delay the layer adds to the content (hold + jitter buffer), ms; 0 when nothing is held
     long pid{0};                                        // the process that wrote the row (a Proton game has several, all appending to one stats.jsonl)
 };
 void FillDerived(Record& r, const FrameTimes& ft);      // frame-time mean/p95/p99/max from the intervals, and gpu_share from the GPU fields
 std::string RecordJson(const Record& r, long long unix_s);
+// VKIFRAME_STATS_FRAMES=1 (with stats on): one line per second with every frame time of that second in microseconds, to stats-frames.jsonl, so the whole run can be analysed
+// exactly (standard deviation, a histogram around the slot, the 99.9th percentile). slot_ms is the cap's slot (0 = no cap).
+std::string FramesJson(const FrameTimes& ft, long long unix_s, double slot_ms, long pid);
 
 // Benchmark: 30 s warm-up (layer on), then reps (6) x (60 s off, 60 s on). The first settle_s seconds after every switch are labelled "settle" and left out of the numbers.
 class Bench {

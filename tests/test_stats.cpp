@@ -58,14 +58,22 @@ int main() {
         NEAR(r.ft_mean, (44 * 22.0 + 30.0) / 45.0, 1e-9);
         NEAR(r.ft_max, 30.0, 0); NEAR(r.ft_p95, 22.0, 0); NEAR(r.ft_p99, 30.0, 0);    // ceil(0.95*45) = 43rd of 45 sorted: 22.0; ceil(0.99*45) = 45th: the one 30 ms frame
         NEAR(r.gpu_share, (45 * 4.0 + 45 * 1.0) / 1000.0, 1e-12);                       // 0.225 of the GPU
+        { const double m = (44 * 22.0 + 30.0) / 45.0; NEAR(r.ft_std_ms, std::sqrt((44 * (22.0 - m) * (22.0 - m) + (30.0 - m) * (30.0 - m)) / 45.0), 1e-9); }   // population standard deviation
+        { stats::FrameTimes ft; ft.Add(16.667); ft.Add(33.4); ft.Add(0.0004);
+          const std::string fj = stats::FramesJson(ft, 1700000001, 16.667, 4242);       // every frame time of a second, in microseconds, with the process and the cap's slot
+          CHECK(fj == "{\"t\":1700000001,\"pid\":4242,\"slot_ms\":16.667,\"us\":[16667,33400,0]}"); }
+        { stats::FrameTimes ft; CHECK(stats::FramesJson(ft, 1, 0.0, 7) == "{\"t\":1,\"pid\":7,\"slot_ms\":0.000,\"us\":[]}"); }
         const std::string j = stats::RecordJson(r, 1700000000);
         CHECK(j.find("\"gpu_share\":0.22500") != std::string::npos && j.find("\"mode\":\"interp\"") != std::string::npos);
         CHECK(j.front() == '{' && j.back() == '}' && j.find('\n') == std::string::npos);
         CHECK(j.find('/') == std::string::npos);                                         // no path in a record
         stats::Record c = r; c.cap_wait_ms = 7.25; c.cap_hold_ms = 0.5; c.pid = 4242;    // the base-rate cap's sleeps and the writing process
         const std::string jc = stats::RecordJson(c, 1700000000);
-        CHECK(jc.find("\"cap_wait_ms\":7.250,\"cap_hold_ms\":0.500,\"pid\":4242}") != std::string::npos);
-        CHECK(j.find("\"cap_wait_ms\":0.000,\"cap_hold_ms\":0.000,\"pid\":0}") != std::string::npos);   // the fields are always there
+        CHECK(jc.find("\"cap_wait_ms\":7.250,\"cap_hold_ms\":0.500,") != std::string::npos);
+        CHECK(j.find("\"cap_wait_ms\":0.000,\"cap_hold_ms\":0.000,") != std::string::npos);   // the fields are always there
+        CHECK(j.find("\"ft_std_ms\":") != std::string::npos && j.find("\"content_delay_ms\":0.000,\"pid\":0}") != std::string::npos);
+        c.content_delay_ms = 41.5; c.ft_std_ms = 2.125;
+        CHECK(stats::RecordJson(c, 1700000000).find("\"ft_std_ms\":2.125,\"content_delay_ms\":41.500,\"pid\":4242}") != std::string::npos);
     }
     // ---- the schedule and the derived numbers ----
     {
