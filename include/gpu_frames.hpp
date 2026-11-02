@@ -137,6 +137,9 @@ bool GpuPrepareHeldPresent(const DeviceDispatch& dt, VkQueue queue, GpuState& g,
 // Stage 4 (src/optical_flow.cpp). Builds the pipelines and images (false: the engine stays off, synthetic frames are unaffected).
 bool FlowCreate(const DeviceDispatch& dt, GpuState& g);
 void FlowDestroy(const DeviceDispatch& dt, GpuState& g);
+// The GPU timestamp pool (g.flow.qpool, g.flow.ts_period_ns): FlowCreate makes it for the optical flow; GpuInit makes it too when the flow is off, so the plain cross-fade
+// pass is timed as well. Optional: without timestamp support on the present queue's family the pool stays null and nothing is timed. FlowDestroy frees it.
+void TimingInit(const DeviceDispatch& dt, GpuState& g);
 // Estimates the flow A -> B and B -> A and the occlusion mask of a pair. Runs on `queue` (ordered after the captures of both
 // frames by barriers). Sets g.flow.pair_valid; on failure the engine is switched off.
 bool GpuFlow(const DeviceDispatch& dt, VkQueue queue, GpuState& g, const HeldFrame& a, const HeldFrame& b);

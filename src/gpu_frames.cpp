@@ -261,6 +261,7 @@ GpuState* GpuInit(const DeviceDispatch& dt, SwapchainState& sc, uint32_t family)
     g->synth_ready = GetConfig().synth && CreateBlendPass(dt, *g);
     FG_LOG("synth: synthetic frames %s", g->synth_ready ? "ready (blend.comp)" : "off");
     if (g->synth_ready && GetConfig().flow && !FlowCreate(dt, *g)) { FG_LOG("flow: the optical-flow engine could not be built, it stays off"); FlowDestroy(dt, *g); }
+    if (g->synth_ready && !g->flow.qpool) TimingInit(dt, *g);          // the plain cross-fade pass is timed too (the flow, when it is on, made the pool itself)
     DumpInit(dt, *g);
     FG_LOG("hold: ring %u x RGBA16F %ux%u, %zu swapchain images, queue family %u", GpuState::kRingCapacity, g->extent.width, g->extent.height, g->swap_images.size(), family);
     return g;
@@ -448,7 +449,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
             fs.interp_sum += ms; fs.interp_max = std::max(fs.interp_max, ms);
             { fs.stat_interp_ns += uint64_t(ms * 1e6); ++fs.stat_interp_n; }
             if (++fs.interp_count >= 240) {
-                FG_LOG_ROUTINE("interpolation: GPU %.2f ms per generated frame (max %.2f) over %u frames", fs.interp_sum / fs.interp_count, fs.interp_max, fs.interp_count);
+                FG_LOG_ROUTINE("%s: GPU %.2f ms per generated frame (max %.2f) over %u frames", GetConfig().interpolate ? "interpolation" : "cross-fade", fs.interp_sum / fs.interp_count, fs.interp_max, fs.interp_count);
                 fs.interp_sum = 0.0; fs.interp_max = 0.0; fs.interp_count = 0;
             }
         }
@@ -509,7 +510,10 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         dt.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe_layout, 0, 1, &g.sets[e], 0, nullptr);
         dt.CmdPushConstants(cb, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float), &t_push);
     }
-    const bool time_interp = interp && fs.qpool;
+    // Timed: the interpolation pass, and, with the optical flow off in the configuration, the plain cross-fade pass (same stamps, same counters: interp_ms, generated frames
+    // per second, gpu_share). NOT timed in either mode: the capture blit of each game frame and the final copy of each generated frame into the swapchain, so gpu_share is a
+    // lower bound of the layer's GPU work. A pair without a flow in flow mode, and the debug view, stay untimed (their numbers would mix two kinds of pass).
+    const bool time_interp = fs.qpool && !vis && (interp || !GetConfig().interpolate);
     if (time_interp) {
         dt.CmdResetQueryPool(cb, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst, FlowState::kInterpStamps);
         dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst);   // after everything queued before, so the interval is the warp alone
