@@ -117,8 +117,8 @@ int main() {
         CHECK(stats::Bench::SpreadOf({}).n == 0);
     }
     {   // the settings echo
-        stats::Bench e; e.Start(1, 90, 4, 60, 1.01, 1, 16, 3, 0.0);
-        CHECK(e.Json().find("\"cmd_buffers\":16,\"flow_level\":3,\"synth_margin\":0.00") != std::string::npos);
+        stats::Bench e; e.Start(1, 90, 4, 60, 1.01, 1, 16, 3, 0.0, 1);
+        CHECK(e.Json().find("\"cmd_buffers\":16,\"flow_level\":3,\"synth_margin\":0.00,\"optical_flow\":1,") != std::string::npos);        // the file says whether the flow or the plain cross-fade made the frames
     }
     // labels and the first seconds of a run
     {

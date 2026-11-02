@@ -67,10 +67,10 @@ std::string RecordJson(const Record& r, long long unix_s) {
 
 // ---------------------------------------------------------------- benchmark
 
-void Bench::Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers, int flow_level, double synth_margin) {
+void Bench::Start(int user_enabled, double target_fps, int max_synthetic, double base_fps_cap, double min_gain, int bidir, int cmd_buffers, int flow_level, double synth_margin, int optical_flow) {
     state_ = State::Running; reason_.clear(); elapsed_ = 0.0; rows_.clear();
     user_enabled_ = user_enabled; cur_enabled_ = 1;
-    target_ = target_fps; synth_ = max_synthetic; cap_ = base_fps_cap; gain_ = min_gain; bidir_ = bidir; refresh_ = 0.0; cmd_buffers_ = cmd_buffers; flow_level_ = flow_level; synth_margin_ = synth_margin;
+    target_ = target_fps; synth_ = max_synthetic; cap_ = base_fps_cap; gain_ = min_gain; bidir_ = bidir; refresh_ = 0.0; cmd_buffers_ = cmd_buffers; flow_level_ = flow_level; synth_margin_ = synth_margin; optical_flow_ = optical_flow;
 }
 
 int Bench::SegmentOf(double t, bool& on, double& into) const {
@@ -193,8 +193,8 @@ std::string Bench::Json() const {
         "{\n\"version\":1,\n\"status\":\"%s\",\n\"reason\":\"%s\",\n"
         "\"notes\":\"generated_per_s and interp_ms count interpolation passes: the pass draws every shown frame (k + 1 per native frame, k = gen_per_native). By default every one of them is a synthetic frame: SYNTH_MARGIN (0.15) keeps t away from 0 and 1, so the frame at the start of a pair is a synthetic one, not the native frame. With SYNTH_MARGIN=0 that frame is the native frame itself and costs no pass. A 60 s segment has about 59 one-second records: 2 settle, about 57 counted, and one at the switch that belongs to neither. layer_cost_pairs_ms is on minus off for each pair; layer_cost_within_noise compares the mean with the 95 %% t interval of the pairs. async_gain_upper_bound_ms equals the layer cost and is NOT an achievable gain: in a GPU-bound game the cost is the layer own GPU time, which a second queue does not remove.\",\n"
         "\"schedule\":{\"warmup_s\":%.0f,\"segment_s\":%.0f,\"repeats\":%d,\"settle_s_left_out_per_segment\":%.0f,\"order\":\"warm-up (layer on), then pairs of segments, off then on in the first pair and on then off in the second, and so on\"},\n"
-        "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"cmd_buffers\":%d,\"flow_level\":%d,\"synth_margin\":%.2f,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
-        status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, cmd_buffers_, flow_level_, synth_margin_, refresh_);
+        "\"settings\":{\"target_fps\":%.1f,\"max_synthetic\":%d,\"base_fps_cap\":%.1f,\"min_gain\":%.3f,\"interp_bidir\":%d,\"cmd_buffers\":%d,\"flow_level\":%d,\"synth_margin\":%.2f,\"optical_flow\":%d,\"refresh_hz\":%.2f,\"base_fps_cap_kept_while_off\":true},\n",
+        status, reason_.c_str(), p_.warmup_s, p_.segment_s, p_.reps, p_.settle_s, target_, synth_, cap_, gain_, bidir_, cmd_buffers_, flow_level_, synth_margin_, optical_flow_, refresh_);
     j += "\"off\":" + agg(off) + ",\n\"on\":" + agg(on) + ",\n\"derived\":";
     if (!ok) {
         j += "null\n}\n";
@@ -255,7 +255,7 @@ void StatsOnSecond(stats::Record& r, uint64_t) {
         (void)LiveBenchCancel();                              // a cancel with nothing running is not kept for the next run
         if (LiveBenchRequest(&token)) {
             LiveBenchAck(token);
-            g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load(), live.cmd_buffers.load(), GetConfig().flow_level, live.synth_margin.load());
+            g_bench.Start(live.enabled.load(), live.target_fps.load(), live.max_synthetic.load(), live.base_fps_cap.load(), live.min_gain.load(), live.interp_bidir.load(), live.cmd_buffers.load(), GetConfig().flow_level, live.synth_margin.load(), GetConfig().interpolate ? 1 : 0);
             g_gen0 = LiveGeneration();
             g_bench_active = 1; LiveBenchRunning(true); g_last_state.clear();
             live.enabled = 1;                                 // warm-up with the layer on

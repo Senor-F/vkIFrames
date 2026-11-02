@@ -66,6 +66,7 @@ int main() {
     CHECK(!d.debug_flow && !d.debug_ring && d.tickmark == 0);
     CHECK(!d.onesided_fill);                                  // the experimental fill is off
     CHECK(!d.extrapolate && !d.pace_sleep && !d.absolute && !d.cap_early && d.cand_thr == 0.0f);
+    CHECK(!d.interpolate && !d.flow);                         // optical flow is opt-in: by default the synthetic frames are a plain cross-fade and no flow engine is built
     CHECK(d.hold && d.synth && d.presenter);                  // the product runs by default once enabled
     CHECK(d.max_synthetic <= kLiveMaxSyntheticNormal);
     CHECK(LiveMaxSyntheticLimit() == kLiveMaxSyntheticNormal);   // EXPERIMENTAL is off: the limit is 4, not 10
