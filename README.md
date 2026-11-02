@@ -21,17 +21,17 @@ Files the layer writes: `~/.config/vkiframes/live.log` (and `live.log.1`), `stat
 vkIFrames adds GPU work: an optical-flow pass for every base frame and an interpolation pass for every frame it shows. That work is the price of the extra frames, so the layer fits some games much better than others.
 
 **Good fit**
-- **CPU-bound games.** The game is limited by its CPU side and the GPU has idle time, which absorbs the layer's work. Measured: the layer's cost was 0 ms when the game had GPU headroom (benchmark 1 in STATUS.md).
-- **Games with a forced frame-rate cap** (an in-engine 30 or 45 fps lock, a locked console port, or a limiter you set yourself): the game cannot go faster, so the extra frames are new. Set the cap to the base rate you want (see "Cap your game") and the Target FPS to the display rate, for example 45 to 90.
-- **A base rate of 30 fps or more**, where some added latency (about one base frame) does not matter.
+- **CPU-bound games.** The game is limited by its CPU side and the GPU has idle time, which can absorb the layer's work. In one Deck run with a 30 fps cap the game's frame time did not change with the layer on (33.40 ms off, 33.38 ms on; benchmark 1 in STATUS.md). The GPU still does the extra work; only the frame time was unaffected.
+- **Games with a forced frame-rate cap** (an in-engine 30 or 45 fps lock, a locked console port, or a limiter you set yourself): the game cannot go faster, so the extra frames are new. Set the cap to the base rate you want (see "Cap your game" under "Trade-offs to know about") and the Target FPS to the display rate, for example 45 to 90.
+- **A base rate of 30 fps or more**, where some added latency (about one base frame; the layer reports it as content delay) does not matter.
 
 **Poor fit**
-- **GPU-bound games.** The layer takes GPU time from the game, so the game's own frame rate falls: in one Deck scene 55.6 fps native became about 43 fps while 90 fps were shown.
-- **Games that already reach the target** without the layer. The layer then steps aside and passes frames through, so there is nothing to gain, and turning it on anyway only costs.
-- **Light scenes on a fast GPU path.** Interpolating from 45 to 90 costs more GPU than the game needs to render 90 natively when one game frame costs less than roughly the layer's work per base frame (flow plus two interpolation passes, about 8 to 9 ms on a Deck in one game; calculated from the per-pass times, not a guarantee). In one tree scene the Game Mode overlay read 23 to 27 % GPU at 480 to 540 MHz with the layer off at 90 fps native, and 48 to 53 % at 740 to 830 MHz with the layer on at 45 to 90 (one scene, overlay readings, not a controlled measurement). The picture rate is the same, the GPU works harder and runs at a higher clock; power draw was not measured.
+- **GPU-bound games.** The layer takes GPU time from the game, so the game's own frame rate falls: in one Deck scene (one run of six off/on pairs) 55.6 fps native calculates to about 43 fps (from the frame times) while 90 fps are shown.
+- **Games that already reach the target** without the layer. The layer then steps aside and passes frames through, so there is nothing to gain.
+- **Light scenes** (the game needs little GPU time per frame). Going from 45 to 90 fps costs more GPU than rendering 90 natively when one game frame costs less than the layer's work per base frame: one optical-flow pass plus two interpolation passes. Measured pass times on a Deck were flow 3 to 5.5 ms per pair (it has varied from run to run) and about 0.9 ms per interpolated frame, so roughly 5 to 7 ms (calculated for 45 to 90, not a guarantee). In one tree scene the Game Mode overlay read 23 to 27 % GPU at 480 to 540 MHz with the layer off at 90 fps native, and 48 to 53 % at 740 to 830 MHz with the layer on at 45 to 90: the busy percentage roughly doubled and the clock rose by about half (one scene, overlay readings, not a controlled measurement). The picture rate is the same, the GPU works harder; power draw was not measured.
 - **Latency-sensitive play** (fast shooters, rhythm games): interpolation adds about one base frame of input latency.
 
-If you are unsure, try it on one game with `VKIFRAME_STATS=1` and compare the frame rate with and without the layer; the log lines "native N fps -> output M fps" show what the layer did.
+If you are unsure, try it on one game and compare with and without the layer. The log line "native N fps -> output M fps (planned) | shown K fps" shows what the layer did (`VKIFRAME_STATS=1` adds a per-second file). In Desktop Mode the Steam overlay's counter can show the game's own rate instead of the shown rate (see "Tested").
 
 ## Install the alpha
 
