@@ -4,7 +4,7 @@ project(vkIFrames VERSION 0.1.0 LANGUAGES CXX)
 # One release version for the whole project (library log line, Decky plugin, archives). The commit and its commit time come from git (or from
 # -DFRAMEGEN_COMMIT=... -DFRAMEGEN_COMMIT_TIME=<unix seconds> when building from a tarball): no build date or time is embedded, so two builds of the
 # same commit give the same library.
-set(FRAMEGEN_VERSION "0.1.0-alpha.1" CACHE STRING "Release version shown in the library's log line and used in archive names")
+set(FRAMEGEN_VERSION "0.1.0-alpha.2" CACHE STRING "Release version shown in the library's log line and used in archive names")
 if(NOT FRAMEGEN_COMMIT)
     find_package(Git QUIET)
     set(FRAMEGEN_COMMIT "unknown")
