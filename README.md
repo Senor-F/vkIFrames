@@ -35,7 +35,7 @@ If you are unsure, try it on one game and compare with and without the layer. Th
 
 ### Cross-fade or optical flow?
 
-Optical flow is off by default. Which setting looks and feels better depends on the game and, to some extent, on the person; this is what we saw (one tester's eyes, owner's own words, not a measurement):
+Optical flow is off by default. Which setting looks and feels better depends on the game and, to some extent, on the person; this is what we saw (one tester's eyes, not a measurement):
 - **Cross-fade (default):** the image stays clean, with no warping of trees or thin lines. In Batman: Arkham Asylum and Tomb Raider (2013) it looked like the target frame rate. In Cuphead (forest level) it still looked like the base rate (45 fps) on a 90 fps target, although the logs showed the same 45 to 90 as with optical flow on.
 - **Optical flow on:** in Cuphead the motion felt like the target rate, with warping and distortion on trees and thin lines; it costs about 5 ms of GPU time per game frame in the scene we measured.
 Try the default first; if motion still feels like the base rate, turn on "Optical flow" in the Decky panel or set `VKIFRAME_OPTICAL_FLOW=1`, and see whether the artefacts are acceptable to you.
