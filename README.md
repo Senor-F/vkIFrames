@@ -49,7 +49,7 @@ If you are unsure, try it on one game and compare with and without the layer. Th
 - **The Decky panel rewrites the whole `live.conf`** at every change and at loader start, so edits made by hand to that file are overwritten.
 - **Input latency** is about one base frame while interpolating.
 - **Frame pacing.** The layer forces FIFO presentation, which may not suit every variable-refresh setup. Present-timing support differs between gamescope and Mesa versions.
-- **Crash on low memory.** An out-of-memory inside the layer ends the game (uncaught `bad_alloc`).
+- **Low memory.** A failing allocation inside the layer no longer ends the game by itself: the call fails with `VK_ERROR_OUT_OF_HOST_MEMORY` or falls back to the game's own call (a swapchain being destroyed at that moment may skip the layer's cleanup). A game that does not handle that error can still stop. Tested with an injected allocation failure on mocks only.
 - **Debug capture.** `VKIFRAME_DUMP` writes frames of the game to a folder; it holds about (frames + 11) x width x height x 8 bytes of memory (about 300 MB at 30 frames at 1280x720, about 1.2 GB at 60 frames at 1920x1080) and writes the files in one stall of about 0.3 s at the end. Off by default.
 - **Not tested:** NVIDIA, Intel, native 32-bit games, native Linux Vulkan games, other distributions than SteamOS.
 
