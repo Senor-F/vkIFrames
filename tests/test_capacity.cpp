@@ -63,10 +63,12 @@ static void VKAPI_CALL m_FormatProps(VkPhysicalDevice, VkFormat, VkFormatPropert
 static void VKAPI_CALL m_QFProps(VkPhysicalDevice, uint32_t* n, VkQueueFamilyProperties* p) { *n = 1; p[0] = {}; p[0].queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT; p[0].queueCount = 1; }
 static void VKAPI_CALL m_MemProps(VkPhysicalDevice, VkPhysicalDeviceMemoryProperties* p) { *p = {}; p->memoryTypeCount = 1; p->memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; }
 
+static int r_creates; static VkSwapchainKHR r_old_last{}; static VkPresentModeKHR r_mode_last; static VkSwapchainCreateFlagsKHR r_flags_last; static std::vector<VkSwapchainKHR> r_destroyed_sc;
 static VkResult VKAPI_CALL m_CreateSwapchain(VkDevice, const VkSwapchainCreateInfoKHR* ci, const VkAllocationCallbacks*, VkSwapchainKHR* s) {
-    r_usage = ci->imageUsage; r_min_images = ci->minImageCount; g_granted = k_surface_max && ci->minImageCount > k_surface_max ? k_surface_max : ci->minImageCount; *s = (VkSwapchainKHR)(uintptr_t)0x77; return VK_SUCCESS;
+    ++r_creates; r_old_last = ci->oldSwapchain; r_mode_last = ci->presentMode; r_flags_last = ci->flags;
+    r_usage = ci->imageUsage; r_min_images = ci->minImageCount; g_granted = k_surface_max && ci->minImageCount > k_surface_max ? k_surface_max : ci->minImageCount; *s = (VkSwapchainKHR)(uintptr_t)(0x77 + r_creates); return VK_SUCCESS;
 }
-static void VKAPI_CALL m_DestroySwapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*) {}
+static void VKAPI_CALL m_DestroySwapchain(VkDevice, VkSwapchainKHR s, const VkAllocationCallbacks*) { r_destroyed_sc.push_back(s); }
 static void VKAPI_CALL m_GetQueue(VkDevice, uint32_t, uint32_t, VkQueue* q) { *q = (VkQueue)&g_q; }
 static VkResult VKAPI_CALL m_SwapImages(VkDevice, VkSwapchainKHR, uint32_t* n, VkImage* p) { if (!p) { *n = g_granted; return VK_SUCCESS; } for (uint32_t i = 0; i < *n && i < g_granted; ++i) p[i] = (VkImage)(uintptr_t)(1000 + i); return VK_SUCCESS; }
 static VkResult VKAPI_CALL m_WaitIdle(VkDevice) { return VK_SUCCESS; }
@@ -105,7 +107,7 @@ static VkResult VKAPI_CALL m_Present(VkQueue, const VkPresentInfoKHR* pi) {
     uint64_t pid = 0; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) { auto* x = (const VkPresentIdKHR*)c; CHECK(x->swapchainCount == 1); pid = x->pPresentIds[0]; }
     VkFence fence = VK_NULL_HANDLE; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR) { auto* x = (const VkSwapchainPresentFenceInfoKHR*)c; CHECK(x->swapchainCount == 1); fence = x->pFences[0]; }
     int mode = -1; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR) { auto* x = (const VkSwapchainPresentModeInfoKHR*)c; CHECK(x->swapchainCount == 1); mode = int(x->pPresentModes[0]); }
-    r_presents.push_back({pi->waitSemaphoreCount ? pi->pWaitSemaphores[0] : VK_NULL_HANDLE, pi->pImageIndices[0], pid, fence, mode}); r_events.push_back("P"); return VK_SUCCESS;
+    r_presents.push_back({pi->waitSemaphoreCount ? pi->pWaitSemaphores[0] : VK_NULL_HANDLE, pi->pImageIndices[0], pid, fence, mode}); r_events.push_back("P"); if (pi->pResults) pi->pResults[0] = VK_SUCCESS; return VK_SUCCESS;   // a real driver reports per swapchain
 }
 static VkResult VKAPI_CALL m_SetLoaderData(VkDevice, void* obj) { ++r_loader_data_calls; ((Fake*)obj)->dispatch = (void*)0x2222; return VK_SUCCESS; }
 
@@ -234,8 +236,13 @@ int main(int, char** argv) {
     std::fflush(nullptr);
     const std::string log = Slurp(logf);
     if (sc) {
-        CHECK(r_min_images == sc->want_images);
-        if (sc->want_cap == 0) {                                                                      // pass-through: no capacity line, holding off, every present forwarded as it is
+        CHECK(r_min_images == (sc->want_cap == 0 ? 3u : sc->want_images));
+        if (sc->want_cap == 0) {
+            // pass-through: the swapchain was made once with the layer's extras, found too small for a synthetic frame, and made again exactly as the game asked
+            // (3 images, its usage, flags and present mode), with the first one as oldSwapchain; the first was destroyed and the game got the second
+            CHECK(r_creates == 2 && r_min_images == 3 && r_usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT && r_flags_last == 0 && r_mode_last == sci.presentMode);
+            CHECK(r_old_last == (VkSwapchainKHR)(uintptr_t)(0x77 + 1) && r_destroyed_sc.size() == 1 && r_destroyed_sc[0] == r_old_last);
+            CHECK(swc == (VkSwapchainKHR)(uintptr_t)(0x77 + 2));                                                                      // pass-through: no capacity line, holding off, every present forwarded as it is
             CHECK(log.find("frame holding is off for this swapchain") != std::string::npos);
             CHECK(log.find("capacity ") == std::string::npos);
             auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");

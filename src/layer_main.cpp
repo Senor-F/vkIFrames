@@ -274,6 +274,13 @@ VKAPI_ATTR void VKAPI_CALL Hook_GetDeviceQueue2(VkDevice device, const VkDeviceQ
 
 // ---------------------------------------------------------------- swapchain
 
+namespace {
+// The fields of a swapchain request that the layer changes (and the rest of the structure is the same object): flags, usage, image count, present mode, old swapchain.
+bool SameCreateInfo(const VkSwapchainCreateInfoKHR& a, const VkSwapchainCreateInfoKHR& b) {
+    return a.flags == b.flags && a.imageUsage == b.imageUsage && a.minImageCount == b.minImageCount && a.presentMode == b.presentMode && a.oldSwapchain == b.oldSwapchain;
+}
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
                                                        const VkSwapchainCreateInfoKHR* pCreateInfo,
                                                        const VkAllocationCallbacks* pAllocator,
@@ -359,10 +366,37 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
     if (r != VK_SUCCESS && try_timing) {
         FG_LOG("present timing: swapchain creation failed with the flags (%d), retrying without", int(r));
         ci.flags = pCreateInfo->flags; ci.presentMode = app_mode;
+        ci.oldSwapchain = VK_NULL_HANDLE;     // the failed call already retired the game's oldSwapchain (Vulkan: "even if creation of the new swapchain fails"), and VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933 wants a non-retired one
         try_timing = false;
         r = dt->CreateSwapchainKHR(device, &ci, pAllocator, pSwapchain);
     }
+    if (r != VK_SUCCESS && !SameCreateInfo(ci, *pCreateInfo)) {
+        // Whatever we changed (usage bits, image count, timing flags, present mode) may be what the driver refuses: the game's own request is tried as it is, and that
+        // swapchain is not touched by the layer at all (no state is registered: its presents pass straight through).
+        FG_LOG("vkCreateSwapchainKHR failed with the layer's changes (%d): creating the game's swapchain unmodified", int(r));
+        VkSwapchainCreateInfoKHR as_asked = *pCreateInfo;
+        as_asked.oldSwapchain = VK_NULL_HANDLE;                      // already retired by the failed attempts above (see there), so it is not passed again
+        r = dt->CreateSwapchainKHR(device, &as_asked, pAllocator, pSwapchain);
+        if (r == VK_SUCCESS) LiveSetSynthCapacity(0);
+        return r;
+    }
     if (r != VK_SUCCESS) return r;
+
+    // A replacement for the swapchain just created: made from `info` with the first one as oldSwapchain (the game's own oldSwapchain is already retired by the first
+    // creation and must not be used twice), the first one is destroyed. False when the driver refuses: the first swapchain then stays. Creating the replacement
+    // retires the first one even when it fails (Vulkan retires oldSwapchain whether or not creation succeeds), so the game then gets a retired swapchain: its next
+    // acquire or present returns VK_ERROR_OUT_OF_DATE_KHR and it recreates its swapchain, which is the path every game has for a resize. A driver that refuses a
+    // swapchain made exactly as the game asked is unusual enough that nothing better is done here.
+    auto replace_with = [&](const VkSwapchainCreateInfoKHR& info) {
+        VkSwapchainCreateInfoKHR again = info;
+        again.oldSwapchain = *pSwapchain;
+        VkSwapchainKHR made = VK_NULL_HANDLE;
+        if (dt->CreateSwapchainKHR(device, &again, pAllocator, &made) != VK_SUCCESS) return false;
+        DestroySwapchainState(*pSwapchain);
+        dt->DestroySwapchainKHR(device, *pSwapchain, pAllocator);
+        *pSwapchain = made;
+        return true;
+    };
 
     SwapchainState* sc = RegisterSwapchain(*pSwapchain);
     sc->hold_candidate = hold; sc->extent = ci.imageExtent; sc->format = ci.imageFormat;
@@ -378,6 +412,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
                 FG_LOG("synthetic frames: swapchain built for %d, but only %u images granted (the app asked for %u): not even one synthetic frame fits, frame holding is off for this swapchain", synth_capacity, granted, app_min_images);
                 sc->hold_candidate = false; sc->synth_capacity = 0;
                 LiveSetSynthCapacity(0);
+                // Pass-through: the swapchain is made again exactly as the game asked (its flags, present mode, image count and usage), not with the layer's extra images,
+                // usage bits, timing flags and forced FIFO that serve nothing now. If the driver refuses that, the swapchain just created stays.
+                if (replace_with(*pCreateInfo)) FG_LOG("pass-through: the swapchain was created again as the game asked");
                 return VK_SUCCESS;
             }
             sc->synth_capacity = std::clamp(std::min(synth_capacity, fit), 1, kLiveMaxSynthetic);
@@ -387,8 +424,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
         LiveSetSynthCapacity(sc->synth_capacity);
     }
     if (try_timing) {
-        if (!SetupSwapchainTiming(*dt, *sc, stage_mask, ci.minImageCount * 4))
+        if (!SetupSwapchainTiming(*dt, *sc, stage_mask, ci.minImageCount * 4)) {
             FG_LOG("present timing: setup failed, presenting without timing");
+            // Without timing the timing flags and the forced FIFO serve nothing: the swapchain is made again with the game's flags and present mode (the rest of the layer's
+            // changes stay, they belong to frame holding). If the driver refuses, the first swapchain stays as it is.
+            VkSwapchainCreateInfoKHR plain_timing = ci;
+            plain_timing.flags = pCreateInfo->flags; plain_timing.presentMode = app_mode;
+            const uint32_t keep_capacity = uint32_t(sc->synth_capacity);
+            const bool keep_hold = sc->hold_candidate;
+            if (replace_with(plain_timing)) {
+                sc = RegisterSwapchain(*pSwapchain);
+                sc->hold_candidate = keep_hold; sc->extent = ci.imageExtent; sc->format = ci.imageFormat; sc->synth_capacity = int(keep_capacity);
+                FG_LOG("present timing: the swapchain was created again without the timing flags, with the game's present mode");
+            }
+        }
         sc->absolute_ok = sc->timing_enabled && surface_absolute;
     }
     return VK_SUCCESS;
