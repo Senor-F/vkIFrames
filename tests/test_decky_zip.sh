@@ -28,7 +28,7 @@ for i in z.infolist():
     assert i.filename.startswith(\"vkIFrames/\")
     assert m==(0o755 if i.filename.endswith(\".so\") else 0o644),(i.filename,oct(m))
 " "$T/a/$Z"'
-ok "refuses a dirty version string" '! "$REPO/decky/scripts/make-zip.sh" --lib "$T/lib.so" --version 0.1.0-dirty --out "$T/c" >/dev/null 2>&1'
+ok "refuses a dirty version string" '! "$REPO/decky/scripts/make-zip.sh" --lib "$T/lib.so" --version 0.2.0-dirty --out "$T/c" >/dev/null 2>&1'
 ok "refuses a non-ELF library" 'echo nope > "$T/x.so"; ! "$REPO/decky/scripts/make-zip.sh" --lib "$T/x.so" --version "$VERSION" --out "$T/c" >/dev/null 2>&1'
 if [ $fails -eq 0 ]; then echo "decky zip: ok"; else echo "decky zip: $fails FAILED"; fi
 exit $((fails > 0))

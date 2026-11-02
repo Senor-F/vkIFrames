@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the Decky plugin zip for Decky Loader's "install plugin from ZIP": <out>/vkIFrames-decky-<version>.zip
-#   decky/scripts/make-zip.sh --lib PATH/libvkIFrames.so --version 0.1.0-alpha.2 --out DIR [--epoch UNIX_SECONDS]
+#   decky/scripts/make-zip.sh --lib PATH/libvkIFrames.so --version 0.2.0 --out DIR [--epoch UNIX_SECONDS]
 # The zip holds one top-level folder, vkIFrames/ (the loader unpacks it as it is and finds the plugin by the "name" in plugin.json), with plugin.json,
 # package.json (version set), main.py, settings_schema.json, dist/index.js (built here with pnpm, no source map), bin/libvkIFrames.so, LICENSE (the plugin's),
 # LICENSE-layer and NOTICE (the layer's), README.md and THIRD_PARTY_LICENSES.txt (generated from the packages that are bundled into dist/index.js).
