@@ -263,8 +263,11 @@ inline bool ParseFlag(const char* v, bool& out) {
     double x;
     if (ParseFiniteNumber(v, x)) { out = x != 0.0; return true; }
     if (!v) return false;
-    if (!std::strcmp(v, "true") || !std::strcmp(v, "on") || !std::strcmp(v, "yes")) { out = true; return true; }
-    if (!std::strcmp(v, "false") || !std::strcmp(v, "off") || !std::strcmp(v, "no")) { out = false; return true; }
+    const char* b = v; while (*b == ' ' || *b == '\t') ++b;                      // blanks around the word are ignored, like around a number
+    const char* e = b + std::strlen(b); while (e > b && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) --e;
+    const std::string w(b, e);
+    if (w == "true" || w == "on" || w == "yes") { out = true; return true; }
+    if (w == "false" || w == "off" || w == "no") { out = false; return true; }
     return false;
 }
 inline void EnvFlagValue(const char* name, const char* v, bool& dst) {
