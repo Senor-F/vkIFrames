@@ -160,7 +160,7 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
     }
     f.ready = true;
     f.pair_bidir = Live().interp_bidir.load() != 0;
-    FG_LOG("settings: phase_lock %d offset %.2f | interp_guide %.3f | conf %.3f..%.3f | flow_level %d subpixel %d | interpolate %d | interp_cand %.3f | pan %.2f..%.2f | synth_margin %.2f | bwd_skip %d | bidir %d | ui_mask %.3f | extrap %d",
+    FG_LOG("settings: phase_lock %d offset %.2f | interp_guide %.3f | conf %.3f..%.3f | flow_level %d subpixel %d | optical_flow %d | interp_cand %.3f | pan %.2f..%.2f | synth_margin %.2f | bwd_skip %d | bidir %d | ui_mask %.3f | extrap %d",
            int(GetConfig().phase_lock), double(GetConfig().phase_offset), double(GetConfig().interp_guide), double(GetConfig().conf_lo), double(GetConfig().conf_hi),
            GetConfig().flow_level, int(GetConfig().flow_subpixel), int(GetConfig().interpolate), double(GetConfig().cand_thr), double(GetConfig().pan_lo), double(GetConfig().pan_hi), double(GetConfig().synth_margin), int(SkipFinestBackward(f)), int(f.pair_bidir), double(GetConfig().ui_mask), int(GetConfig().extrapolate));
     FG_LOG("flow: optical-flow engine ready (%ux%u -> levels %ux%u, %ux%u, %ux%u, %ux%u; flow field at level %u: %ux%u; GPU timing %s)",
