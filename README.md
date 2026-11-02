@@ -65,6 +65,32 @@ If you are unsure, try it on one game and compare with and without the layer. Th
 
 Game runs for the table started from Steam in Game Mode with Proton. Desktop Mode was checked once, with Cuphead: the layer reported 90 fps shown and KWin's "Show FPS" effect also counted 90, while the Steam overlay's counter showed 45, the game's own rate. If the Steam overlay shows the base rate in Desktop Mode, check with KWin's "Show FPS" effect before concluding that the layer does nothing. The layer reads the refresh rate through `VK_EXT_present_timing`, and uses that extension only when the game does not use present timing or present id itself and the driver offers it. In every Steam Deck run so far (Cuphead, Tomb Raider (2013), Batman: Arkham Asylum, through Proton and DXVK) the log says `present timing: skipped (the application uses present timing / present id itself)`, so `refresh_hz` shows 0 in Game Mode and Desktop Mode alike, and the refresh-rate limit on `TARGET_FPS` does not apply; set `TARGET_FPS` at or below your display's refresh rate yourself. Whether the Deck's driver offers the extension was not checked. On a machine where the driver does not offer the extension at all (our Radeon RX 9070 desktop), the log says `device extensions not offered by this driver` and the result is the same.
 
+### Frame-rate matrix (Batman: Arkham Asylum GOTY Edition, plain cross-fade)
+
+A test for the curious, read it as "base frame-rate cap > Target FPS". Setup: Steam Deck OLED, Game Mode, Proton - Experimental (experimental-11.0-20261027b, DXVK 3.1.1) with the DXVK launch option from "Known issues", optical flow off (the default cross-fade), one game start, only `VKIFRAME_BASE_FPS_CAP` and `TARGET_FPS` changed in `live.conf` between rows, standing still in the same scene, 10 s settle and 90 s recorded per row (the Tester's logs; the Auditor's recompute from the raw files agrees to within 0.01 fps). The matrix was run with an earlier build than this release (commit 4128abb: it did not yet have the `OPTICAL_FLOW` key or the extra panel buttons, and the optical flow was switched off with `INTERPOLATE=0`). The release behaves the same for these settings by design: between that build and the release the source changed only the default of the optical flow, the setting names, a log word, a field in `bench.json` and a note for `VKIFRAME_DUMP`, nothing in the scheduler or the present path.
+
+| Cap > target | Mode | Native fps | Shown fps | Synthetic frames per game frame (k) | Dropped |
+|---|---|---|---|---|---|
+| 30 > 30 | pass-through | 30.00 | 30.00 | 0 | 0 |
+| 30 > 60 | generating | 30.00 | 60.00 | 1.00 | 0 |
+| 30 > 90 | generating | 30.00 | 90.00 | 2.00 | 0 |
+| 30 > 120 | generating | 30.00 | 120.00 | 3.00 | 0 |
+| 60 > 30 | pass-through | 59.99 | 59.99 (shown 60, not 30) | 0 | 0 |
+| 60 > 60 | pass-through (1 s generating) | 59.99 | 60.00 | 0 | 0 |
+| 60 > 90 | generating | 60.00 | 89.99 | 0.50 | 0 |
+| 60 > 120 | generating | 59.99 | 120.00 | 1.00 | 0 |
+| 90 > 30 | pass-through | 61.97 | 61.97 | 0 | 0 |
+| 90 > 60 | pass-through | 61.94 | 61.94 | 0 | 0 |
+| 90 > 90 | generating | 61.96 | 90.00 | 0.45 | 0 |
+| 90 > 120 | generating | 61.98 | 119.99 | 0.94 | 0 |
+
+How to read it:
+- The game itself ran at about 62 fps, so with a cap of 90 the cap did not bind: the 90 rows are really 62 to the target.
+- When the target is at or below the game's rate the layer passes frames through: a target below the game's rate does not slow the game down (60 > 30 still shows 60).
+- With whole ratios (x2, x3, x4) k is exactly 1, 2 and 3. With the other ratios (1.5, 1.45, 1.94) k is a fraction and the generated frames are spaced unevenly by design; the per-second records do not show the spacing.
+- "Shown" at a target of 120 is the layer's plan: the Deck's panel is 90 Hz and what the screen displayed was not measured. The layer does not know the refresh rate on the Deck (see above), so it does not clamp the target.
+- The cost counters (`flow_ms`, `interp_ms`, `gpu_share`) read 0 for the cross-fade because the layer does not time it. Nothing was measured about the picture quality or the latency of these rows.
+
 ## Reporting a problem
 
 Open an issue in this repository and attach `~/.config/vkiframes/live.log` (and `status.json`). They contain the process id, the local times you played and the setting values; in normal use they do not contain your user name, home folder, host name or the game's name. Say which game, which mode (Game Mode or Desktop Mode) and what you set. Do not post anything else personal.
