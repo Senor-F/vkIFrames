@@ -42,7 +42,7 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 SCHEMA_FILE = os.path.join(PLUGIN_DIR, "settings_schema.json")
 DMI_PRODUCT = "/sys/class/dmi/id/product_name"   # "Galileo" = Steam Deck OLED (90 Hz), "Jupiter" = LCD (60 Hz)
 DISPLAY_FILE = os.path.join(SETTINGS_DIR, "display.json")   # last refresh rate seen (from the layer or xrandr)
-TARGET_FLOOR = 120   # the Target FPS slider reaches at least this, or the screen's refresh rate when that is higher
+TARGET_FLOOR = 600   # the Target FPS slider reaches at least this (the layer's own limit), or the screen's refresh rate when that is higher
 PREFIX = "VKIFRAME_"   # the layer also accepts the old FRAMEGEN_ spelling
 
 
@@ -335,7 +335,7 @@ class Plugin:
         return max(TARGET_FLOOR, int(math.ceil(self.refresh_hz)))
 
     def _schema(self, status=None):
-        """The schema with the Target FPS maximum set to the higher of 120 and the screen's refresh rate."""
+        """The schema with the Target FPS maximum set to the higher of 600 and the screen's refresh rate."""
         schema = _load_schema()
         for item in schema:
             if item["key"] == "TARGET_FPS":
