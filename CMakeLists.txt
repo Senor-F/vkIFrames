@@ -106,7 +106,7 @@ endforeach()
 add_custom_target(layer_shaders DEPENDS ${FRAMEGEN_SHADER_HEADERS})
 
 find_package(Threads REQUIRED)
-add_library(vkIFrames SHARED
+set(FRAMEGEN_LAYER_SOURCES
     src/layer_main.cpp
     src/layer_dispatch.cpp
     src/present_timing.cpp
@@ -118,6 +118,7 @@ add_library(vkIFrames SHARED
     src/live_config.cpp
     src/stats.cpp
 )
+add_library(vkIFrames SHARED ${FRAMEGEN_LAYER_SOURCES})
 target_include_directories(vkIFrames PRIVATE include ${FRAMEGEN_GENERATED_DIR})
 target_compile_definitions(vkIFrames PRIVATE FRAMEGEN_VERSION="${FRAMEGEN_VERSION}" FRAMEGEN_COMMIT="${FRAMEGEN_COMMIT}" FRAMEGEN_COMMIT_TIME="${FRAMEGEN_COMMIT_TIME}")
 add_dependencies(vkIFrames layer_shaders)
@@ -169,6 +170,19 @@ if(FRAMEGEN_BUILD_TESTS)
     add_executable(test_detach tests/test_detach.cpp)
     target_link_libraries(test_detach PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS} Threads::Threads)
     add_test(NAME mock_detach COMMAND test_detach $<TARGET_FILE:vkIFrames>)
+    # The host out-of-memory test replaces operator new in the test program, so the layer under test must use the dynamic C++ runtime (the release library
+    # links its own copy statically): the same sources, built for this test only.
+    add_library(vkIFrames_oom SHARED EXCLUDE_FROM_ALL ${FRAMEGEN_LAYER_SOURCES})
+    target_include_directories(vkIFrames_oom PRIVATE include ${FRAMEGEN_GENERATED_DIR})
+    target_compile_definitions(vkIFrames_oom PRIVATE FRAMEGEN_VERSION="${FRAMEGEN_VERSION}" FRAMEGEN_COMMIT="${FRAMEGEN_COMMIT}" FRAMEGEN_COMMIT_TIME="${FRAMEGEN_COMMIT_TIME}")
+    add_dependencies(vkIFrames_oom layer_shaders)
+    target_link_libraries(vkIFrames_oom PRIVATE Vulkan::Headers Threads::Threads)
+    add_executable(test_oom tests/test_oom.cpp)
+    set_target_properties(test_oom PROPERTIES ENABLE_EXPORTS ON)       # exports operator new, so the dlopen()ed layer binds to it
+    target_link_libraries(test_oom PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS} Threads::Threads)
+    add_dependencies(test_oom vkIFrames_oom)
+    add_test(NAME mock_oom COMMAND test_oom $<TARGET_FILE:vkIFrames_oom>)
+    set_tests_properties(mock_oom PROPERTIES TIMEOUT 300)
     add_executable(test_destroy_race tests/test_destroy_race.cpp)
     target_link_libraries(test_destroy_race PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS} Threads::Threads)
     add_test(NAME mock_destroy_race COMMAND test_destroy_race $<TARGET_FILE:vkIFrames>)

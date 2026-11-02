@@ -8,13 +8,19 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <mutex>
+#include <new>
 #include <thread>
 #include <cstring>
 #include <string>
 #include <vector>
 
 namespace { bool StopPresenter(SwapchainState& sc); void HeldFencesDrop(DeviceDispatch& dt, SwapchainState* sc); std::atomic<bool> g_presenter_detached{false}; }
+// Set by the hook bodies for the guard below (see "host out of memory" at the end of this file): the next layer's destroy was already called; the game's frame
+// was already consumed by the layer; the swapchain of the present in progress.
+namespace { void GuardNote(const char* hook, const char* what) noexcept; }
+namespace { thread_local bool t_guard_forwarded = false, t_guard_present_consumed = false; thread_local SwapchainState* t_guard_present_sc = nullptr; }
 
 namespace {
 constexpr uint32_t kMinImageCount = 4;
@@ -60,7 +66,7 @@ bool DeviceExtSupported(const std::vector<VkExtensionProperties>& props, const c
 
 // ---------------------------------------------------------------- instance
 
-VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
+static VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
                                                    const VkAllocationCallbacks* pAllocator,
                                                    VkInstance* pInstance) {
     auto* link = FindInstanceLink(pCreateInfo);
@@ -123,17 +129,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* p
     return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL Hook_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator) {
+static void Impl_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator) {
     void* key = GetKey(instance);                                  // read before the handle dies
     InstanceDispatch* id = LookupInstance(key);
     if (!id) return;                                               // not created through this layer: there is no next function to call
+    t_guard_forwarded = true;                                       // the next layer's destroy is called: the guard must not call it again
     id->DestroyInstance(instance, pAllocator);
     UnregisterInstance(key);
 }
 
 // ---------------------------------------------------------------- device
 
-VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(VkPhysicalDevice physicalDevice,
+static VkResult Impl_CreateDevice(VkPhysicalDevice physicalDevice,
                                                  const VkDeviceCreateInfo* pCreateInfo,
                                                  const VkAllocationCallbacks* pAllocator,
                                                  VkDevice* pDevice) {
@@ -249,10 +256,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(VkPhysicalDevice physicalDevice
     return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL Hook_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
+static void Impl_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
     void* key = GetKey(device);
     DeviceDispatch* dd = LookupDevice(key);
     if (!dd) return;                                               // not created through this layer: there is no next function to call
+    t_guard_forwarded = true;
     dd->DestroyDevice(device, pAllocator);
     if (g_presenter_detached) { LeakQueues(key); LeakDevice(key); }           // a detached presenter thread still holds the dispatch table and may hold a queue mutex
     else { UnregisterQueues(key); UnregisterDevice(key); }
@@ -281,7 +289,7 @@ bool SameCreateInfo(const VkSwapchainCreateInfoKHR& a, const VkSwapchainCreateIn
 }
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
+static VkResult Impl_CreateSwapchainKHR(VkDevice device,
                                                        const VkSwapchainCreateInfoKHR* pCreateInfo,
                                                        const VkAllocationCallbacks* pAllocator,
                                                        VkSwapchainKHR* pSwapchain) {
@@ -443,7 +451,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice device,
     return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+static void Impl_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                     const VkAllocationCallbacks* pAllocator) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return;
@@ -479,6 +487,7 @@ VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchain
             }
         } else DestroySwapchainState(swapchain);
     }
+    t_guard_forwarded = true;
     dt->DestroySwapchainKHR(device, swapchain, pAllocator);
     FG_LOG("shutdown: swapchain destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
 }
@@ -859,7 +868,16 @@ void PresenterMain(DeviceDispatch* dt, SwapchainState* sc, Presenter* p) {
             j = p->q.front(); p->q.pop_front(); p->busy = true;
         }
         const uint64_t cpu0 = ThreadCpuNs();
-        if (j.extrap) ExecuteExtrap(*dt, *sc, j, p); else ExecutePair(*dt, *sc, j, p);
+        try {
+            if (j.extrap) ExecuteExtrap(*dt, *sc, j, p); else ExecutePair(*dt, *sc, j, p);
+        } catch (...) {
+            // Out of host memory (or any exception) in a job: it must not end the thread or the process, and the game thread must not wait for it for ever (busy is
+            // cleared below). The job's references on its two ring slots are released here (they are released at the end of the job otherwise), the swapchain
+            // goes back to plain presents for what follows, and the frames of this job are not shown (the next job starts fresh). No lock is held here.
+            GuardNote("presenter thread", "a job failed");
+            sc->synth_failed = true;
+            if (sc->gpu) { GpuUnpin(*sc->gpu, j.a.slot); GpuUnpin(*sc->gpu, j.b.slot); }
+        }
         sc->cpu_presenter_ns += ThreadCpuNs() - cpu0;
         { std::lock_guard<std::mutex> l(p->mu); p->busy = false; }
         p->idle_cv.notify_all();
@@ -905,7 +923,7 @@ void DrainPresenter(SwapchainState& sc) {
 }
 } // namespace
 
-VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceDispatch* dt = LookupDevice(GetKey(queue));          // a queue shares its device's key
     if (!dt) return VK_ERROR_DEVICE_LOST;
     const Config& cfg = GetConfig();
@@ -918,6 +936,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
         return dt->QueuePresentKHR(queue, pPresentInfo);
     }
 
+    t_guard_present_sc = sc;
     struct PresentTimer { SwapchainState* s; uint64_t t0, c0; ~PresentTimer() { s->wait_present_ns += NowNs() - t0; s->cpu_hook_ns += ThreadCpuNs() - c0; } } present_timer{sc, NowNs(), ThreadCpuNs()};     // everything below is the game thread inside our present
 
     // Optional base-rate cap: space the game's presents 1/cap apart (it makes Game Mode testable). By default the wait happens AFTER the present, so the
@@ -986,6 +1005,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPrese
         holding_possible = !sc->hold_failed;
     }
 
+    t_guard_present_consumed = true;                            // from here on the layer may have submitted or presented: a failure must not present the game's frame a second time
     VkResult r = VK_SUCCESS;
     auto plain_present = [&] {                                  // the game's own present, after everything queued has gone out
         DrainPresenter(*sc);
@@ -1132,7 +1152,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_DeviceWaitIdle(VkDevice device) {
 // vkAcquireNextImage2KHR (VkAcquireNextImageInfoKHR::swapchain), vkWaitForPresentKHR and vkDestroySwapchainKHR (externsync in vk.xml), so the game cannot destroy a
 // swapchain while another thread is inside one of these calls, and the pointer from FindSwapchain stays valid for the whole call. The fence hooks are different (a fence
 // is not synchronized with its swapchain) and hold shared ownership, see FlushForFences.
-VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
+static VkResult Impl_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                         VkSemaphore sem, VkFence fence, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
@@ -1145,7 +1165,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapc
         return dt->AcquireNextImageKHR(device, swapchain, 0, sem, fence, pIndex);
     });
 }
-VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
+static VkResult Impl_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(info->swapchain);
@@ -1190,13 +1210,13 @@ void FlushForFences(DeviceDispatch& dt, uint32_t n, const VkFence* fences, const
 }
 } // namespace
 
-VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
+static VkResult Impl_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     FlushForFences(*dt, n, fences, "vkWaitForFences");
     return dt->WaitForFences(device, n, fences, all, timeout);
 }
-VKAPI_ATTR VkResult VKAPI_CALL Hook_GetFenceStatus(VkDevice device, VkFence fence) {
+static VkResult Impl_GetFenceStatus(VkDevice device, VkFence fence) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     FlushForFences(*dt, 1, &fence, "vkGetFenceStatus");
@@ -1207,7 +1227,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_GetFenceStatus(VkDevice device, VkFence fenc
 // triggers (DXVK waits for every present it makes). The frame is not lost, only shown one frame late, so the wait is answered
 // at once and the game goes on to render the next frame. Waits for older ids are real: those frames are on screen or queued
 // on the presenter thread. A game that then stops presenting gets its held frame from the idle flush in the presenter thread.
-VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
+static VkResult Impl_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(swapchain);
@@ -1223,4 +1243,121 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForPresentKHR(VkDevice device, VkSwapcha
     sc->wait_present_id = presentId; sc->wait_present_since_ns = NowNs();
     struct Done { SwapchainState* s; ~Done() { s->wait_present_since_ns = 0; } } done{sc};
     return dt->WaitForPresentKHR(device, swapchain, presentId, timeout);
+}
+
+// ---------------------------------------------------------------- host out of memory
+// An exception (std::bad_alloc from a vector, string or map, std::system_error from a thread or a lock) must never leave a hook: it would run into the game's C
+// code and end the process. Every entry point that allocates catches it here, logs once (a few lines at most), and falls back: a create hook fails with
+// VK_ERROR_OUT_OF_HOST_MEMORY, a destroy hook goes on to the next layer's destroy (unless that was already called), a wait or acquire hook calls the real function,
+// and a present forwards the game's own present when the layer has not touched the frame yet and fails with VK_ERROR_OUT_OF_HOST_MEMORY otherwise (never two presents).
+// Nothing is locked while a fallback runs: the locks of the failed body were released while the exception unwound. This changes only the failure path.
+namespace {
+std::atomic<int> g_guard_notes{0};
+void GuardNote(const char* hook, const char* what) noexcept {
+    if (g_guard_notes.fetch_add(1) >= 5) return;
+    try { FG_LOG("%s: %s: the layer steps aside for this call (out of host memory or an internal error)", hook, what); } catch (...) {}
+}
+// Runs body(); true when it returned normally. On an exception: logs and returns false.
+template <class F> bool Run(const char* hook, F&& body) noexcept {
+    try { body(); return true; }
+    catch (const std::bad_alloc&) { GuardNote(hook, "std::bad_alloc"); }
+    catch (const std::exception& e) { GuardNote(hook, e.what()); }
+    catch (...) { GuardNote(hook, "unknown exception"); }
+    return false;
+}
+// A fallback must not throw out of the hook either.
+template <class F> void Quiet(F&& f) noexcept { try { f(); } catch (...) {} }
+} // namespace
+
+VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateInstance(const VkInstanceCreateInfo* ci, const VkAllocationCallbacks* a, VkInstance* out) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    (void)Run("vkCreateInstance", [&] { r = Impl_CreateInstance(ci, a, out); });
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo* ci, const VkAllocationCallbacks* a, VkDevice* out) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    (void)Run("vkCreateDevice", [&] { r = Impl_CreateDevice(pd, ci, a, out); });
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateSwapchainKHR(VkDevice d, const VkSwapchainCreateInfoKHR* ci, const VkAllocationCallbacks* a, VkSwapchainKHR* out) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    const VkSwapchainKHR before = out ? *out : VK_NULL_HANDLE;
+    if (Run("vkCreateSwapchainKHR", [&] { r = Impl_CreateSwapchainKHR(d, ci, a, out); })) return r;
+    if (out && *out != before && *out != VK_NULL_HANDLE) {         // the driver had created a swapchain before the failure: the game gets none, so it must not stay alive
+        const VkSwapchainKHR made = *out; *out = VK_NULL_HANDLE;
+        Quiet([&] { Hook_DestroySwapchainKHR(d, made, a); });
+    }
+    return VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+VKAPI_ATTR void VKAPI_CALL Hook_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* a) {
+    void* key = GetKey(instance);                                 // read before the handle dies
+    t_guard_forwarded = false;
+    if (Run("vkDestroyInstance", [&] { Impl_DestroyInstance(instance, a); })) return;
+    if (!t_guard_forwarded) Quiet([&] { if (InstanceDispatch* id = LookupInstance(key)) { id->DestroyInstance(instance, a); } });
+}
+VKAPI_ATTR void VKAPI_CALL Hook_DestroyDevice(VkDevice device, const VkAllocationCallbacks* a) {
+    void* key = GetKey(device);
+    t_guard_forwarded = false;
+    if (Run("vkDestroyDevice", [&] { Impl_DestroyDevice(device, a); })) return;
+    if (!t_guard_forwarded) Quiet([&] { if (DeviceDispatch* dd = LookupDevice(key)) { dd->DestroyDevice(device, a); } });
+}
+VKAPI_ATTR void VKAPI_CALL Hook_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* a) {
+    void* key = GetKey(device);
+    t_guard_forwarded = false;
+    if (Run("vkDestroySwapchainKHR", [&] { Impl_DestroySwapchainKHR(device, swapchain, a); })) return;
+    if (!t_guard_forwarded) Quiet([&] { if (DeviceDispatch* dt = LookupDevice(key)) { dt->DestroySwapchainKHR(device, swapchain, a); } });
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore sem, VkFence fence, uint32_t* pIndex) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (Run("vkAcquireNextImageKHR", [&] { r = Impl_AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex); })) return r;
+    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->AcquireNextImageKHR(device, swapchain, timeout, sem, fence, pIndex); });
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (Run("vkAcquireNextImage2KHR", [&] { r = Impl_AcquireNextImage2KHR(device, info, pIndex); })) return r;
+    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->AcquireNextImage2KHR(device, info, pIndex); });
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (Run("vkWaitForFences", [&] { r = Impl_WaitForFences(device, n, fences, all, timeout); })) return r;
+    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->WaitForFences(device, n, fences, all, timeout); });
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL Hook_GetFenceStatus(VkDevice device, VkFence fence) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (Run("vkGetFenceStatus", [&] { r = Impl_GetFenceStatus(device, fence); })) return r;
+    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->GetFenceStatus(device, fence); });
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL Hook_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (Run("vkWaitForPresentKHR", [&] { r = Impl_WaitForPresentKHR(device, swapchain, presentId, timeout); })) return r;
+    Quiet([&] { if (DeviceDispatch* dt = LookupDevice(GetKey(device))) r = dt->WaitForPresentKHR(device, swapchain, presentId, timeout); });
+    return r;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+    t_guard_present_consumed = false; t_guard_present_sc = nullptr;
+    if (Run("vkQueuePresentKHR", [&] { r = Impl_QueuePresentKHR(queue, pPresentInfo); })) return r;
+    SwapchainState* sc = t_guard_present_sc;
+    const bool consumed = t_guard_present_consumed;
+    if (sc) Quiet([&] { std::lock_guard<std::mutex> fl(sc->flow_mu); sc->hold_failed = true; });   // no more holding on this swapchain; a held frame goes out with the next present
+    if (!consumed) {                                              // the layer has not touched the frame: the game's own present, as if the layer were not there
+        Quiet([&] {
+            if (DeviceDispatch* dt = LookupDevice(GetKey(queue))) {
+                std::mutex* qm = QueueMutex(queue);
+                std::unique_lock<std::mutex> lk;
+                if (qm) lk = std::unique_lock<std::mutex>(*qm);
+                r = dt->QueuePresentKHR(queue, pPresentInfo);
+            }
+        });
+        return r;
+    }
+    if (pPresentInfo && pPresentInfo->pResults && pPresentInfo->swapchainCount >= 1) pPresentInfo->pResults[0] = VK_ERROR_OUT_OF_HOST_MEMORY;
+    return VK_ERROR_OUT_OF_HOST_MEMORY;                           // the frame may be held or queued already: presenting it again could show it twice
 }
