@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
         CHECK(text.find("0 setting line(s)") != std::string::npos);
     } else {
         CHECK(text.find("14 setting line(s)") != std::string::npos && text.find("4 start-of-game only") != std::string::npos);
-        CHECK(L.enabled == 1 && L.target_fps == 60.0f && L.max_synthetic == 3 && L.base_fps_cap == 45.0f && L.min_gain == 1.01f && L.phase_lock == 1);
+        CHECK(L.enabled == 1 && L.target_fps == 120.0f && L.max_synthetic == 3 && L.base_fps_cap == 60.0f && L.min_gain == 1.01f && L.phase_lock == 1);
         CHECK(L.phase_offset == 0.5f && L.interp_bidir == 1 && L.cmd_buffers == 8 && L.synth_margin == 0.15f);
         const Config& c = GetConfig();                                                       // the start-of-game lines, read by the same code the layer uses
         CHECK(!c.interpolate && !c.extrapolate && c.ui_mask == 0.08f && c.flow_level == 2);

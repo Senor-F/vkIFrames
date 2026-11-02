@@ -150,13 +150,13 @@ struct DeviceDispatch {
 
 // ---- Configuration (environment variables, read once) ----
 struct Config {
-    float target_fps{60.0f};     // VKIFRAME_TARGET_FPS
+    float target_fps{120.0f};    // VKIFRAME_TARGET_FPS (the value for "any other machine"; GetConfig() replaces it by the machine's own, MachineDefaultsFor)
     bool  phase_lock{true};      // VKIFRAME_PHASE_LOCK: align one tick per pair with the native frame when the ratio is near an integer
     float synth_margin{0.15f};   // VKIFRAME_SYNTH_MARGIN (0..0.45): every tick of an interpolated pair is a synthetic frame, with t kept at least this far from 0 and 1, so no native frame is shown as is (0 = off)
     float phase_offset{0.5f};    // VKIFRAME_PHASE_OFFSET (0..1): with the phase lock, 0 puts a tick on the native frame, 0.5 puts the ticks between (t = 0.25 / 0.75 at 45 -> 90)
     float min_gain{1.01f};       // VKIFRAME_MIN_GAIN: interpolate only above this base-time / target-time ratio
     int   max_synthetic{3};      // VKIFRAME_MAX_SYNTHETIC: most synthetic frames between two natives
-    float base_fps_cap{45.0f};   // VKIFRAME_BASE_FPS_CAP (0 = off): the layer limits the game's present rate itself
+    float base_fps_cap{60.0f};   // VKIFRAME_BASE_FPS_CAP (the "any other machine" value, see target_fps) (0 = off): the layer limits the game's present rate itself
     bool  hold{true};            // VKIFRAME_HOLD=0: keep the Stage 3a dry run only, never hold a frame
     bool  synth{true};           // VKIFRAME_SYNTH=0: hold frames but never create synthetic ones (Stage 3b behaviour)
     bool  pace_sleep{false};     // VKIFRAME_PACE_SLEEP=1: sleep in the game thread until each tick (experimental, vblank-paced path)
@@ -206,12 +206,19 @@ inline const char* EnvVar(const char* name) {
     std::snprintf(buf, sizeof buf, "FRAMEGEN_%s", name);
     return std::getenv(buf);
 }
-// Default target: 90 fps on the Steam Deck OLED (board name "Galileo", 90 Hz panel), 60 everywhere else. VKIFRAME_TARGET_FPS and live.conf override it.
-inline float DefaultTargetFps(const char* dmi_file = "/sys/class/dmi/id/product_name") {
+// Defaults by machine (owner table, 2026-11-02), read from the DMI board name: Steam Deck OLED ("Galileo", 90 Hz panel) cap 45 / target 90, Steam Deck LCD ("Jupiter",
+// 60 Hz) cap 30 / target 60, any other machine cap 60 / target 120. VKIFRAME_BASE_FPS_CAP, VKIFRAME_TARGET_FPS and live.conf override them. The Decky plugin
+// (decky/main.py) and decky/settings_schema.json ("machine_defaults") carry the same table; tests/test_defaults.cpp compares the three.
+struct MachineDefaults { float base_fps_cap; float target_fps; };
+inline MachineDefaults MachineDefaultsFor(const char* dmi_file = "/sys/class/dmi/id/product_name") {
     char name[64] = {};
     if (FILE* f = std::fopen(dmi_file, "r")) { if (!std::fgets(name, sizeof name, f)) name[0] = 0; std::fclose(f); }
-    return std::strncmp(name, "Galileo", 7) == 0 ? 90.0f : 60.0f;
+    if (std::strncmp(name, "Galileo", 7) == 0) return {45.0f, 90.0f};
+    if (std::strncmp(name, "Jupiter", 7) == 0) return {30.0f, 60.0f};
+    return {60.0f, 120.0f};
 }
+inline float DefaultTargetFps(const char* dmi_file = "/sys/class/dmi/id/product_name") { return MachineDefaultsFor(dmi_file).target_fps; }
+inline float DefaultBaseFpsCap(const char* dmi_file = "/sys/class/dmi/id/product_name") { return MachineDefaultsFor(dmi_file).base_fps_cap; }
 // The target the layer works to: TARGET_FPS, but not above the display's refresh rate. A frame shown above a fixed refresh rate only fills the present
 // queue (more latency, nothing more on screen). A variable-refresh display and an unknown refresh rate (refresh_ns == 0) are not limited.
 inline double EffectiveTargetFps(double target_fps, uint64_t refresh_ns, bool vrr) {
@@ -301,7 +308,7 @@ inline const char* DumpNeedsFlowNote(int dump_pair, bool flow_on) {
 inline const Config& GetConfig() {
     static const Config c = [] {
         Config c;
-        c.target_fps = DefaultTargetFps();
+        { const MachineDefaults md = MachineDefaultsFor(); c.target_fps = md.target_fps; c.base_fps_cap = md.base_fps_cap; }
         // VKIFRAME_LOG_FILE=<path>: append everything the layer prints (and the game's own stderr) to that file; for runs without the launch script
         if (const char* v = EnvVar("LOG_FILE"); v && *v) { FILE* r_ = std::freopen(v, "a", stderr); (void)r_; }
         else (void)LiveLogOpen();                     // default: one log, ~/.config/vkiframes/live.log, shared with the settings changes

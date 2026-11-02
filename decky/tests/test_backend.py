@@ -17,7 +17,7 @@ run = asyncio.run
 
 p = main.Plugin(); run(p._main())
 conf = open(main.LIVE_CONF).read()
-assert "VKIFRAME_TARGET_FPS=60" in conf and "VKIFRAME_PHASE_LOCK=1" in conf, conf
+assert "VKIFRAME_TARGET_FPS=%d" % p._defaults()["TARGET_FPS"] in conf and "VKIFRAME_PHASE_LOCK=1" in conf, conf
 rev0 = p.rev
 p.experimental = True        # these checks change gated settings
 # clamp and step
@@ -76,19 +76,19 @@ run(p.set_value("TARGET_FPS", 61)); assert any("TARGET_FPS" in l for l in run(p.
 try: run(p.set_value("NOPE", 1)); raise SystemExit("unknown key accepted")
 except ValueError: pass
 # reset
-run(p.reset_values()); assert p.values["TARGET_FPS"] == 60
+run(p.reset_values()); assert p.values["TARGET_FPS"] == p._defaults()["TARGET_FPS"]
 p.experimental = True
 # the verbose log records every change, who made it and when it applies
 log = open(main.LIVE_LOG).read()
-assert "plugin  panel: TARGET_FPS 60 -> 600" in log and "asked for 999, clamped" in log and "all settings reset" in log, log
+assert "plugin  panel: TARGET_FPS %d -> 600" % p._defaults()["TARGET_FPS"] in log and "asked for 999, clamped" in log and "all settings reset" in log, log
 assert any("TARGET_FPS" in l for l in run(p.get_log(10)))
 run(p.set_value("EXTRAPOLATE", 1)); assert "read when the next game starts" in open(main.LIVE_LOG).read()
 assert "VKIFRAME_EXTRAPOLATE=1" in open(main.LIVE_CONF).read()
-# default target: 90 on the Deck OLED (DMI board name Galileo), 60 elsewhere
+# defaults by machine (DMI board name): Galileo (Deck OLED) cap 45 / target 90, Jupiter (Deck LCD) 30 / 60, anything else 60 / 120 (owner table, the layer has the same)
 dmi = os.path.join(tmp, "dmi"); main.DMI_PRODUCT = dmi
-open(dmi, "w").write("Galileo\n"); assert p._defaults()["TARGET_FPS"] == 90
-open(dmi, "w").write("Jupiter\n"); assert p._defaults()["TARGET_FPS"] == 60
-main.DMI_PRODUCT = os.path.join(tmp, "missing"); assert p._defaults()["TARGET_FPS"] == 60
+for board, cap, tgt in (("Galileo\n", 45, 90), ("Jupiter\n", 30, 60), ("MS-7C94\n", 60, 120), ("", 60, 120)):
+    open(dmi, "w").write(board); dd = p._defaults(); assert (dd["BASE_FPS_CAP"], dd["TARGET_FPS"]) == (cap, tgt), (board, dd["BASE_FPS_CAP"], dd["TARGET_FPS"])
+main.DMI_PRODUCT = os.path.join(tmp, "missing"); dd = p._defaults(); assert (dd["BASE_FPS_CAP"], dd["TARGET_FPS"]) == (60, 120)
 # settings saved under the old names (warp) are carried over to the new ones
 open(main.SETTINGS_FILE, "w").write(json.dumps({"WARP": 0, "WARP_BIDIR": 1}))
 old = main.Plugin(); run(old._main()); assert old.values["OPTICAL_FLOW"] == 0 and old.values["INTERP_BIDIR"] == 1, old.values

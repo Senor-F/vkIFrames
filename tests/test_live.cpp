@@ -55,12 +55,15 @@ int main() {
     CHECK(!EnvVar("FLOW_LEVEL"));                          // not in the file / not a startup key
     unlink(conf.c_str());
 
-    {   // default target: 90 on the Deck OLED, 60 elsewhere
+    {   // defaults by machine (cap / target): Deck OLED 45 / 90, Deck LCD 30 / 60, any other machine 60 / 120
         const std::string dmi = std::string(dir) + "/dmi";
-        Write(dmi, "Galileo\n"); CHECK(DefaultTargetFps(dmi.c_str()) == 90.0f);
-        Write(dmi, "Jupiter\n"); CHECK(DefaultTargetFps(dmi.c_str()) == 60.0f);
-        Write(dmi, "MS-7E12\n"); CHECK(DefaultTargetFps(dmi.c_str()) == 60.0f);
-        CHECK(DefaultTargetFps("/nonexistent/dmi") == 60.0f);
+        auto is = [&](const char* name, float cap, float target) { Write(dmi, name); MachineDefaults m = MachineDefaultsFor(dmi.c_str()); return m.base_fps_cap == cap && m.target_fps == target && DefaultTargetFps(dmi.c_str()) == target && DefaultBaseFpsCap(dmi.c_str()) == cap; };
+        CHECK(is("Galileo\n", 45.0f, 90.0f));
+        CHECK(is("Jupiter\n", 30.0f, 60.0f));
+        CHECK(is("MS-7E12\n", 60.0f, 120.0f));
+        CHECK(is("\n", 60.0f, 120.0f));
+        CHECK(is("", 60.0f, 120.0f));
+        CHECK(MachineDefaultsFor("/nonexistent/dmi").target_fps == 120.0f && MachineDefaultsFor("/nonexistent/dmi").base_fps_cap == 60.0f);
         unlink(dmi.c_str());
     }
     LiveSettings& L = Live();
