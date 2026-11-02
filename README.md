@@ -103,7 +103,7 @@ The same twelve rows on a second game, on the alpha.2 release candidate (commit 
 | 30 > 120 | generating | 30.00 | 120.00 | 3.00 | 33.33 | 0 |
 | 60 > 30 | pass-through | 55.77 | 55.77 | 0 | 17.93 | 0 |
 | 60 > 60 | generating | 53.74 | 60.00 | 0.12 | 18.61 | 0 |
-| 60 > 90 | generating | 53.12 | 89.99 | 0.69 | 18.82 | 0 |
+| 60 > 90 | generating | 53.12 | 89.99 | 0.69 | 18.83 | 0 |
 | 60 > 120 | generating | 52.41 | 119.99 | 1.29 | 19.08 | 0 |
 | 90 > 30 | pass-through | 55.88 | 55.88 | 0 | 17.90 | 0 |
 | 90 > 60 | generating | 54.07 | 60.00 | 0.11 | 18.50 | 0 |
