@@ -437,8 +437,8 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     FlowState& fs = g.flow;
     // GPU time of the previous interpolation pass that used this entry (its fence has been waited for)
     if (fs.qpool && fs.interp_pending[e]) {
-        uint64_t t[2];
-        if (dt.GetQueryPoolResults(dt.device, fs.qpool, FlowState::kQSlots * e + 8, 2, sizeof(t), t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] >= t[0]) {
+        uint64_t t[FlowState::kInterpStamps];
+        if (dt.GetQueryPoolResults(dt.device, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst, FlowState::kInterpStamps, sizeof(t), t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] >= t[0]) {
             const double ms = double(t[1] - t[0]) * double(fs.ts_period_ns) * 1e-6;
             fs.interp_sum += ms; fs.interp_max = std::max(fs.interp_max, ms);
             { fs.stat_interp_ns += uint64_t(ms * 1e6); ++fs.stat_interp_n; }
@@ -506,8 +506,8 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
     }
     const bool time_interp = interp && fs.qpool;
     if (time_interp) {
-        dt.CmdResetQueryPool(cb, fs.qpool, FlowState::kQSlots * e + 8, 2);
-        dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + 8);   // after everything queued before, so the interval is the warp alone
+        dt.CmdResetQueryPool(cb, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst, FlowState::kInterpStamps);
+        dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst);   // after everything queued before, so the interval is the warp alone
     }
     dt.CmdDispatch(cb, (g.extent.width + 15) / 16, (g.extent.height + 15) / 16, 1);
     Barrier(dt, cb, g.synth.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, XFER, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -518,7 +518,7 @@ VkResult GpuSynthesize(const DeviceDispatch& dt, VkQueue queue, GpuState& g, con
         if (dump_buf) { ++g.dump_tick; --g.dump.synth_left; }
     }
     if (time_interp) {
-        dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + 9);
+        dt.CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fs.qpool, FlowState::kQSlots * e + FlowState::kInterpFirst + 1);
         fs.interp_pending[e] = true;
     }
 
