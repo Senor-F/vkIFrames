@@ -175,7 +175,7 @@
       ],
       [
         {
-          "key": "INTERPOLATE",
+          "key": "OPTICAL_FLOW",
           "eq": 0
         }
       ]
@@ -184,12 +184,12 @@
     "group": "more"
   },
   {
-    "key": "INTERPOLATE",
+    "key": "OPTICAL_FLOW",
     "label": "Optical flow",
     "type": "toggle",
     "default": 0,
     "needsLayer": "restart",
-    "desc": "Moves the in-between frames along the motion between two game frames. Off: a plain cross-fade (cheap, ghosts on movement). On costs about 5 ms of GPU time per game frame on a Steam Deck.",
+    "desc": "Moves the in-between frames along the motion between two game frames. Off: a plain cross-fade (no optical-flow passes, ghosts on movement). On costs about 5 ms of GPU time per game frame in the scene we measured on a Steam Deck.",
     "greyWhen": [
       [
         {
@@ -233,7 +233,7 @@
     "greyWhen": [
       [
         {
-          "key": "INTERPOLATE",
+          "key": "OPTICAL_FLOW",
           "eq": 0
         },
         {
@@ -258,7 +258,7 @@
     "greyWhen": [
       [
         {
-          "key": "INTERPOLATE",
+          "key": "OPTICAL_FLOW",
           "eq": 0
         },
         {
