@@ -25,7 +25,7 @@ int main() {
 
     // start-of-game keys: the layer's default comes from Config
     auto start_default = [&](const char* key, double& out) {
-        if (!std::strcmp(key, "INTERPOLATE")) { out = d.interpolate ? 1 : 0; return true; }
+        if (!std::strcmp(key, "OPTICAL_FLOW")) { out = d.interpolate ? 1 : 0; return true; }
         if (!std::strcmp(key, "EXTRAPOLATE")) { out = d.extrapolate ? 1 : 0; return true; }
         if (!std::strcmp(key, "UI_MASK_THRESHOLD")) { out = double(d.ui_mask); return true; }
         if (!std::strcmp(key, "FLOW_LEVEL")) { out = d.flow_level; return true; }
@@ -66,6 +66,8 @@ int main() {
     CHECK(!d.debug_flow && !d.debug_ring && d.tickmark == 0);
     CHECK(!d.onesided_fill);                                  // the experimental fill is off
     CHECK(!d.extrapolate && !d.pace_sleep && !d.absolute && !d.cap_early && d.cand_thr == 0.0f);
+    CHECK(DumpNeedsFlowNote(1, d.flow) && std::string(DumpNeedsFlowNote(1, d.flow)) == "VKIFRAME_DUMP needs VKIFRAME_OPTICAL_FLOW=1; nothing will be captured");   // the capture needs the flow: said once in the log
+    CHECK(!DumpNeedsFlowNote(0, d.flow) && !DumpNeedsFlowNote(1, true));
     CHECK(!d.interpolate && !d.flow);                         // optical flow is opt-in: by default the synthetic frames are a plain cross-fade and no flow engine is built
     CHECK(d.hold && d.synth && d.presenter);                  // the product runs by default once enabled
     CHECK(d.max_synthetic <= kLiveMaxSyntheticNormal);

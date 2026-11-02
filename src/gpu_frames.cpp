@@ -92,6 +92,11 @@ bool EndAndSubmit(const DeviceDispatch& dt, VkQueue queue, GpuState& g, uint32_t
 }
 
 void DumpInit(const DeviceDispatch& dt, GpuState& g) {
+    if (const char* why = DumpNeedsFlowNote(GetConfig().dump_pair, GetConfig().flow)) {
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true)) FG_LOG("%s", why);                      // once per process; the capture itself is unchanged
+        return;
+    }
     if (GetConfig().dump_pair <= 0 || !g.flow.ready) return;
     const FlowImage& fin = g.flow.fwd[g.flow.fin];
     DumpLayout l;

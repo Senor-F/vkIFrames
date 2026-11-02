@@ -177,9 +177,9 @@ bool ParseValue(int k, const std::string& raw, double& out, std::string& note) {
     return true;
 }
 
-// Old spellings of renamed keys (warp -> interpolation) still work in live.conf.
+// Old spellings of renamed keys (warp -> interpolate -> optical flow) still work in live.conf; the key is then handled under its new name.
 void NormalizeKey(std::string& key) {
-    static const char* const kOld[][2] = {{"WARP_BIDIR", "INTERP_BIDIR"}, {"WARP_GUIDE", "INTERP_GUIDE"}, {"WARP_CAND", "INTERP_CAND"}, {"WARP", "INTERPOLATE"}};
+    static const char* const kOld[][2] = {{"WARP_BIDIR", "INTERP_BIDIR"}, {"WARP_GUIDE", "INTERP_GUIDE"}, {"WARP_CAND", "INTERP_CAND"}, {"WARP", "OPTICAL_FLOW"}, {"INTERPOLATE", "OPTICAL_FLOW"}};
     for (const auto& o : kOld) if (key == o[0]) { key = o[1]; return; }
 }
 
@@ -228,7 +228,7 @@ void Apply(const char* why, const std::string& text, bool present) {
             for (int i = 0; i < kKeys; ++i) if (key == kInfo[i].name) k = i;
             if (k < 0) {
                 bool startup_only = false;
-                for (const char* sk : {"INTERPOLATE", "WARP", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL", "ONESIDED_FILL"}) if (key == sk) startup_only = true;
+                for (const char* sk : {"OPTICAL_FLOW", "EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "EXPERIMENTAL", "ONESIDED_FILL"}) if (key == sk) startup_only = true;
                 if (startup_only) { ++startup; continue; }     // read once when the game starts (logged then), not an error
                 ++unknown; Note("line %d: unknown key \"%.40s\" ignored", lineno, key.c_str()); continue;
             }
@@ -303,12 +303,13 @@ void PollBenchReq(bool first) {
 
 // Settings that cannot change while a game runs (they size buffers or pick shaders) are read from live.conf once, when the game starts.
 const char* StartupFileValue(const char* name) {
-    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "INTERPOLATE", "EXPERIMENTAL", "ONESIDED_FILL"};
+    static const char* const kStartupKeys[] = {"EXTRAPOLATE", "UI_MASK_THRESHOLD", "FLOW_LEVEL", "OPTICAL_FLOW", "EXPERIMENTAL", "ONESIDED_FILL"};
     bool allowed = false;
     for (const char* k : kStartupKeys) if (std::strcmp(name, k) == 0) allowed = true;
     if (!allowed) return nullptr;                       // also keeps LIVE_CONF / LIVE_LOG lookups out of the loader below
     static const std::map<std::string, std::string> values = [] {
         std::map<std::string, std::string> m;
+        std::map<std::string, int> rank;
         const char* e = std::getenv("VKIFRAME_LIVE_CONF");
         if (!e || !*e) e = std::getenv("FRAMEGEN_LIVE_CONF");
         const std::string path = e && *e ? std::string(e) : (ConfDir().empty() ? std::string() : ConfDir() + "/live.conf");
@@ -323,8 +324,11 @@ const char* StartupFileValue(const char* name) {
             if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
             std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
             for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
+            const std::string spelled = key;
             NormalizeKey(key);
-            for (const char* k : kStartupKeys) if (key == k && !val.empty()) m[key] = val;
+            const int age = spelled == "WARP" ? 0 : spelled == "INTERPOLATE" ? 1 : 2;       // the newest spelling of a renamed key wins when a file has more than one
+            for (const char* k : kStartupKeys)
+                if (key == k && !val.empty() && (!rank.count(key) || age >= rank[key])) { m[key] = val; rank[key] = age; }
         }
         for (auto& kv : m) LogLine("startup setting %s=%s taken from live.conf (read once when the game starts: a change needs a game restart)", kv.first.c_str(), kv.second.c_str());
         return m;

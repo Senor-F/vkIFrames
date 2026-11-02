@@ -387,7 +387,7 @@ class Plugin:
 
     def _read_settings(self):
         vals = self._defaults()
-        RENAMED = {"WARP": "INTERPOLATE", "WARP_BIDIR": "INTERP_BIDIR"}   # saved by an older version of the plugin
+        RENAMED = {"INTERPOLATE": "OPTICAL_FLOW", "WARP": "OPTICAL_FLOW", "WARP_BIDIR": "INTERP_BIDIR"}   # saved by an older version of the plugin; the newest name wins, in this order
         try:
             raw = _read_user_file(SETTINGS_FILE, 1048576)             # no symbolic link on the way, only the user's own regular file
             saved = json.loads(raw.decode("utf-8", errors="replace")) if raw is not None else None

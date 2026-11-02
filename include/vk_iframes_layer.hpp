@@ -166,7 +166,7 @@ struct Config {
     int   pace_lead_us{2000};    // VKIFRAME_PACE_LEAD_US: the presenter calls present this long before a tick is due (vblank-paced path)
     bool  absolute{false};       // VKIFRAME_ABSOLUTE=1: give each tick an absolute target time when the surface supports it (untested path)
     bool  flow{false};           // VKIFRAME_FLOW=1: estimate the optical flow of every pair (Stage 4; the blend still ignores it until Stage 5)
-    bool  interpolate{false};    // VKIFRAME_INTERPOLATE (old name VKIFRAME_WARP; default 0 = the plain cross-fade, 1 = optical flow): build the in-between frames by interpolating along the flow instead of the plain blend (Stage 5; implies VKIFRAME_FLOW; costs about 5 ms of GPU time per game frame on a Steam Deck)
+    bool  interpolate{false};    // VKIFRAME_OPTICAL_FLOW (old names VKIFRAME_INTERPOLATE, VKIFRAME_WARP; default 0 = the plain cross-fade, 1 = optical flow): build the in-between frames by interpolating along the flow instead of the plain blend (Stage 5; implies VKIFRAME_FLOW; about 5 ms of GPU time per game frame in the scene we measured on a Steam Deck)
     int   tickmark{0};           // VKIFRAME_TICKMARK: 1 = 64x64 square top-left, red for the first half of a pair, green for the second; 2 = also a bar along the bottom that steps 6 px every displayed frame (120 steps/s at 60->120); 3 = the bar steps 12 px once per pair (60 steps/s, both frames of a pair identical). 2 vs 3 shows by eye whether 120 distinct frames arrive
     int   flow_level{2};         // VKIFRAME_FLOW_LEVEL: pyramid level of the finished flow field, 1 = half resolution (finest, most expensive), 2 = quarter (default), 3 = eighth
     float interp_guide{0.08f};     // VKIFRAME_INTERP_GUIDE: luma sigma of the colour-guided vector weighting (0 = plain bilinear)
@@ -184,12 +184,12 @@ struct Config {
     bool  flow_subpixel{true};   // VKIFRAME_FLOW_SUBPIXEL=0: whole-pixel vectors at the finished flow level (default: parabola fit, fractional vectors)
     char  dump_dir[256]{"/tmp/vkIFrames_dump"};   // VKIFRAME_DUMP_DIR: where VKIFRAME_DUMP writes (under Steam/Proton /tmp is private to the game's container: use a folder under the home directory)
     int   dump_frames{5};        // VKIFRAME_DUMP_FRAMES=M (5 to 60, default 5): how many consecutive native frames VKIFRAME_DUMP keeps in memory and writes after the last one (about 7.4 MB each at 1280x720); times.txt lists their times
-    int   dump_pair{0};          // VKIFRAME_DUMP=N: write A, B, the flow, the mask and the next two synthetic frames of pair N to /tmp/vkIFrames_dump (debugging)
+    int   dump_pair{0};          // VKIFRAME_DUMP=N: write A, B, the flow, the mask and the next two synthetic frames of pair N to /tmp/vkIFrames_dump (debugging). Needs the optical flow on (VKIFRAME_OPTICAL_FLOW=1): pairs are counted by the flow, so with it off nothing is captured or written (gpu_frames.cpp DumpInit)
     bool  debug_flow{false};     // VKIFRAME_DEBUG_FLOW=1: show the motion field instead of the synthetic frames (implies VKIFRAME_FLOW)
     bool  debug_ring{false};     // VKIFRAME_DEBUG_RING=1: present the ring-buffer copy of each held frame (shows that capture works)
     bool  timing_test{false};    // VKIFRAME_TIMING_TEST=1: schedule every present 2 smoothed frames ahead (Stage 2 test)
 };
-// Startup-only keys (EXTRAPOLATE, UI_MASK_THRESHOLD, FLOW_LEVEL, INTERPOLATE) can also come from live.conf (the Decky plugin); the file wins over the environment.
+// Startup-only keys (EXTRAPOLATE, UI_MASK_THRESHOLD, FLOW_LEVEL, OPTICAL_FLOW) can also come from live.conf (the Decky plugin); the file wins over the environment.
 const char* StartupFileValue(const char* name);   // live_config.cpp; nullptr when the file does not set it
 // Settings come from VKIFRAME_<NAME>; the old VKIFRAME_<NAME> spelling still works when the new one is not set.
 inline const char* EnvVar(const char* name) {
@@ -222,6 +222,12 @@ inline double LayerCostRatio(double flow_ms_total, double interp_ms_total, doubl
 inline const char* EnvVar2(const char* name, const char* old_name) {
     if (const char* v = EnvVar(name)) return v;
     return EnvVar(old_name);
+}
+// Renamed twice (WARP -> INTERPOLATE -> OPTICAL_FLOW): the newest name wins, then the older ones.
+inline const char* EnvVar3(const char* name, const char* old_name, const char* oldest_name) {
+    if (const char* v = EnvVar(name)) return v;
+    if (const char* v = EnvVar(old_name)) return v;
+    return EnvVar(oldest_name);
 }
 // A number from the environment or a settings file: only digits, a sign, a point and an exponent (no hex float, no inf, no nan, no blanks inside), the whole
 // string, and finite. Anything else is not a number (the setting keeps its default) instead of being turned into 0 or into a huge value by atof.
@@ -282,6 +288,10 @@ inline double CostWarnFromEnv(const char* v) {
     if (v) FG_LOG("VKIFRAME_COST_WARN=\"%s\" is not a usable number above 0: ignored, the default 1.0 stays", ShownValue(v).c_str());
     return 1.0;
 }
+// VKIFRAME_DUMP counts pairs by their optical flow, so with the flow off (the default) no pool is made and nothing is captured: say so (one log line, see DumpInit).
+inline const char* DumpNeedsFlowNote(int dump_pair, bool flow_on) {
+    return dump_pair > 0 && !flow_on ? "VKIFRAME_DUMP needs VKIFRAME_OPTICAL_FLOW=1; nothing will be captured" : nullptr;
+}
 inline const Config& GetConfig() {
     static const Config c = [] {
         Config c;
@@ -324,7 +334,7 @@ inline const Config& GetConfig() {
         if (const char* v = EnvVar("DUMP_DIR"))         { std::snprintf(c.dump_dir, sizeof c.dump_dir, "%s", v); }
         EnvInt("DUMP", 0, 1000000000, c.dump_pair);
         EnvInt("DUMP_FRAMES", 5, 60, c.dump_frames);
-        if (const char* v = EnvVar2("INTERPOLATE", "WARP")) EnvFlagValue("INTERPOLATE", v, c.interpolate);
+        if (const char* v = EnvVar3("OPTICAL_FLOW", "INTERPOLATE", "WARP")) EnvFlagValue("OPTICAL_FLOW", v, c.interpolate);
         EnvFlag("ONESIDED_FILL", c.onesided_fill);
         if (c.onesided_fill && LiveMaxSyntheticLimit() <= 4) { c.onesided_fill = false; FG_LOG("VKIFRAME_ONESIDED_FILL is experimental: it needs VKIFRAME_EXPERIMENTAL=1 as well; ignored"); }
         if (c.extrapolate) { c.interpolate = true; c.debug_flow = false; }

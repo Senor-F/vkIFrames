@@ -47,7 +47,7 @@ int main() {
     setenv("VKIFRAME_LIVE_LOG", log.c_str(), 1);
     setenv("VKIFRAME_TARGET_FPS", "90", 1);
     setenv("VKIFRAME_BASE_FPS_CAP", "45", 1);
-    setenv("VKIFRAME_WARP", "1", 1);                              // the old name of INTERPOLATE still works
+    setenv("VKIFRAME_WARP", "1", 1);                              // the oldest name of OPTICAL_FLOW still works
 
     Write(conf, "REV=0\nFRAMEGEN_EXTRAPOLATE=1\nVKIFRAME_UI_MASK_THRESHOLD=0.03\nTARGET_FPS=75\n");
     CHECK(EnvVar("EXTRAPOLATE") && std::string(EnvVar("EXTRAPOLATE")) == "1");          // startup-only keys come from the file
@@ -72,7 +72,7 @@ int main() {
     Poll();
     CHECK(L.target_fps == 60.0f && L.max_synthetic == 2 && L.interp_bidir == 1 && L.base_fps_cap == 45.0f);   // missing keys keep the environment value
 
-    Write(conf, "REV=2\nTARGET_FPS=9999\nMAX_SYNTHETIC=9\nMIN_GAIN=abc\nPHASE_OFFSET=-3\nBASE_FPS_CAP=500\nNONSENSE=1\nWARP=1\nINTERPOLATE=1\nWARP_BIDIR=0\nFLOW_LEVEL=1\nno equals sign\nENABLED=0\n"); Touch(conf, 5);
+    Write(conf, "REV=2\nTARGET_FPS=9999\nMAX_SYNTHETIC=9\nMIN_GAIN=abc\nPHASE_OFFSET=-3\nBASE_FPS_CAP=500\nNONSENSE=1\nWARP=1\nINTERPOLATE=1\nOPTICAL_FLOW=1\nWARP_BIDIR=0\nFLOW_LEVEL=1\nno equals sign\nENABLED=0\n"); Touch(conf, 5);
     Poll();
     CHECK(L.target_fps == 1000.0f);                                // clamped to the schema range
     CHECK(L.max_synthetic == kLiveMaxSyntheticNormal);   // without EXPERIMENTAL at game start the cap is 4
@@ -221,7 +221,7 @@ int main() {
     CHECK(text.find("CHANGE ENABLED: 1 -> 0") != std::string::npos);
     CHECK(text.find("clamped to the range") != std::string::npos);
     CHECK(text.find("unknown key \"NONSENSE\"") != std::string::npos);
-    CHECK(text.find("unknown key \"INTERPOLATE\"") == std::string::npos);          // start-of-game keys are not errors
+    CHECK(text.find("unknown key \"OPTICAL_FLOW\"") == std::string::npos && text.find("unknown key \"INTERPOLATE\"") == std::string::npos && text.find("unknown key \"WARP\"") == std::string::npos);          // start-of-game keys are not errors
     CHECK(text.find("CHANGE MIN_GAIN") == std::string::npos);              // 1.01 vs 1.01f is not a change
     CHECK(text.find("no '='") != std::string::npos);
     CHECK(text.find("not a valid value") != std::string::npos);

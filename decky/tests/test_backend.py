@@ -89,7 +89,28 @@ open(dmi, "w").write("Jupiter\n"); assert p._defaults()["TARGET_FPS"] == 60
 main.DMI_PRODUCT = os.path.join(tmp, "missing"); assert p._defaults()["TARGET_FPS"] == 60
 # settings saved under the old names (warp) are carried over to the new ones
 open(main.SETTINGS_FILE, "w").write(json.dumps({"WARP": 0, "WARP_BIDIR": 1}))
-old = main.Plugin(); run(old._main()); assert old.values["INTERPOLATE"] == 0 and old.values["INTERP_BIDIR"] == 1, old.values
+old = main.Plugin(); run(old._main()); assert old.values["OPTICAL_FLOW"] == 0 and old.values["INTERP_BIDIR"] == 1, old.values
+# optical flow is opt-in, and its key was renamed (WARP -> INTERPOLATE -> OPTICAL_FLOW): what an older plugin saved must keep its meaning, newest name first
+def fresh(saved):
+    open(main.SETTINGS_FILE, "w").write(json.dumps(saved))
+    q = main.Plugin(); run(q._main()); return q
+assert "OPTICAL_FLOW" in main.Plugin()._defaults() and main.Plugin()._defaults()["OPTICAL_FLOW"] == 0 and "INTERPOLATE" not in main.Plugin()._defaults()
+os.remove(main.SETTINGS_FILE); assert fresh({}).values["OPTICAL_FLOW"] == 0          # nothing saved: the cross-fade
+assert fresh({"WARP": 1}).values["OPTICAL_FLOW"] == 1
+assert fresh({"INTERPOLATE": 1}).values["OPTICAL_FLOW"] == 1                         # saved by alpha.1 (the panel wrote the whole values)
+assert fresh({"OPTICAL_FLOW": 1}).values["OPTICAL_FLOW"] == 1                        # saved by this release
+assert fresh({"INTERPOLATE": 1, "OPTICAL_FLOW": 0}).values["OPTICAL_FLOW"] == 0     # the new name wins
+assert fresh({"INTERPOLATE": 0, "WARP": 1}).values["OPTICAL_FLOW"] == 0             # INTERPOLATE is newer than WARP
+# upgrade: alpha.1 left a full settings.json and a live.conf with INTERPOLATE=1; after the new backend starts the flow is still on and both files use the new key only
+alpha1 = {k: v for k, v in main.Plugin()._defaults().items() if k != "OPTICAL_FLOW"}; alpha1["INTERPOLATE"] = 1
+open(main.SETTINGS_FILE, "w").write(json.dumps(alpha1))
+open(main.LIVE_CONF, "w").write("# written by the vkIFrames Decky plugin\nREV=1\nVKIFRAME_TARGET_FPS=75\nVKIFRAME_INTERPOLATE=1\n")
+up = main.Plugin(); run(up._main())
+assert up.values["OPTICAL_FLOW"] == 1, up.values
+lc = open(main.LIVE_CONF).read(); sj = json.load(open(main.SETTINGS_FILE))
+assert "VKIFRAME_OPTICAL_FLOW=1" in lc and "INTERPOLATE" not in lc and "WARP" not in lc, lc
+assert sj["OPTICAL_FLOW"] == 1 and "INTERPOLATE" not in sj, sj
+up2 = main.Plugin(); run(up2._main()); assert up2.values["OPTICAL_FLOW"] == 1       # and it stays on at the next start
 # no stray temp files left behind
 assert not [f for f in os.listdir(main.CONF_DIR) if ".tmp." in f]
 # install with a given library

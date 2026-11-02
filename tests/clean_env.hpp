@@ -12,7 +12,6 @@ inline void ClearFramegenEnv() {
     for (char** e = environ; e && *e; ++e)
         if (std::strncmp(*e, "VKIFRAME_", 9) == 0 || std::strncmp(*e, "FRAMEGEN_", 9) == 0) names.emplace_back(*e, std::strchr(*e, '=') ? size_t(std::strchr(*e, '=') - *e) : std::strlen(*e));
     for (const auto& n : names) unsetenv(n.c_str());
-    // The layer's default is to interpolate along the optical flow, which the mock drivers cannot run: the mock tests exercise the hold / synthetic-frame / pacing
-    // plumbing with the plain blend (a test that wants the flow sets VKIFRAME_INTERPOLATE itself after this call).
-    setenv("VKIFRAME_INTERPOLATE", "0", 1);
+    // The layer's default is the plain blend (optical flow is opt-in): the mock drivers cannot run the flow, so the mock tests exercise the hold / synthetic-frame /
+    // pacing plumbing with the default (a test that wants the flow sets VKIFRAME_OPTICAL_FLOW itself after this call).
 }
