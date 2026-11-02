@@ -10,6 +10,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <mutex>
 #include <dlfcn.h>
 #include <unistd.h>
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); std::exit(1); } } while (0)
@@ -21,6 +22,7 @@ static std::vector<Fake*> g_cbs;
 // ---- records
 struct Submit { std::vector<VkSemaphore> waits; VkSemaphore signal; };
 struct Present { VkSemaphore wait; uint32_t image; uint64_t id; VkFence fence; int mode; };
+static std::mutex g_rec_mu;                                     // the presenter thread records while the main thread analyses: the analysis works on a snapshot
 static std::vector<Submit> r_submits; static std::vector<Present> r_presents;
 static std::vector<std::string> r_events;                      // "S" submit, "P" present, in call order
 static VkImageUsageFlags r_usage; static uint32_t r_min_images; static std::set<std::string> r_dev_exts; static bool r_sync2_feature;
@@ -85,6 +87,7 @@ static VkResult VKAPI_CALL m_CreateSem(VkDevice, const VkSemaphoreCreateInfo*, c
 static void VKAPI_CALL m_DestroySem(VkDevice, VkSemaphore, const VkAllocationCallbacks*) {}
 static VkResult VKAPI_CALL m_CreateFence(VkDevice, const VkFenceCreateInfo*, const VkAllocationCallbacks*, VkFence* f) { *f = H(VkFence); return VK_SUCCESS; }
 static void VKAPI_CALL m_DestroyFence(VkDevice, VkFence, const VkAllocationCallbacks*) {}
+static VkResult VKAPI_CALL m_WaitForPresent(VkDevice, VkSwapchainKHR, uint64_t, uint64_t) { return VK_SUCCESS; }       // VK_KHR_present_wait: the layer answers early for a held frame, and asks the driver otherwise (which depends on the timing of the run)
 static VkResult VKAPI_CALL m_WaitFences(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t) { return VK_SUCCESS; }
 static VkResult VKAPI_CALL m_ResetFences(VkDevice, uint32_t, const VkFence*) { return VK_SUCCESS; }
 static bool k_bad_index = false;   // the next acquire returns an index the swapchain does not have
@@ -93,7 +96,7 @@ static VkResult VKAPI_CALL m_Submit2(VkQueue, uint32_t, const VkSubmitInfo2* si,
     if (k_submit_fail_hidden) for (uint32_t i = 0; i < si->waitSemaphoreInfoCount; ++i)
         if (si->pWaitSemaphoreInfos[i].semaphore == k_last_acq_sem) { k_submit_fail_hidden = false; ++r_failed_submits; return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
     Submit s; for (uint32_t i = 0; i < si->waitSemaphoreInfoCount; ++i) s.waits.push_back(si->pWaitSemaphoreInfos[i].semaphore);
-    CHECK(si->signalSemaphoreInfoCount == 1); s.signal = si->pSignalSemaphoreInfos[0].semaphore; r_submits.push_back(s); r_events.push_back("S"); return VK_SUCCESS;
+    CHECK(si->signalSemaphoreInfoCount == 1); s.signal = si->pSignalSemaphoreInfos[0].semaphore; { std::lock_guard<std::mutex> rl(g_rec_mu); r_submits.push_back(s); r_events.push_back("S"); } return VK_SUCCESS;
 }
 static void VKAPI_CALL m_Barrier2(VkCommandBuffer, const VkDependencyInfo*) { ++r_barriers; }
 static void VKAPI_CALL m_Blit(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout, uint32_t, const VkImageBlit*, VkFilter) { ++r_blits; }
@@ -102,7 +105,7 @@ static VkResult VKAPI_CALL m_Present(VkQueue, const VkPresentInfoKHR* pi) {
     uint64_t pid = 0; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) { auto* x = (const VkPresentIdKHR*)c; CHECK(x->swapchainCount == 1); pid = x->pPresentIds[0]; }
     VkFence fence = VK_NULL_HANDLE; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR) { auto* x = (const VkSwapchainPresentFenceInfoKHR*)c; CHECK(x->swapchainCount == 1); fence = x->pFences[0]; }
     int mode = -1; for (auto* c = (const VkBaseInStructure*)pi->pNext; c; c = c->pNext) if (c->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR) { auto* x = (const VkSwapchainPresentModeInfoKHR*)c; CHECK(x->swapchainCount == 1); mode = int(x->pPresentModes[0]); }
-    r_presents.push_back({pi->waitSemaphoreCount ? pi->pWaitSemaphores[0] : VK_NULL_HANDLE, pi->pImageIndices[0], pid, fence, mode}); r_events.push_back("P"); return VK_SUCCESS;
+    { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.push_back({pi->waitSemaphoreCount ? pi->pWaitSemaphores[0] : VK_NULL_HANDLE, pi->pImageIndices[0], pid, fence, mode}); r_events.push_back("P"); } return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL m_SetLoaderData(VkDevice, void* obj) { ++r_loader_data_calls; ((Fake*)obj)->dispatch = (void*)0x2222; return VK_SUCCESS; }
 
@@ -149,7 +152,7 @@ static PFN_vkVoidFunction VKAPI_CALL next_gdpa(VkDevice, const char* n) {
     R(GetImageMemoryRequirements, m_ImgReq) R(AllocateMemory, m_Alloc) R(FreeMemory, m_Free) R(BindImageMemory, m_Bind)
     R(CreateCommandPool, m_CreatePool) R(DestroyCommandPool, m_DestroyPool) R(AllocateCommandBuffers, m_AllocCb) R(BeginCommandBuffer, m_Begin)
     R(EndCommandBuffer, m_End) R(ResetCommandBuffer, m_ResetCb) R(CreateSemaphore, m_CreateSem) R(DestroySemaphore, m_DestroySem)
-    R(CreateFence, m_CreateFence) R(DestroyFence, m_DestroyFence) R(WaitForFences, m_WaitFences) R(ResetFences, m_ResetFences)
+    R(CreateFence, m_CreateFence) R(DestroyFence, m_DestroyFence) R(WaitForFences, m_WaitFences) R(WaitForPresentKHR, m_WaitForPresent) R(ResetFences, m_ResetFences)
     R(CreateImageView, m_CreateView) R(DestroyImageView, m_DestroyView) R(CreateShaderModule, m_CreateShader) R(DestroyShaderModule, m_DestroyShader)
     R(CreateDescriptorSetLayout, m_CreateSetLayout) R(DestroyDescriptorSetLayout, m_DestroySetLayout) R(CreatePipelineLayout, m_CreatePipeLayout) R(DestroyPipelineLayout, m_DestroyPipeLayout)
     R(CreateComputePipelines, m_CreateCompute) R(DestroyPipeline, m_DestroyPipeline) R(CreateDescriptorPool, m_CreateDescPool) R(DestroyDescriptorPool, m_DestroyDescPool)
@@ -210,27 +213,32 @@ int main(int, char** argv) {
     for (float t : r_t) CHECK(t >= 0.0f && t <= 1.0f);
     CHECK(r_acquires > 0 && r_acquires < r_dispatches);                               // the first tick of a pair is the carrier (no acquire)
 
+    // The presenter thread may still be showing the last pair (slower under a sanitizer or on a loaded machine): wait until nothing has been presented for 80 ms (the idle
+    // flush of the held frame comes after 200 ms), then analyse a snapshot taken under the recording lock.
+    for (size_t last = size_t(-1), same = 0; same < 4;) { usleep(20'000); size_t n; { std::lock_guard<std::mutex> rl(g_rec_mu); n = r_presents.size(); } if (n == last) ++same; else { same = 0; last = n; } }
+    std::vector<std::string> ev_snap; std::vector<Submit> sub_snap; std::vector<Present> pre_snap;
+    { std::lock_guard<std::mutex> rl(g_rec_mu); ev_snap = r_events; sub_snap = r_submits; pre_snap = r_presents; }
     // sequencing: every present waits on a semaphore that an earlier submit signaled, or is the game's own (bypass warm-up)
     std::set<VkSemaphore> signaled;
     size_t si = 0, pi_ = 0; int checked = 0;
     // replay events in order
-    for (const auto& ev : r_events) {
-        if (ev == "S") { signaled.insert(r_submits[si].signal); ++si; }
-        else { const Present& p = r_presents[pi_++]; CHECK(game_sems.count(p.wait) || signaled.count(p.wait)); ++checked; }
+    for (const auto& ev : ev_snap) {
+        if (ev == "S") { signaled.insert(sub_snap[si].signal); ++si; }
+        else { const Present& p = pre_snap[pi_++]; CHECK(game_sems.count(p.wait) || signaled.count(p.wait)); ++checked; }
     }
-    CHECK(checked == int(r_presents.size()));
+    CHECK(checked == int(pre_snap.size()));
     // hidden-image submits wait on the acquire semaphore, and present the acquired index (4..7)
-    int hidden_presents = 0; for (auto& p : r_presents) if (p.image >= 4) ++hidden_presents;
+    int hidden_presents = 0; for (auto& p : pre_snap) if (p.image >= 4) ++hidden_presents;
     CHECK(hidden_presents == r_acquires);
-    for (auto s : r_acq_sems) { bool used = false; for (auto& sb : r_submits) for (auto w : sb.waits) used |= (w == s); CHECK(used); }
-    CHECK(r_presents.size() > size_t(frame));                                         // more frames out than in
-    std::printf("synth ok: %u frames in, %zu presented, %d synthetic (%d hidden)\n", frame, r_presents.size(), r_dispatches, r_acquires);
+    for (auto s : r_acq_sems) { bool used = false; for (auto& sb : sub_snap) for (auto w : sb.waits) used |= (w == s); CHECK(used); }
+    CHECK(pre_snap.size() > size_t(frame));                                         // more frames out than in
+    std::printf("synth ok: %u frames in, %zu presented, %d synthetic (%d hidden)\n", frame, pre_snap.size(), r_dispatches, r_acquires);
 
     // application present ids (VK_KHR_present_id): every id is shown exactly once, in increasing order; hidden images carry none
-    { std::vector<uint64_t> ids; for (auto& p : r_presents) if (p.id) ids.push_back(p.id);
+    { std::vector<uint64_t> ids; for (auto& p : pre_snap) if (p.id) ids.push_back(p.id);
       CHECK(ids.size() >= frame - 2);                                                  // the newest frame is still held
       for (size_t i = 1; i < ids.size(); ++i) CHECK(ids[i] > ids[i - 1]);
-      for (auto& p : r_presents) if (p.image >= 4) CHECK(p.id == 0); }
+      for (auto& p : pre_snap) if (p.image >= 4) CHECK(p.id == 0); }
 
     // application present fences (swapchain_maintenance1): carried with the held frame, and a wait for the fence releases the frame
     { auto wff = (PFN_vkWaitForFences)e.gdpa(e.dev, "vkWaitForFences");

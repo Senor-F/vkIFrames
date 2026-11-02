@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
         setenv("VKIFRAME_SYNTH", " off\t", 1);                    // blanks around a word are ignored: not "unusable, so the default (on) stays"
         setenv("VKIFRAME_FLOW_SUBPIXEL", " 0 ", 1);              // and around a number: off
         setenv("VKIFRAME_EXPERIMENTAL", "4294967296", 1);        // non-zero: on (atoi wrapped it to 0)
+        setenv("VKIFRAME_CAP_EARLY", "1", 1); setenv("VKIFRAME_CAP_MODE", "late", 1);   // the two disagree: CAP_MODE wins, and the log says so
         // a start-of-game key from live.conf with control characters in its value: the log gets none of them
         const std::string conf = std::string(dir) + "/live.conf";
         { std::ofstream f(conf, std::ios::binary); f << "UI_MASK_THRESHOLD=\x1b[31mA\rB\x07\n"; }
@@ -63,6 +64,7 @@ int main(int argc, char** argv) {
         const Config& c = GetConfig();
         CHECK(c.flow_level == d.flow_level && c.cmd_buffers == d.cmd_buffers && c.max_synthetic == d.max_synthetic);
         CHECK(c.hold && c.tickmark == d.tickmark && c.dump_frames == 60 && !c.presenter && !c.synth && c.pace_sleep && !c.flow_subpixel);
+        CHECK(c.cap_mode == Config::CapMode::Late);
         CHECK(c.ui_mask == d.ui_mask);
         CHECK(LiveMaxSyntheticLimit() == kLiveMaxSynthetic);
         // VKIFRAME_COST_WARN follows the number rule too: only a finite number above 0 counts, anything else keeps 1.0
@@ -85,6 +87,7 @@ int main(int argc, char** argv) {
     if (mode == "c") {
         const std::string t = ss.str();
         CHECK(t.find("VKIFRAME_FLOW_LEVEL=\"nan\" is not a usable number") != std::string::npos && t.find("VKIFRAME_CMD_BUFFERS=\"5x\"") != std::string::npos && t.find("VKIFRAME_HOLD=\"abc\" is not a usable value") != std::string::npos);
+        CHECK(t.find("VKIFRAME_CAP_EARLY=1 and VKIFRAME_CAP_MODE=\"late\" disagree: CAP_MODE wins") != std::string::npos);
         CHECK(t.find("VKIFRAME_COST_WARN=\"0x10\" is not a usable number above 0") != std::string::npos);
         CHECK(t.find("UI_MASK_THRESHOLD=\"") != std::string::npos);                                       // the rejected value is logged...
         bool clean = true; for (char ch : t) if (ch != '\n' && (static_cast<unsigned char>(ch) < 0x20 || ch == 0x7f)) clean = false;

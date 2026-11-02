@@ -335,6 +335,7 @@ inline const Config& GetConfig() {
         EnvFlag("STATS_FRAMES", c.stats_frames);
         if (c.cap_early) c.cap_mode = Config::CapMode::Early;
         if (const char* v = EnvVar("CAP_MODE")) {
+            if (c.cap_early && std::strcmp(v, "early")) FG_LOG("VKIFRAME_CAP_EARLY=1 and VKIFRAME_CAP_MODE=\"%s\" disagree: CAP_MODE wins", ShownValue(v).c_str());
             if (!std::strcmp(v, "late")) c.cap_mode = Config::CapMode::Late;
             else if (!std::strcmp(v, "early")) c.cap_mode = Config::CapMode::Early;
             else if (!std::strcmp(v, "hybrid")) c.cap_mode = Config::CapMode::Hybrid;
@@ -402,7 +403,7 @@ struct SwapchainState : std::enable_shared_from_this<SwapchainState> {
     std::atomic<uint64_t> ex_planned{0}, ex_cancelled{0}, ex_late_sum_ns{0}, ex_late_max_ns{0}, ex_late_n{0};   // VKIFRAME_EXTRAPOLATE window counters: predicted ticks planned / not presented, lateness of tick 0
     PairScheduler sched;                      // Stage 3: gate, output clock, per-pair plan
     struct Rates { uint64_t synthetic{0}, shown{0}, native{0}, output{0}, bypass{0}, pair{0}, hold{0}, carrier{0}, dropped{0}, last_ns{0}; } rates;   // window counters
-    uint64_t cap_next_slot_ns{0}, cap_this_slot_ns{0}, cap_return_ns{0};   // VKIFRAME_BASE_FPS_CAP: next slot of the grid, when the game was handed back to its thread
+    uint64_t cap_next_slot_ns{0}, cap_return_ns{0};   // VKIFRAME_BASE_FPS_CAP: next slot of the grid, when the game was handed back to its thread
     double   cap_dev_ns{0.0};                 // hybrid cap: EWMA of the absolute deviation of the game's render time from cap_render_ema_ns
     double   cap_render_ema_ns{0.0};          // how long the game takes between our return and its next present
     std::atomic<uint64_t> cpu_hook_ns{0}, cpu_presenter_ns{0};   // CPU time (not waiting) of the game thread inside our present, and of the presenter thread (window totals)
