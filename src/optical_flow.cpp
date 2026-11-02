@@ -96,6 +96,24 @@ VkExtent2D HalfUp(VkExtent2D e) { return {(e.width + 1) / 2, (e.height + 1) / 2}
 
 } // namespace
 
+void TimingInit(const DeviceDispatch& dt, GpuState& g) {
+    FlowState& f = g.flow;
+    if (f.qpool) return;
+    // GPU timestamps (optional): the present queue's family must support them
+    if (dt.CreateQueryPool && dt.DestroyQueryPool && dt.CmdResetQueryPool && dt.CmdWriteTimestamp && dt.GetQueryPoolResults &&
+        dt.instance->GetPhysicalDeviceProperties && dt.instance->GetPhysicalDeviceQueueFamilyProperties) {
+        VkQueueFamilyProperties qf[16]{}; uint32_t nq = 16;
+        dt.instance->GetPhysicalDeviceQueueFamilyProperties(dt.physical_device, &nq, qf);
+        VkPhysicalDeviceProperties props{};
+        dt.instance->GetPhysicalDeviceProperties(dt.physical_device, &props);
+        if (g.family < nq && qf[g.family].timestampValidBits >= 40 && props.limits.timestampPeriod > 0.0f) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = FlowState::kQSlots * g.n_cmd;
+            if (dt.CreateQueryPool(dt.device, &qi, nullptr, &f.qpool) == VK_SUCCESS) f.ts_period_ns = props.limits.timestampPeriod;
+        }
+    }
+}
+
 bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
     FlowState& f = g.flow;
     f.fin = uint32_t(std::clamp(GetConfig().flow_level, 1, int(FlowState::kLevels) - 1) - 1);
@@ -145,19 +163,7 @@ bool FlowCreate(const DeviceDispatch& dt, GpuState& g) {
         if (dt.AllocateDescriptorSets(dt.device, &ai, f.sets[e]) != VK_SUCCESS) return false;
     }
 
-    // GPU timestamps (optional): the present queue's family must support them
-    if (dt.CreateQueryPool && dt.DestroyQueryPool && dt.CmdResetQueryPool && dt.CmdWriteTimestamp && dt.GetQueryPoolResults &&
-        dt.instance->GetPhysicalDeviceProperties && dt.instance->GetPhysicalDeviceQueueFamilyProperties) {
-        VkQueueFamilyProperties qf[16]{}; uint32_t nq = 16;
-        dt.instance->GetPhysicalDeviceQueueFamilyProperties(dt.physical_device, &nq, qf);
-        VkPhysicalDeviceProperties props{};
-        dt.instance->GetPhysicalDeviceProperties(dt.physical_device, &props);
-        if (g.family < nq && qf[g.family].timestampValidBits >= 40 && props.limits.timestampPeriod > 0.0f) {
-            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-            qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = FlowState::kQSlots * g.n_cmd;
-            if (dt.CreateQueryPool(dt.device, &qi, nullptr, &f.qpool) == VK_SUCCESS) f.ts_period_ns = props.limits.timestampPeriod;
-        }
-    }
+    TimingInit(dt, g);
     f.ready = true;
     f.pair_bidir = Live().interp_bidir.load() != 0;
     FG_LOG("settings: phase_lock %d offset %.2f | interp_guide %.3f | conf %.3f..%.3f | flow_level %d subpixel %d | optical_flow %d | interp_cand %.3f | pan %.2f..%.2f | synth_margin %.2f | bwd_skip %d | bidir %d | ui_mask %.3f | extrap %d",

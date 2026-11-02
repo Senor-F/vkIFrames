@@ -575,8 +575,8 @@ void LogRates(SwapchainState& sc, uint64_t now) {
             sc.cost_over_windows = ratio > kCostWarn ? sc.cost_over_windows + 1 : 0;
             if (sc.cost_over_windows >= 3 && !sc.cost_warned) {
                 sc.cost_warned = true;
-                FG_LOG("WARNING: the layer's GPU work is %.0f %% of the game's frame time (flow %.2f ms x %.1f pairs/s + interpolation %.2f ms x %.1f frames/s = %.0f ms of GPU per second). The game cannot hold its frame rate with this: lower MAX_SYNTHETIC or FLOW_LEVEL, or the target.",
-                       ratio * 100.0, flow_ms, pairs_s, interp_ms, gen_s, ratio * 1000.0);
+                FG_LOG("WARNING: the layer's GPU work is %.0f %% of the game's frame time (flow %.2f ms x %.1f pairs/s + %s %.2f ms x %.1f frames/s = %.0f ms of GPU per second; the copies of the frames are not counted). The game cannot hold its frame rate with this: lower MAX_SYNTHETIC or FLOW_LEVEL, or the target.",
+                       ratio * 100.0, flow_ms, pairs_s, GetConfig().interpolate ? "interpolation" : "cross-fade", interp_ms, gen_s, ratio * 1000.0);
             }
         }
         if (want_stats) {                                      // VKIFRAME_STATS / benchmark: this second as one record (stats.hpp)
