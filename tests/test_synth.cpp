@@ -269,6 +269,11 @@ int main(int, char** argv) {
         CHECK(r_presents.size() > before_idle);                                       // the held frame was shown while the game was silent
         for (int i = 0; i < 3; ++i) present_frame(25'000);
     }
+    // watchdog (#A5): after 2 s without a present the presenter thread logs the game's frame count and the held frame. It must not read them while the game thread
+    // writes them: the game presents again after the pause (a ThreadSanitizer build reports the race if the log line reads them without the locks).
+    for (int i = 0; i < 12; ++i) present_frame(25'000);
+    usleep(2'600'000);
+    for (int i = 0; i < 6; ++i) present_frame(25'000);
     for (int i = 0; i < 30; ++i) present_frame(25'000);                               // a pause over 100 ms resets the gate: interpolating again before the next part
 
     // 2) a failing acquire switches synthetic frames off; the game keeps getting its frames shown
