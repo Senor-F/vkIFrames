@@ -43,6 +43,25 @@ int main(int argc, char** argv) {
         CHECK(c.target_fps == 1000.0f);
         CHECK(c.base_fps_cap == 0.0f);
         CHECK(Live().base_fps_cap.load() == 0.0f && Live().target_fps.load() == 1000.0f);
+    } else if (mode == "c") {
+        // whole-number and on/off settings follow the same rule as the float ones: not a number = ignored (the default stays), a number is clamped
+        setenv("VKIFRAME_FLOW_LEVEL", "nan", 1);
+        setenv("VKIFRAME_CMD_BUFFERS", "5x", 1);
+        setenv("VKIFRAME_MAX_SYNTHETIC", "0x4", 1);
+        setenv("VKIFRAME_HOLD", "abc", 1);                      // the default is on: stays on (before: atoi gave 0 = off)
+        setenv("VKIFRAME_TICKMARK", "inf", 1);
+        setenv("VKIFRAME_DUMP_FRAMES", "9e99", 1);               // finite: clamped
+        setenv("VKIFRAME_PRESENTER", "off", 1);                  // words work like in live.conf
+        setenv("VKIFRAME_EXPERIMENTAL", "4294967296", 1);        // non-zero: on (atoi wrapped it to 0)
+        // a start-of-game key from live.conf with control characters in its value: the log gets none of them
+        const std::string conf = std::string(dir) + "/live.conf";
+        { std::ofstream f(conf, std::ios::binary); f << "UI_MASK_THRESHOLD=\x1b[31mA\rB\x07\n"; }
+        setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
+        const Config& c = GetConfig();
+        CHECK(c.flow_level == d.flow_level && c.cmd_buffers == d.cmd_buffers && c.max_synthetic == d.max_synthetic);
+        CHECK(c.hold && c.tickmark == d.tickmark && c.dump_frames == 60 && !c.presenter);
+        CHECK(c.ui_mask == d.ui_mask);
+        CHECK(LiveMaxSyntheticLimit() == kLiveMaxSynthetic);
     } else {
         setenv("VKIFRAME_TARGET_FPS", "-5", 1);
         setenv("VKIFRAME_BASE_FPS_CAP", "1e30", 1);
@@ -56,6 +75,13 @@ int main(int argc, char** argv) {
     }
     std::fflush(stderr);
     std::ifstream f(log); std::stringstream ss; ss << f.rdbuf();
+    if (mode == "c") {
+        const std::string t = ss.str();
+        CHECK(t.find("VKIFRAME_FLOW_LEVEL=\"nan\" is not a usable number") != std::string::npos && t.find("VKIFRAME_CMD_BUFFERS=\"5x\"") != std::string::npos && t.find("VKIFRAME_HOLD=\"abc\" is not a usable value") != std::string::npos);
+        CHECK(t.find("UI_MASK_THRESHOLD=\"") != std::string::npos);                                       // the rejected value is logged...
+        bool clean = true; for (char ch : t) if (ch != '\n' && (static_cast<unsigned char>(ch) < 0x20 || ch == 0x7f)) clean = false;
+        CHECK(clean);                                                                                       // ...without its ESC, CR and BEL
+    }
     if (mode == "a") {
         CHECK(ss.str().find("VKIFRAME_SYNTH_MARGIN=\"nan\" is not a usable number") != std::string::npos);
         CHECK(ss.str().find("VKIFRAME_MIN_GAIN=\"0x10\" is not a usable number") != std::string::npos);

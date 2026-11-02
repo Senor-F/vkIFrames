@@ -1128,6 +1128,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_DeviceWaitIdle(VkDevice device) {
     if (t2 - t0 > 500'000'000ull) FG_LOG("shutdown: vkDeviceWaitIdle took %.0f ms (queue locks %.0f ms, wait %.0f ms)", (t2 - t0) / 1e6, (t1 - t0) / 1e6, (t2 - t1) / 1e6);
     return r;
 }
+// About the raw SwapchainState pointers in the acquire and present-wait hooks below: the swapchain is externally synchronized in vkAcquireNextImageKHR,
+// vkAcquireNextImage2KHR (VkAcquireNextImageInfoKHR::swapchain), vkWaitForPresentKHR and vkDestroySwapchainKHR (externsync in vk.xml), so the game cannot destroy a
+// swapchain while another thread is inside one of these calls, and the pointer from FindSwapchain stays valid for the whole call. The fence hooks are different (a fence
+// is not synchronized with its swapchain) and hold shared ownership, see FlushForFences.
 VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                         VkSemaphore sem, VkFence fence, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));

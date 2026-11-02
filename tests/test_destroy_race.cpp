@@ -127,8 +127,9 @@ static VkResult VKAPI_CALL m_Present(VkQueue, const VkPresentInfoKHR* pi) {
 static VkResult VKAPI_CALL m_SetLoaderData(VkDevice, void* obj) { ++r_loader_data_calls; ((Fake*)obj)->dispatch = (void*)0x2222; return VK_SUCCESS; }
 
 
-static int r_dispatches, r_acquires, r_desc_updates, r_pipelines, r_image_views; static std::vector<float> r_t; static bool k_acquire_fail = false;
-static std::vector<VkSemaphore> r_acq_sems; static uint32_t g_acq_next = 0;
+static std::atomic<int> r_dispatches{0}, r_acquires{0}, r_desc_updates{0}, r_pipelines{0}, r_image_views{0};      // written by the presenter thread, read by the main thread
+static std::vector<float> r_t; static bool k_acquire_fail = false;
+static std::vector<VkSemaphore> r_acq_sems; static std::atomic<uint32_t> g_acq_next{0};
 static VkResult VKAPI_CALL m_CreateView(VkDevice, const VkImageViewCreateInfo*, const VkAllocationCallbacks*, VkImageView* v) { ++r_image_views; *v = H(VkImageView); return VK_SUCCESS; }
 static void VKAPI_CALL m_DestroyView(VkDevice, VkImageView, const VkAllocationCallbacks*) {}
 static VkResult VKAPI_CALL m_CreateShader(VkDevice, const VkShaderModuleCreateInfo*, const VkAllocationCallbacks*, VkShaderModule* m) { *m = H(VkShaderModule); return VK_SUCCESS; }
@@ -249,5 +250,7 @@ int main(int, char** argv) {
     g_probe = false;
     CHECK(!g_overlap);                                                                // the submit waited for vkDeviceWaitIdle
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
+    for (Fake* f : g_cbs) delete f;                                                   // the mock allocated the layer's command buffer handles
+    g_cbs.clear();
     std::printf("PASS: destroying a swapchain waits for a fence flush in flight and holds the queue mutexes around vkDeviceWaitIdle\n");
 }

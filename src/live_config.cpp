@@ -374,6 +374,7 @@ void LiveLogCap() {
 }
 
 int LiveRequestedMaxSynthetic() {
+    int request = 0;
     std::string text;
     if (!ReadOwnFile(ConfPath(), text)) return 0;
     size_t pos = 0;
@@ -386,11 +387,11 @@ int LiveRequestedMaxSynthetic() {
         std::string key = line.substr(0, eq), val = line.substr(eq + 1); Trim(key); Trim(val);
         for (const char* pfx : {"VKIFRAME_", "FRAMEGEN_"}) if (key.rfind(pfx, 0) == 0) { key.erase(0, std::strlen(pfx)); break; }
         if (key != "MAX_SYNTHETIC") continue;
-        char* end = nullptr; const long v = std::strtol(val.c_str(), &end, 10);
-        if (end == val.c_str()) return 0;
-        return int(std::clamp<long>(v, 1, kLiveMaxSynthetic));
+        double x;                                                  // the same rule as the live parser: a line it ignores (5x, 0x4, nan) does not set the request either; the last valid line counts
+        if (val.find('\0') != std::string::npos || !ParseFiniteNumber(val.c_str(), x)) continue;
+        request = int(std::clamp(std::round(x), 1.0, double(kLiveMaxSynthetic)));
     }
-    return 0;
+    return request;
 }
 
 int LiveSynthCapacityFor(int env_request) {
@@ -414,7 +415,8 @@ int LiveMaxSyntheticLimit() {
     static const int limit = [] {
         const char* v = StartupFileValue("EXPERIMENTAL");     // live.conf wins over the environment, like the other start-of-game keys
         if (!v) v = EnvVar("EXPERIMENTAL");
-        const bool on = v && (std::atoi(v) != 0 || std::strcmp(v, "true") == 0 || std::strcmp(v, "on") == 0);
+        bool on = false;
+        if (v && !ParseFlag(v, on)) { LogLine("EXPERIMENTAL=\"%s\" is not a usable value: ignored, experimental mode stays off", ShownValue(v).c_str()); on = false; }
         return on ? kLiveMaxSynthetic : kLiveMaxSyntheticNormal;
     }();
     return limit;
@@ -426,7 +428,7 @@ LiveSettings& Live() {
         const Config& c = GetConfig();
         l->enabled = 1; l->target_fps = c.target_fps; l->max_synthetic = std::min(c.max_synthetic, LiveMaxSyntheticLimit()); l->base_fps_cap = c.base_fps_cap; l->cmd_buffers = c.cmd_buffers; l->synth_margin = c.synth_margin;
         l->min_gain = c.min_gain; l->phase_lock = c.phase_lock ? 1 : 0; l->phase_offset = c.phase_offset; l->interp_bidir = c.interp_bidir ? 1 : 0;
-        if (const char* v = EnvVar("STATS")) l->stats = std::atoi(v) != 0 ? 1 : 0;
+        if (const char* v = EnvVar("STATS")) { bool on = false; if (ParseFlag(v, on)) l->stats = on ? 1 : 0; }
         for (int k = 0; k < kKeys; ++k) g_startup[k] = Get(*l, k);
         return l;
     }();
