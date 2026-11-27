@@ -157,107 +157,124 @@ static Env Bring(void* lib, const std::vector<const char*>& inst_exts, uint32_t 
 }
 static void Reset() { k_abs = true; k_dev_exts = k_features = k_surface_ok = true; k_flags_fail = k_queue_full_once = k_setup_fail = k_reject_changes = false; r_destroyed_sc.clear(); r_retired.clear(); r_retired_reuse = 0; r_old_sc = {}; r_sc_calls = r_present_calls = r_present_with_chain = 0; r_last_id = 0; r_ids_increase = true; r_pending = 0; r_sc_flags = 0; r_queue_size = 0; }
 
+// --- A: everything supported
+static void TestA_AllSupported(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
+    CHECK(has(r_inst_exts, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME));
+    CHECK(has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && has(r_dev_exts, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) && has(r_dev_exts, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME));
+    CHECK(has(r_dev_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME) && r_timing_feat && r_id2_feat);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR; VkSwapchainKHR sc{};
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    CHECK((r_sc_flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) && (r_sc_flags & VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR));
+    CHECK(r_sc_mode == VK_PRESENT_MODE_FIFO_KHR && sci.presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR);   // forced, app struct untouched
+    CHECK(r_queue_size == 16);                                                                            // 4 images x 4
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc; uint32_t idx = 0; pi.pImageIndices = &idx;
+    for (int i = 0; i < 50; ++i) { CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); usleep(2000); }
+    CHECK(r_present_with_chain == 50 && r_ids_increase && r_last_id == 50 && r_last_target == 0);        // ASAP by default
+    CHECK(r_last_stage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT);
+    // queue full once: retried with a fresh id
+    k_queue_full_once = true; int before = r_present_calls; CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); CHECK(r_present_calls == before + 2);
+    // app already uses present ids -> we do not add ours
+    VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR}; pi.pNext = &pid; int chains = r_present_with_chain; qp((VkQueue)&g_q, &pi); CHECK(r_present_with_chain == chains);
+    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
+    std::printf("A ok: instance ext, device exts+features, flags, forced FIFO, queue size, ids, queue-full retry, app ids respected\n");
+}
+
+// --- B: driver lacks the device extensions / features
+static void TestB_Unsupported(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); k_dev_exts = false; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts); CHECK(!has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && !r_timing_feat);
+    Reset(); k_features = false; e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts); CHECK(!has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME));
+    std::printf("B ok: untouched device when unsupported\n");
+}
+
+// --- C: surface does not support it: no flags, no forced FIFO
+static void TestC_SurfaceUnsupported(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); k_surface_ok = false; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; VkSwapchainKHR sc{};
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR);
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
+    qp((VkQueue)&g_q, &pi); CHECK(r_present_with_chain == 0);
+    std::printf("C ok: surface without support is left alone\n");
+}
+
+// --- D: creation with the flags fails -> retried without, original mode restored
+static void TestD_FlagsFailRetry(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); k_flags_fail = true; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; VkSwapchainKHR sc{};
+    sci.oldSwapchain = (VkSwapchainKHR)(uintptr_t)0x5000;                       // a resize: the failed first attempt retires it, the retry must not pass it again
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(r_sc_calls == 2 && r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR);
+    CHECK(r_retired_reuse == 0 && r_old_sc == VkSwapchainKHR{});
+    std::printf("D ok: retry without flags\n");
+}
+
+// --- D2: the timing setup fails after the swapchain was created with the flags and the forced FIFO -> made again with the game's flags and mode, the first one destroyed
+static void TestD2_SetupFailRetry(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); k_setup_fail = true; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; VkSwapchainKHR sc{};
+    sci.oldSwapchain = (VkSwapchainKHR)(uintptr_t)0x5000;
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    CHECK(r_retired_reuse == 0);                                                       // the replacement takes over from the first swapchain (not retired), never from 0x5000 again
+    CHECK(r_sc_calls == 2 && r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR);
+    CHECK(r_old_sc == (VkSwapchainKHR)(uintptr_t)(0x77 + 1) && r_destroyed_sc.size() == 1 && r_destroyed_sc[0] == r_old_sc && sc == (VkSwapchainKHR)(uintptr_t)(0x77 + 2));
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
+    for (int i = 0; i < 5; ++i) { CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); usleep(1000); }
+    CHECK(r_present_with_chain == 0);                                                  // no timing chain without timing
+    std::printf("D2 ok: timing setup failed -> swapchain made again without the flags\n");
+}
+
+// --- D3: the driver refuses every change the layer makes (flags, image count): the game's own request is made as it is, the layer does not touch that swapchain
+static void TestD3_ChangesRefused(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); k_reject_changes = true; k_app_images = 3; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR sc{};
+    sci.oldSwapchain = (VkSwapchainKHR)(uintptr_t)0x5000;
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    CHECK(r_retired_reuse == 0);                                                       // three attempts, the game's oldSwapchain passed once only
+    CHECK(r_sc_calls == 3 && r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR && r_sc_min_images == 3 && r_sc_usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT && r_old_sc == VkSwapchainKHR{});
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
+    for (int i = 0; i < 5; ++i) { CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); usleep(1000); }
+    CHECK(r_present_with_chain == 0);
+    std::printf("D3 ok: layer changes refused by the driver -> the game's own swapchain request\n");
+}
+
+// --- E: app brings its own present timing / old API: layer stays out
+static void TestE_AppOwnedTiming(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    Reset(); Env e = Bring(lib, iexts, VK_API_VERSION_1_3, {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_PRESENT_TIMING_EXTENSION_NAME}); CHECK(!r_id2_feat);
+    Reset(); e = Bring(lib, iexts, VK_API_VERSION_1_0, dexts);          // a Vulkan 1.0 app (vkcube) is served through the KHR extensions
+    CHECK(has(r_inst_exts, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) && has(r_inst_exts, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME));
+    CHECK(has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && r_timing_feat && r_id2_feat);
+    std::printf("E ok: app-owned timing left alone, Vulkan 1.0 apps served via KHR extensions\n");
+}
+
+// --- F: surface supports timing but not absolute targets: feedback only, target stays 0 even with VKIFRAME_TIMING_TEST
+static void TestF_NoAbsoluteTargets(void* lib, const std::vector<const char*>& iexts, const std::vector<const char*>& dexts) {
+    setenv("VKIFRAME_TIMING_TEST", "1", 1);
+    Reset(); k_abs = false; Env e = Bring(lib, iexts, VK_API_VERSION_1_0, dexts);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; VkSwapchainKHR sc{};
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(r_sc_flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT);
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
+    for (int i = 0; i < 5; ++i) { qp((VkQueue)&g_q, &pi); usleep(1000); }
+    CHECK(r_present_with_chain == 5 && r_last_target == 0);
+    std::printf("F ok: no absolute targets -> feedback-only timing\n");
+}
+
 int main(int, char** argv) {
     ClearFramegenEnv();
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
     const std::vector<const char*> iexts{VK_KHR_SURFACE_EXTENSION_NAME}, dexts{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-
-    // --- A: everything supported
-    {
-        Reset(); Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
-        CHECK(has(r_inst_exts, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME));
-        CHECK(has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && has(r_dev_exts, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) && has(r_dev_exts, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME));
-        CHECK(has(r_dev_exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME) && r_timing_feat && r_id2_feat);
-        auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-        VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR; VkSwapchainKHR sc{};
-        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-        CHECK((r_sc_flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) && (r_sc_flags & VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR));
-        CHECK(r_sc_mode == VK_PRESENT_MODE_FIFO_KHR && sci.presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR);   // forced, app struct untouched
-        CHECK(r_queue_size == 16);                                                                            // 4 images x 4
-        auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
-        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc; uint32_t idx = 0; pi.pImageIndices = &idx;
-        for (int i = 0; i < 50; ++i) { CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); usleep(2000); }
-        CHECK(r_present_with_chain == 50 && r_ids_increase && r_last_id == 50 && r_last_target == 0);        // ASAP by default
-        CHECK(r_last_stage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT);
-        // queue full once: retried with a fresh id
-        k_queue_full_once = true; int before = r_present_calls; CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); CHECK(r_present_calls == before + 2);
-        // app already uses present ids -> we do not add ours
-        VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR}; pi.pNext = &pid; int chains = r_present_with_chain; qp((VkQueue)&g_q, &pi); CHECK(r_present_with_chain == chains);
-        ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
-        std::printf("A ok: instance ext, device exts+features, flags, forced FIFO, queue size, ids, queue-full retry, app ids respected\n");
-    }
-    // --- B: driver lacks the device extensions / features
-    { Reset(); k_dev_exts = false; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts); CHECK(!has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && !r_timing_feat);
-      Reset(); k_features = false; e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts); CHECK(!has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME));
-      std::printf("B ok: untouched device when unsupported\n"); }
-    // --- C: surface does not support it: no flags, no forced FIFO
-    {
-        Reset(); k_surface_ok = false; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
-        auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-        VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; VkSwapchainKHR sc{};
-        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR);
-        auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
-        qp((VkQueue)&g_q, &pi); CHECK(r_present_with_chain == 0);
-        std::printf("C ok: surface without support is left alone\n");
-    }
-    // --- D: creation with the flags fails -> retried without, original mode restored
-    {
-        Reset(); k_flags_fail = true; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
-        auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-        VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; VkSwapchainKHR sc{};
-        sci.oldSwapchain = (VkSwapchainKHR)(uintptr_t)0x5000;                       // a resize: the failed first attempt retires it, the retry must not pass it again
-        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(r_sc_calls == 2 && r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR);
-        CHECK(r_retired_reuse == 0 && r_old_sc == VkSwapchainKHR{});
-        std::printf("D ok: retry without flags\n");
-    }
-    // --- D2: the timing setup fails after the swapchain was created with the flags and the forced FIFO -> made again with the game's flags and mode, the first one destroyed
-    {
-        Reset(); k_setup_fail = true; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
-        auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-        VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; VkSwapchainKHR sc{};
-        sci.oldSwapchain = (VkSwapchainKHR)(uintptr_t)0x5000;
-        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-        CHECK(r_retired_reuse == 0);                                                       // the replacement takes over from the first swapchain (not retired), never from 0x5000 again
-        CHECK(r_sc_calls == 2 && r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR);
-        CHECK(r_old_sc == (VkSwapchainKHR)(uintptr_t)(0x77 + 1) && r_destroyed_sc.size() == 1 && r_destroyed_sc[0] == r_old_sc && sc == (VkSwapchainKHR)(uintptr_t)(0x77 + 2));
-        auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
-        for (int i = 0; i < 5; ++i) { CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); usleep(1000); }
-        CHECK(r_present_with_chain == 0);                                                  // no timing chain without timing
-        std::printf("D2 ok: timing setup failed -> swapchain made again without the flags\n");
-    }
-    // --- D3: the driver refuses every change the layer makes (flags, image count): the game's own request is made as it is, the layer does not touch that swapchain
-    {
-        Reset(); k_reject_changes = true; k_app_images = 3; Env e = Bring(lib, iexts, VK_API_VERSION_1_3, dexts);
-        auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-        VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR sc{};
-        sci.oldSwapchain = (VkSwapchainKHR)(uintptr_t)0x5000;
-        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-        CHECK(r_retired_reuse == 0);                                                       // three attempts, the game's oldSwapchain passed once only
-        CHECK(r_sc_calls == 3 && r_sc_flags == 0 && r_sc_mode == VK_PRESENT_MODE_MAILBOX_KHR && r_sc_min_images == 3 && r_sc_usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT && r_old_sc == VkSwapchainKHR{});
-        auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
-        for (int i = 0; i < 5; ++i) { CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS); usleep(1000); }
-        CHECK(r_present_with_chain == 0);
-        std::printf("D3 ok: layer changes refused by the driver -> the game's own swapchain request\n");
-    }
-    // --- E: app brings its own present timing / old API: layer stays out
-    {
-        Reset(); Env e = Bring(lib, iexts, VK_API_VERSION_1_3, {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_PRESENT_TIMING_EXTENSION_NAME}); CHECK(!r_id2_feat);
-        Reset(); e = Bring(lib, iexts, VK_API_VERSION_1_0, dexts);          // a Vulkan 1.0 app (vkcube) is served through the KHR extensions
-        CHECK(has(r_inst_exts, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) && has(r_inst_exts, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME));
-        CHECK(has(r_dev_exts, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && r_timing_feat && r_id2_feat);
-        std::printf("E ok: app-owned timing left alone, Vulkan 1.0 apps served via KHR extensions\n");
-    }
-    // --- F: surface supports timing but not absolute targets: feedback only, target stays 0 even with VKIFRAME_TIMING_TEST
-    {
-        setenv("VKIFRAME_TIMING_TEST", "1", 1);
-        Reset(); k_abs = false; Env e = Bring(lib, iexts, VK_API_VERSION_1_0, dexts);
-        auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-        VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; VkSwapchainKHR sc{};
-        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(r_sc_flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT);
-        auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.swapchainCount = 1; pi.pSwapchains = &sc;
-        for (int i = 0; i < 5; ++i) { qp((VkQueue)&g_q, &pi); usleep(1000); }
-        CHECK(r_present_with_chain == 5 && r_last_target == 0);
-        std::printf("F ok: no absolute targets -> feedback-only timing\n");
-    }
+    TestA_AllSupported(lib, iexts, dexts);
+    TestB_Unsupported(lib, iexts, dexts);
+    TestC_SurfaceUnsupported(lib, iexts, dexts);
+    TestD_FlagsFailRetry(lib, iexts, dexts);
+    TestD2_SetupFailRetry(lib, iexts, dexts);
+    TestD3_ChangesRefused(lib, iexts, dexts);
+    TestE_AppOwnedTiming(lib, iexts, dexts);
+    TestF_NoAbsoluteTargets(lib, iexts, dexts);
     std::printf("PASS: stage 2 mock driver\n");
 }
