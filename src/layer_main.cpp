@@ -18,14 +18,13 @@
 #include <string>
 #include <vector>
 
-namespace { bool StopPresenter(SwapchainState& sc); void HeldFencesDrop(DeviceDispatch& dt, SwapchainState* sc); std::atomic<bool> g_presenter_detached{false}; }
+#include "layer_internal.hpp"
+using namespace fg_layer;
 // Set by the hook bodies for the guard below (see "host out of memory" at the end of this file): the next layer's destroy was already called; the game's frame
 // was already consumed by the layer; the swapchain of the present in progress.
-namespace { void GuardNote(const char* hook, const char* what) noexcept; }
-namespace { thread_local bool t_guard_forwarded = false, t_guard_present_consumed = false; thread_local SwapchainState* t_guard_present_sc = nullptr; }
+namespace fg_layer { std::atomic<bool> g_presenter_detached{false}; thread_local bool t_guard_forwarded = false, t_guard_present_consumed = false; thread_local SwapchainState* t_guard_present_sc = nullptr; }
 
-namespace {
-constexpr uint32_t kMinImageCount = 4;
+namespace fg_layer {
 
 VkLayerInstanceCreateInfo* FindInstanceLink(const VkInstanceCreateInfo* ci) {
     auto* p = reinterpret_cast<VkLayerInstanceCreateInfo*>(const_cast<void*>(ci->pNext));
@@ -68,7 +67,7 @@ bool DeviceExtSupported(const std::vector<VkExtensionProperties>& props, const c
 
 // ---------------------------------------------------------------- instance
 
-static VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
+VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
                                                    const VkAllocationCallbacks* pAllocator,
                                                    VkInstance* pInstance) {
     auto* link = FindInstanceLink(pCreateInfo);
@@ -131,7 +130,7 @@ static VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
     return VK_SUCCESS;
 }
 
-static void Impl_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator) {
+void Impl_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator) {
     void* key = GetKey(instance);                                  // read before the handle dies
     InstanceDispatch* id = LookupInstance(key);
     if (!id) return;                                               // not created through this layer: there is no next function to call
@@ -142,7 +141,7 @@ static void Impl_DestroyInstance(VkInstance instance, const VkAllocationCallback
 
 // ---------------------------------------------------------------- device
 
-static VkResult Impl_CreateDevice(VkPhysicalDevice physicalDevice,
+VkResult Impl_CreateDevice(VkPhysicalDevice physicalDevice,
                                                  const VkDeviceCreateInfo* pCreateInfo,
                                                  const VkAllocationCallbacks* pAllocator,
                                                  VkDevice* pDevice) {
@@ -258,7 +257,7 @@ static VkResult Impl_CreateDevice(VkPhysicalDevice physicalDevice,
     return VK_SUCCESS;
 }
 
-static void Impl_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
+void Impl_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
     void* key = GetKey(device);
     DeviceDispatch* dd = LookupDevice(key);
     if (!dd) return;                                               // not created through this layer: there is no next function to call
@@ -291,7 +290,7 @@ bool SameCreateInfo(const VkSwapchainCreateInfoKHR& a, const VkSwapchainCreateIn
 }
 }
 
-static VkResult Impl_CreateSwapchainKHR(VkDevice device,
+VkResult Impl_CreateSwapchainKHR(VkDevice device,
                                                        const VkSwapchainCreateInfoKHR* pCreateInfo,
                                                        const VkAllocationCallbacks* pAllocator,
                                                        VkSwapchainKHR* pSwapchain) {
@@ -453,7 +452,7 @@ static VkResult Impl_CreateSwapchainKHR(VkDevice device,
     return VK_SUCCESS;
 }
 
-static void Impl_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+void Impl_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                     const VkAllocationCallbacks* pAllocator) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return;
@@ -496,7 +495,7 @@ static void Impl_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
 
 // ---------------------------------------------------------------- present
 
-namespace {
+namespace fg_layer {
 // Stage 3a: runs the scheduler on the real arrival times and counts what it plans; 3b acts on the plan.
 PairScheduler::Plan PlanAndCount(SwapchainState& sc, uint64_t now) {
     const Config& cfg = GetConfig();
@@ -607,7 +606,7 @@ void LogRates(SwapchainState& sc, uint64_t now) {
 
 // One present of the queue's mutex-protected queue, with the Stage 2 timing chain when the swapchain has it.
 // tick_ns (CLOCK_MONOTONIC) is the time the frame is due; it becomes an absolute target only with VKIFRAME_ABSOLUTE=1.
-VkResult PresentWithTiming(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const VkPresentInfoKHR& in, uint64_t now, double tick_ns = 0.0) {
+VkResult PresentWithTiming(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const VkPresentInfoKHR& in, uint64_t now, double tick_ns) {
     const Config& cfg = GetConfig();
     // Never mix with a present id from the application; our chain would clash with it.
     const bool app_has_ids = FindInChain(in.pNext, VK_STRUCTURE_TYPE_PRESENT_ID_KHR) ||
@@ -640,11 +639,6 @@ VkResult PresentWithTiming(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc
     return present(&in);                                        // still full: present without timing rather than fail the game
 }
 
-// What the application chained to its present. VK_KHR_present_id (one id) and the swapchain-maintenance1 present fence are
-// carried along with the held frame and re-attached when it is shown; present id 2, present timing and per-present mode
-// structures cannot be re-created for a frame shown later, so those leave the swapchain in passthrough.
-enum class AppChain { Plain, Carried, Unsupported };
-struct AppChainInfo { AppChain kind{AppChain::Plain}; uint64_t id{0}; VkFence fence{}; VkPresentModeKHR mode{}; bool has_mode{false}; };
 AppChainInfo ClassifyPresentChain(const VkPresentInfoKHR* pi) {
     AppChainInfo r;
     for (auto* p = static_cast<const VkBaseInStructure*>(pi->pNext); p; p = p->pNext) {
@@ -703,7 +697,7 @@ void HeldFenceRemove(DeviceDispatch& dt, const HeldFrame& h) {
 }
 
 // Presents the real image of a held frame (through the ring when VKIFRAME_DEBUG_RING=1). Does not touch the ring pins.
-VkResult PresentFrame(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const HeldFrame& h, uint64_t now, double tick_ns = 0.0) {
+VkResult PresentFrame(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const HeldFrame& h, uint64_t now, double tick_ns) {
     GpuState& g = *sc.gpu;
     VkSemaphore wait = VK_NULL_HANDLE;
     if (!GpuPrepareHeldPresent(dt, queue, g, h, GetConfig().debug_ring, wait)) {      // the debug round trip failed: show the real image
@@ -730,7 +724,7 @@ VkResult PresentHeld(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, uint
 }
 
 // Presents one synthetic frame: mix(A, B, t) written into the carrier's image (hidden == false) or a hidden image.
-VkResult PresentSynthetic(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const HeldFrame& a, const HeldFrame& b, float t, bool hidden, uint64_t now, double tick_ns, bool extrap = false) {
+VkResult PresentSynthetic(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const HeldFrame& a, const HeldFrame& b, float t, bool hidden, uint64_t now, double tick_ns, bool extrap) {
     uint32_t idx = 0; VkSemaphore wait = VK_NULL_HANDLE;
     const VkResult sr = GpuSynthesize(dt, queue, *sc.gpu, a, b, t, hidden, idx, wait, extrap);
     if (sr != VK_SUCCESS) return sr;
@@ -746,12 +740,6 @@ VkResult PresentSynthetic(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc,
 
 // ---------------------------------------------------------------- presenter thread (Stage 3c-ii)
 
-// A pair: A (held until now) and B (just captured), with the ticks the scheduler planned for it. A's ring slot reference was
-// handed over from the held frame; B got one more for the job. Both are released when the job is done.
-// extrap (VKIFRAME_EXTRAPOLATE): A is the previous frame (ring copy only) and B the new one, which this job presents as its tick 0; the later ticks are
-// predictions from B and are dropped once a newer job exists (gen != SwapchainState::job_gen).
-struct PresentJob { HeldFrame a, b; PairScheduler::Plan plan; VkQueue queue{}; bool extrap{false}; uint64_t gen{0}; };
-
 struct Presenter {
     std::thread th;
     std::mutex mu;
@@ -761,7 +749,7 @@ struct Presenter {
     std::atomic<bool> stop{false};
 };
 
-namespace {
+namespace fg_layer {
 void NotePresentError(SwapchainState& sc, VkResult r) {
     if (r < 0) { int zero = 0; sc.pending_error.compare_exchange_strong(zero, int(r)); }
 }
@@ -955,7 +943,7 @@ void DrainPresenter(SwapchainState& sc) {
 }
 } // namespace
 
-static VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceDispatch* dt = LookupDevice(GetKey(queue));          // a queue shares its device's key
     if (!dt) return VK_ERROR_DEVICE_LOST;
     const Config& cfg = GetConfig();
@@ -1197,7 +1185,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Hook_DeviceWaitIdle(VkDevice device) {
 // vkAcquireNextImage2KHR (VkAcquireNextImageInfoKHR::swapchain), vkWaitForPresentKHR and vkDestroySwapchainKHR (externsync in vk.xml), so the game cannot destroy a
 // swapchain while another thread is inside one of these calls, and the pointer from FindSwapchain stays valid for the whole call. The fence hooks are different (a fence
 // is not synchronized with its swapchain) and hold shared ownership, see FlushForFences.
-static VkResult Impl_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
+VkResult Impl_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                         VkSemaphore sem, VkFence fence, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
@@ -1212,7 +1200,7 @@ static VkResult Impl_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapcha
         return r;
     });
 }
-static VkResult Impl_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
+VkResult Impl_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* pIndex) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(info->swapchain);
@@ -1231,7 +1219,7 @@ static VkResult Impl_AcquireNextImage2KHR(VkDevice device, const VkAcquireNextIm
 // Releases the held frame of a swapchain when the game waits for something that only that frame's presentation can complete:
 // its present id (vkWaitForPresentKHR) or its present fence (vkWaitForFences / vkGetFenceStatus). The ticks of the pair after it
 // are skipped; the next pair starts fresh.
-namespace {
+namespace fg_layer {
 VkResult FlushHeld(DeviceDispatch& dt, SwapchainState& sc, uint64_t present_id, VkFence fence, const char* why) {
     std::lock_guard<std::mutex> fl(sc.flow_mu);
     if (!sc.gpu || !sc.last_queue) return VK_SUCCESS;
@@ -1259,13 +1247,13 @@ void FlushForFences(DeviceDispatch& dt, uint32_t n, const VkFence* fences, const
 }
 } // namespace
 
-static VkResult Impl_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
+VkResult Impl_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     FlushForFences(*dt, n, fences, "vkWaitForFences");
     return dt->WaitForFences(device, n, fences, all, timeout);
 }
-static VkResult Impl_GetFenceStatus(VkDevice device, VkFence fence) {
+VkResult Impl_GetFenceStatus(VkDevice device, VkFence fence) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     FlushForFences(*dt, 1, &fence, "vkGetFenceStatus");
@@ -1276,7 +1264,7 @@ static VkResult Impl_GetFenceStatus(VkDevice device, VkFence fence) {
 // triggers (DXVK waits for every present it makes). The frame is not lost, only shown one frame late, so the wait is answered
 // at once and the game goes on to render the next frame. Waits for older ids are real: those frames are on screen or queued
 // on the presenter thread. A game that then stops presenting gets its held frame from the idle flush in the presenter thread.
-static VkResult Impl_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
+VkResult Impl_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
     DeviceDispatch* dt = LookupDevice(GetKey(device));
     if (!dt) return VK_ERROR_DEVICE_LOST;
     SwapchainState* sc = FindSwapchain(swapchain);
@@ -1301,7 +1289,7 @@ static VkResult Impl_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain
 // VK_ERROR_OUT_OF_HOST_MEMORY, a destroy hook goes on to the next layer's destroy (unless that was already called), a wait or acquire hook calls the real function,
 // and a present forwards the game's own present when the layer has not touched the frame yet and fails with VK_ERROR_OUT_OF_HOST_MEMORY otherwise (never two presents).
 // Nothing is locked while a fallback runs: the locks of the failed body were released while the exception unwound. This changes only the failure path.
-namespace {
+namespace fg_layer {
 std::atomic<int> g_guard_notes{0};
 void GuardNote(const char* hook, const char* what) noexcept {
     if (g_guard_notes.fetch_add(1) >= 5) return;

@@ -6,6 +6,7 @@ Update this file in the same commit that adds, moves or deletes a file.
 ## Code: layer (src/, include/)
 src/layer_dispatch.cpp | loader negotiation, GetProcAddr routing, dispatch-table registries | negotiate, GetInstanceProcAddr, GetDeviceProcAddr, dispatch table, HOOK, FrameGen_Negotiate
 src/layer_main.cpp | all hooks: instance/device/swapchain create, present hook, presenter thread, hold-one | Hook_QueuePresentKHR, Hook_CreateSwapchainKHR, PresenterMain, StopPresenter, hold, cap mode, base fps cap, acquire, fence
+src/layer_internal.hpp | declarations shared by the layer_*.cpp files, internal namespace fg_layer | Impl_, PresentJob, AppChain, kMinImageCount, g_presenter_detached
 include/vk_iframes_dispatch.hpp | dispatch tables, function lists, instance/device/queue/swapchain registries | InstanceDispatch, DeviceDispatch, FRAMEGEN_DEVICE_FUNCS, RegisterDevice, QueueMutex, GetKey
 include/vk_iframes_config.hpp | Config struct, VKIFRAME_* env parsing, machine defaults, GetConfig | Config, EnvVar, EnvFlag, ParseFiniteNumber, MachineDefaultsFor, GetConfig, FG_LOG, FRAMEGEN_EXPORT
 include/vk_iframes_layer.hpp | shared declarations: dispatch tables, SwapchainState, hook list, log macros | SwapchainState, DeviceDispatch, FG_LOG, FRAMEGEN_EXPORT, CAP_MODE, gpu_mu
