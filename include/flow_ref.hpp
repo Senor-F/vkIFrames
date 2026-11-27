@@ -72,21 +72,36 @@ inline Flow Coarse(const Img& a, const Img& b) {
     return f;
 }
 
+// Refine helper: the four candidate vectors of pixel (x, y): its own upsampled coarse vector first, then the three nearest other coarse pixels.
+inline void RefineCands(const Flow& coarse, int x, int y, int bvx[4], int bvy[4]) {
+    const int cx0 = std::min(x / 2, coarse.w - 1), cy0 = std::min(y / 2, coarse.h - 1);
+    const int sx = (x & 1) ? 1 : -1, sy = (y & 1) ? 1 : -1;
+    const int cxs[4] = {cx0, std::clamp(cx0 + sx, 0, coarse.w - 1), cx0, std::clamp(cx0 + sx, 0, coarse.w - 1)};
+    const int cys[4] = {cy0, cy0, std::clamp(cy0 + sy, 0, coarse.h - 1), std::clamp(cy0 + sy, 0, coarse.h - 1)};
+    for (int i = 0; i < 4; ++i) {
+        const size_t ci = coarse.idx(cxs[i], cys[i]);
+        bvx[i] = int(std::lround(coarse.x[ci] * 2.0f)); bvy[i] = int(std::lround(coarse.y[ci] * 2.0f));
+    }
+}
+
+// Refine helper: parabola through the plain patch costs at the best integer vector and its four neighbours: a fractional vector (fx, fy hold the integer vector on entry)
+inline void RefineSubpixel(const Img& a, const Img& b, int x, int y, int mx, int my, int patch, float& fx, float& fy) {
+    const float c0 = PatchCost(a, b, x, y, x + mx, y + my, patch);
+    const float cxm = PatchCost(a, b, x, y, x + mx - 1, y + my, patch), cxp = PatchCost(a, b, x, y, x + mx + 1, y + my, patch);
+    const float cym = PatchCost(a, b, x, y, x + mx, y + my - 1, patch), cyp = PatchCost(a, b, x, y, x + mx, y + my + 1, patch);
+    const float dxn = cxm + cxp - 2.0f * c0, dyn = cym + cyp - 2.0f * c0;
+    if (c0 <= cxm && c0 <= cxp && dxn > 1e-6f) fx += std::clamp(0.5f * (cxm - cxp) / dxn, -0.5f, 0.5f);
+    if (c0 <= cym && c0 <= cyp && dyn > 1e-6f) fy += std::clamp(0.5f * (cym - cyp) / dyn, -0.5f, 0.5f);
+}
+
 // flow_refine.comp: candidates are the pixel's own upsampled coarse vector and those of the three nearest other coarse pixels
 // (so a motion boundary can pick the vector of the right side), then +-1 pixel around the best of them.
 inline Flow Refine(const Img& a, const Img& b, const Flow& coarse, int patch, int radius, bool subpixel = false) {
     Flow f(a.w, a.h);
     for (int y = 0; y < a.h; ++y)
         for (int x = 0; x < a.w; ++x) {
-            const int cx0 = std::min(x / 2, coarse.w - 1), cy0 = std::min(y / 2, coarse.h - 1);
-            const int sx = (x & 1) ? 1 : -1, sy = (y & 1) ? 1 : -1;
-            const int cxs[4] = {cx0, std::clamp(cx0 + sx, 0, coarse.w - 1), cx0, std::clamp(cx0 + sx, 0, coarse.w - 1)};
-            const int cys[4] = {cy0, cy0, std::clamp(cy0 + sy, 0, coarse.h - 1), std::clamp(cy0 + sy, 0, coarse.h - 1)};
             int bvx[4], bvy[4];
-            for (int i = 0; i < 4; ++i) {
-                const size_t ci = coarse.idx(cxs[i], cys[i]);
-                bvx[i] = int(std::lround(coarse.x[ci] * 2.0f)); bvy[i] = int(std::lround(coarse.y[ci] * 2.0f));
-            }
+            RefineCands(coarse, x, y, bvx, bvy);
             auto cost = [&](int vx, int vy) {
                 const float ox = float(vx - bvx[0]), oy = float(vy - bvy[0]);
                 return PatchCost(a, b, x, y, x + vx, y + vy, patch) + kLambda * (ox * ox + oy * oy) + ((vx || vy) ? kZeroMargin : 0.0f);
@@ -102,14 +117,7 @@ inline Flow Refine(const Img& a, const Img& b, const Flow& coarse, int patch, in
                 }
             { const float c = PatchCost(a, b, x, y, x, y, patch); if (c < best) { best = c; mx = 0; my = 0; } }   // the zero vector is always a candidate: compared last (it never moves the search centre) and without the coarse-vector penalty, so flat areas drop a wrong coarse vector
             float fx = float(mx), fy = float(my);
-            if (subpixel) {   // parabola through the plain patch costs at the best integer vector and its four neighbours: a fractional vector
-                const float c0 = PatchCost(a, b, x, y, x + mx, y + my, patch);
-                const float cxm = PatchCost(a, b, x, y, x + mx - 1, y + my, patch), cxp = PatchCost(a, b, x, y, x + mx + 1, y + my, patch);
-                const float cym = PatchCost(a, b, x, y, x + mx, y + my - 1, patch), cyp = PatchCost(a, b, x, y, x + mx, y + my + 1, patch);
-                const float dxn = cxm + cxp - 2.0f * c0, dyn = cym + cyp - 2.0f * c0;
-                if (c0 <= cxm && c0 <= cxp && dxn > 1e-6f) fx += std::clamp(0.5f * (cxm - cxp) / dxn, -0.5f, 0.5f);
-                if (c0 <= cym && c0 <= cyp && dyn > 1e-6f) fy += std::clamp(0.5f * (cym - cyp) / dyn, -0.5f, 0.5f);
-            }
+            if (subpixel) RefineSubpixel(a, b, x, y, mx, my, patch, fx, fy);
             const size_t i = f.idx(x, y);
             f.x[i] = fx; f.y[i] = fy; f.cost[i] = best;
         }
