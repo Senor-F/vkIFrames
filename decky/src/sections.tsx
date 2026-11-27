@@ -1,6 +1,6 @@
 // Panel sections: the types and the plain functions that build the JSX of the quick-access panel (no hooks).
 import type { Dispatch, ReactElement, SetStateAction } from "react";
-import { ButtonItem, Focusable, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
+import { ButtonItem, Focusable, PanelSection, PanelSectionRow, SliderField, ToggleField } from "@decky/ui";
 
 export type Term = { key: string; eq: number };
 export type SchemaItem = {
@@ -324,5 +324,90 @@ export function renderMaintenance(layer: LayerInfo, confirmUninstall: boolean, s
       )}
       {renderUninstallRows(confirmUninstall, setConfirmUninstall, onUninstall)}
     </PanelSection>
+  );
+}
+
+export function isGreyed(item: SchemaItem, values: Record<string, number>, all: SchemaItem[]): boolean {
+  const val = (k: string) => values[k] ?? all.find((i) => i.key === k)?.default ?? 0;
+  if (item.group === "more" && !val("EXPERIMENTAL")) return true;      // experimental settings: locked until Experimental is on
+  return (item.greyWhen ?? []).some((group) => group.every((t) => val(t.key) === t.eq));
+}
+
+// The description under a setting: its value, text, notes and why it is greyed.
+export function renderNote(item: SchemaItem, value: number, grey: boolean, state: State) {
+  const { values } = state;
+  return (
+    <div style={{ fontSize: 11, opacity: grey ? 0.55 : 0.75, lineHeight: 1.3 }}>
+      {item.type === "slider" && <div style={{ fontWeight: 600 }}>{describeValue(item, value)}</div>}
+      {item.desc && <div>{item.desc}</div>}
+      {item.key === "TARGET_FPS" && (
+        <div>
+          {state?.refresh_hz ? `Screen: ${Math.round(state.refresh_hz)} Hz (${state.refresh_src}). Slider up to ${item.max}.` : `Screen refresh rate not detected yet. Slider up to ${item.max}.`}
+        </div>
+      )}
+      {item.key === "MAX_SYNTHETIC" && Number(state?.status?.["age_s"] ?? 99) <= 5 && Number(state?.status?.["synth_capacity"] ?? 0) > 0 && value > Number(state?.status?.["synth_capacity"]) && (
+        <div style={{ fontStyle: "italic" }}>The running game was set up for at most {String(state?.status?.["synth_capacity"])}. Restart it to use more.</div>
+      )}
+      {grey && (item.group === "more" && !values.EXPERIMENTAL
+        ? <div style={{ fontStyle: "italic" }}>Greyed out: turn on Experimental to change this.</div>
+        : item.greyWhy && <div style={{ fontStyle: "italic" }}>Greyed out: {item.greyWhy}</div>)}
+    </div>
+  );
+}
+
+// One setting row: a toggle or a slider, greyed out while the settings it depends on say so.
+export function renderSetting(item: SchemaItem, state: State, fine: boolean, change: (key: string, value: number) => void, fineShortcut: Record<string, unknown>) {
+  const { schema, values } = state;
+  const grey = isGreyed(item, values, schema);
+  const value = values[item.key] ?? item.default;
+  const note = renderNote(item, value, grey, state);
+  return (
+    <PanelSectionRow key={item.key}>
+      {/* Greyed rows stay focusable (not `disabled`) so the gamepad can still land on them and the panel scrolls to them; changes are ignored while grey. */}
+      <div style={grey ? { opacity: 0.45 } : undefined}>
+      {item.type === "toggle" ? (
+        <ToggleField
+          label={item.label}
+          checked={!!value}
+          description={note}
+          onChange={(on: boolean) => { if (!grey) change(item.key, on ? 1 : 0); }}
+        />
+      ) : (
+        <SliderField
+          label={item.label}
+          value={value}
+          min={item.min}
+          max={item.max}
+          step={fine && item.fine ? item.fine : item.step}
+          showValue
+          valueSuffix={item.key.endsWith("FPS") || item.key.endsWith("CAP") ? " fps" : undefined}
+          onChange={(v: number) => { if (!grey) change(item.key, v); }}
+          description={note}
+          {...fineShortcut}
+        />
+      )}
+      </div>
+    </PanelSectionRow>
+  );
+}
+
+// The settings area: all sections while frame generation is on, a short hint while it is off.
+export function renderSettings(
+  schema: SchemaItem[], values: Record<string, number>, fine: boolean, setFine: (on: boolean) => void,
+  showMore: boolean, setShowMore: Dispatch<SetStateAction<boolean>>, renderItem: (item: SchemaItem) => ReactElement, onReset: () => void,
+) {
+  return values.ENABLED ? (
+    <>
+      <Gap />
+      {renderMainSection(schema, fine, setFine, renderItem)}
+
+      <Gap />
+      {renderMoreSection(schema, showMore, setShowMore, renderItem, onReset)}
+    </>
+  ) : (
+    <>
+      <Gap />
+      {renderSettingsOff(onReset)}
+    </>
   );
 }
