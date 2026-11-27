@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 project(vkIFrames VERSION 0.2.0 LANGUAGES CXX)
 
+# Docs and index check (tools/check_docs.py): documents under 150 lines, links resolve, INDEX.md matches the tree. Skipped without Python 3 or INDEX.md.
+option(VKIFRAMES_CHECK_DOCS "Run tools/check_docs.py when CMake configures" ON)
+if(VKIFRAMES_CHECK_DOCS AND EXISTS "${CMAKE_SOURCE_DIR}/INDEX.md")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        execute_process(COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_docs.py ${CMAKE_SOURCE_DIR}
+                        RESULT_VARIABLE _docs_rc OUTPUT_VARIABLE _docs_out ERROR_VARIABLE _docs_out)
+        if(NOT _docs_rc EQUAL 0)
+            message(FATAL_ERROR "tools/check_docs.py failed (turn off with -DVKIFRAMES_CHECK_DOCS=OFF):\n${_docs_out}")
+        endif()
+    endif()
+endif()
+
 # One release version for the whole project (library log line, Decky plugin, archives). The commit and its commit time come from git (or from
 # -DFRAMEGEN_COMMIT=... -DFRAMEGEN_COMMIT_TIME=<unix seconds> when building from a tarball): no build date or time is embedded, so two builds of the
 # same commit give the same library.
@@ -28,7 +41,7 @@ add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=$
 # Developer builds with a sanitizer (never the release binary; package.sh does not pass this):
 #   -DFRAMEGEN_SANITIZER=address   AddressSanitizer + UndefinedBehaviorSanitizer
 #   -DFRAMEGEN_SANITIZER=thread    ThreadSanitizer
-# The C++ runtime stays dynamic then (the sanitizers want the shared runtime), and every ctest test runs with the options below; see README, "Sanitizer builds".
+# The C++ runtime stays dynamic then (the sanitizers want the shared runtime), and every ctest test runs with the options below; see README, "Sanitizer builds" (readme/02-how-it-works.md).
 set(FRAMEGEN_SANITIZER "" CACHE STRING "Developer builds only: address (ASan+UBSan) or thread (TSan); empty = none")
 if(FRAMEGEN_SANITIZER)
     if(NOT FRAMEGEN_SANITIZER MATCHES "^(address|thread)$")
@@ -106,16 +119,24 @@ endforeach()
 add_custom_target(layer_shaders DEPENDS ${FRAMEGEN_SHADER_HEADERS})
 
 find_package(Threads REQUIRED)
+set(FRAMEGEN_LIVE_SOURCES src/live_config.cpp src/live_config_io.cpp)   # the live-config code that the tests build in directly
 set(FRAMEGEN_LAYER_SOURCES
     src/layer_main.cpp
+    src/layer_present.cpp
+    src/layer_presenter.cpp
+    src/layer_present_steps.cpp
+    src/layer_swapchain.cpp
+    src/layer_instance.cpp
     src/layer_dispatch.cpp
     src/present_timing.cpp
     src/gpu_frames.cpp
+    src/gpu_setup.cpp
     src/gpu_images.cpp
     src/optical_flow.cpp
     src/dump_queue.cpp
     src/dump_pool.cpp
     src/live_config.cpp
+    src/live_config_io.cpp
     src/stats.cpp
 )
 add_library(vkIFrames SHARED ${FRAMEGEN_LAYER_SOURCES})
@@ -191,7 +212,7 @@ if(FRAMEGEN_BUILD_TESTS)
     add_dependencies(test_oom vkIFrames_oom)
     add_test(NAME mock_oom COMMAND test_oom $<TARGET_FILE:vkIFrames_oom>)
     set_tests_properties(mock_oom PROPERTIES TIMEOUT 300)
-    add_executable(test_flowkey tests/test_flowkey.cpp src/live_config.cpp)
+    add_executable(test_flowkey tests/test_flowkey.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_flowkey PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_flowkey PRIVATE Vulkan::Headers)
     foreach(sc default env_new env_interpolate env_warp env_framegen env_new_wins env_interp_over_warp file_new file_interpolate file_warp file_new_wins file_new_wins_rev file_interp_over_warp file_over_env file_old_over_env)
@@ -204,7 +225,7 @@ if(FRAMEGEN_BUILD_TESTS)
     target_link_libraries(test_passthru PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS} Threads::Threads)
     add_test(NAME status_passthru_unsupported COMMAND test_passthru $<TARGET_FILE:vkIFrames> unsupported)
     add_test(NAME status_passthru_supported COMMAND test_passthru $<TARGET_FILE:vkIFrames> supported)
-    add_executable(test_template_parse tests/test_template_parse.cpp src/live_config.cpp)
+    add_executable(test_template_parse tests/test_template_parse.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_template_parse PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_template_parse PRIVATE Vulkan::Headers)
     add_test(NAME live_template_parse COMMAND test_template_parse ${CMAKE_SOURCE_DIR}/manifest/live.conf.template)
@@ -244,7 +265,7 @@ if(FRAMEGEN_BUILD_TESTS)
     add_executable(test_fill_ref tests/test_fill_ref.cpp)
     target_include_directories(test_fill_ref PRIVATE include)
     add_test(NAME fill_reference COMMAND test_fill_ref)
-    add_executable(test_fill_gate tests/test_fill_gate.cpp src/live_config.cpp)
+    add_executable(test_fill_gate tests/test_fill_gate.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_fill_gate PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_fill_gate PRIVATE Vulkan::Headers)
     foreach(sc default env_without_experimental env_with_experimental conf_with_experimental conf_without_experimental conf_zero)
@@ -253,17 +274,17 @@ if(FRAMEGEN_BUILD_TESTS)
     add_executable(test_scheduler tests/test_scheduler.cpp)
     target_include_directories(test_scheduler PRIVATE include)
     add_test(NAME scheduler_vs_sim COMMAND test_scheduler ${CMAKE_SOURCE_DIR}/tests/data)
-    add_executable(test_live tests/test_live.cpp src/live_config.cpp)
+    add_executable(test_live tests/test_live.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_live PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_live PRIVATE Vulkan::Headers)
     add_test(NAME live_config COMMAND test_live)
-    add_executable(test_hostile_env tests/test_hostile_env.cpp src/live_config.cpp)
+    add_executable(test_hostile_env tests/test_hostile_env.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_hostile_env PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_hostile_env PRIVATE Vulkan::Headers)
     add_test(NAME hostile_env_a COMMAND test_hostile_env a)
     add_test(NAME hostile_env_b COMMAND test_hostile_env b)
     add_test(NAME hostile_env_c COMMAND test_hostile_env c)
-    add_executable(test_capacity_live tests/test_capacity_live.cpp src/live_config.cpp)
+    add_executable(test_capacity_live tests/test_capacity_live.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_capacity_live PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_capacity_live PRIVATE Vulkan::Headers)
     add_test(NAME capacity_live COMMAND test_capacity_live)
@@ -272,7 +293,7 @@ if(FRAMEGEN_BUILD_TESTS)
     add_custom_command(OUTPUT ${FRAMEGEN_SCHEMA_TABLE}
         COMMAND ${CMAKE_COMMAND} -DSCHEMA=${CMAKE_SOURCE_DIR}/decky/settings_schema.json -DOUT=${FRAMEGEN_SCHEMA_TABLE} -P ${CMAKE_SOURCE_DIR}/cmake/GenSchemaTable.cmake
         DEPENDS ${CMAKE_SOURCE_DIR}/decky/settings_schema.json ${CMAKE_SOURCE_DIR}/cmake/GenSchemaTable.cmake)
-    add_executable(test_defaults tests/test_defaults.cpp src/live_config.cpp ${FRAMEGEN_SCHEMA_TABLE})
+    add_executable(test_defaults tests/test_defaults.cpp ${FRAMEGEN_LIVE_SOURCES} ${FRAMEGEN_SCHEMA_TABLE})
     target_include_directories(test_defaults PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_defaults PRIVATE Vulkan::Headers)
     target_compile_definitions(test_defaults PRIVATE FRAMEGEN_MANIFEST_IN="${CMAKE_SOURCE_DIR}/manifest/VkLayer_frame_gen.json.in")
@@ -280,7 +301,7 @@ if(FRAMEGEN_BUILD_TESTS)
     # the Decky plugin zip: built twice it is byte-identical and complete (skipped where node/pnpm are not usable)
     add_test(NAME package_script COMMAND bash ${CMAKE_SOURCE_DIR}/tests/test_package.sh ${CMAKE_SOURCE_DIR})
     add_test(NAME decky_zip COMMAND bash ${CMAKE_SOURCE_DIR}/tests/test_decky_zip.sh ${CMAKE_SOURCE_DIR} ${FRAMEGEN_VERSION})
-    add_executable(test_logcap tests/test_logcap.cpp src/live_config.cpp)
+    add_executable(test_logcap tests/test_logcap.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_logcap PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_logcap PRIVATE Vulkan::Headers)
     add_test(NAME logcap COMMAND test_logcap)
@@ -301,7 +322,7 @@ if(FRAMEGEN_BUILD_TESTS)
         add_test(NAME decky_launch_options COMMAND ${FRAMEGEN_PYTHON} -I ${CMAKE_SOURCE_DIR}/decky/tests/test_launch_options.py)
         add_test(NAME decky_status_text COMMAND ${FRAMEGEN_PYTHON} -I ${CMAKE_SOURCE_DIR}/decky/tests/test_status_text.py)
     endif()
-    add_executable(test_stats tests/test_stats.cpp src/stats.cpp src/live_config.cpp)
+    add_executable(test_stats tests/test_stats.cpp src/stats.cpp ${FRAMEGEN_LIVE_SOURCES})
     target_include_directories(test_stats PRIVATE include ${FRAMEGEN_GENERATED_DIR})
     target_link_libraries(test_stats PRIVATE Vulkan::Headers)
     add_test(NAME stats_bench COMMAND test_stats)

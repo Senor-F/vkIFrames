@@ -4,7 +4,7 @@ import os, re, sys
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tsx = open(os.path.join(root, "src", "index.tsx"), encoding="utf-8").read()
-layer = open(os.path.join(os.path.dirname(root), "src", "layer_main.cpp"), encoding="utf-8").read()
+layer = open(os.path.join(os.path.dirname(root), "src", "layer_present_steps.cpp"), encoding="utf-8").read()
 fails = 0
 def ok(name, cond):
     global fails

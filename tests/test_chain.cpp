@@ -38,7 +38,7 @@ static PFN_vkVoidFunction VKAPI_CALL next_gdpa(VkDevice, const char* n) {
     return nullptr;
 }
 
-int main(int argc, char** argv) {
+static VkNegotiateLayerInterface TestNegotiate(char** argv) {
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
     auto negotiate = (PFN_vkNegotiateLoaderLayerInterfaceVersion)dlsym(lib, "FrameGen_NegotiateLoaderLayerInterfaceVersion"); CHECK(negotiate);
 
@@ -46,8 +46,11 @@ int main(int argc, char** argv) {
     CHECK(negotiate(&nl) == VK_SUCCESS);
     CHECK(nl.loaderLayerInterfaceVersion == CURRENT_LOADER_LAYER_INTERFACE_VERSION && nl.pfnGetInstanceProcAddr && nl.pfnGetDeviceProcAddr);
     VkNegotiateLayerInterface bad{}; CHECK(negotiate(&bad) == VK_ERROR_INITIALIZATION_FAILED);
+    return nl;
+}
 
-    // vkCreateInstance with a loader link chain
+// vkCreateInstance with a loader link chain
+static VkInstance TestCreateInstance(const VkNegotiateLayerInterface& nl) {
     VkLayerInstanceLink ilink{nullptr, next_gipa, nullptr};
     VkLayerInstanceCreateInfo lici{}; lici.sType = VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO; lici.function = VK_LAYER_LINK_INFO; lici.u.pLayerInfo = &ilink;
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, &lici};
@@ -55,35 +58,58 @@ int main(int argc, char** argv) {
     VkInstance inst{}; CHECK(create_instance(&ici, nullptr, &inst) == VK_SUCCESS);
     CHECK(inst == (VkInstance)&g_inst);
     CHECK(lici.u.pLayerInfo == nullptr);                                   // chain advanced (ilink.pNext was null)
+    return inst;
+}
 
-    auto gipa = nl.pfnGetInstanceProcAddr;
+static void TestInstanceProcAddr(PFN_vkGetInstanceProcAddr gipa, VkInstance inst, const VkNegotiateLayerInterface& nl) {
     CHECK(gipa(inst, "vkQueuePresentKHR") != nullptr);                     // device fn is also served by the layer from GIPA
     auto unk = (void(*)())gipa(inst, "vkFooBar"); CHECK(unk == (void(*)())m_Unknown);   // unhooked names pass down
     CHECK(gipa(inst, "vkGetInstanceProcAddr") == (PFN_vkVoidFunction)nl.pfnGetInstanceProcAddr);
+}
 
-    // vkCreateDevice
+// vkCreateDevice
+static VkDevice TestCreateDevice(PFN_vkGetInstanceProcAddr gipa, VkInstance inst, PFN_vkGetDeviceProcAddr gdpa) {
     VkLayerDeviceLink dlink{nullptr, nullptr, next_gdpa};
     VkLayerDeviceCreateInfo ldci{}; ldci.sType = VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO; ldci.function = VK_LAYER_LINK_INFO; ldci.u.pLayerInfo = &dlink;
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &ldci};
     auto create_device = (PFN_vkCreateDevice)gipa(inst, "vkCreateDevice");
     VkDevice dev{}; CHECK(create_device((VkPhysicalDevice)&g_pd, &dci, nullptr, &dev) == VK_SUCCESS);
-    auto gdpa = nl.pfnGetDeviceProcAddr;
     CHECK(gdpa(dev, "vkDeviceFoo") == (PFN_vkVoidFunction)m_Unknown);
+    return dev;
+}
 
-    // Swapchain: 3 -> 4; clamped by surface max; never lowered; max 0 = unlimited
+// Swapchain: 3 -> 4; clamped by surface max; never lowered; max 0 = unlimited
+static VkSwapchainKHR TestSwapchainCount(PFN_vkGetDeviceProcAddr gdpa, VkDevice dev) {
     auto csc = (PFN_vkCreateSwapchainKHR)gdpa(dev, "vkCreateSwapchainKHR"); CHECK(csc);
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; VkSwapchainKHR sc{};
     sci.minImageCount = 3; g_surface_max = 0; CHECK(csc(dev, &sci, nullptr, &sc) == VK_SUCCESS); CHECK(g_seen_min_images == 4);
     sci.minImageCount = 3; g_surface_max = 3; csc(dev, &sci, nullptr, &sc); CHECK(g_seen_min_images == 3);
     sci.minImageCount = 6; g_surface_max = 0; csc(dev, &sci, nullptr, &sc); CHECK(g_seen_min_images == 6);
     CHECK(sci.minImageCount == 6);                                          // the app's struct is not modified (const copy)
+    return sc;
+}
 
+static void TestPresentForward(PFN_vkGetDeviceProcAddr gdpa, VkDevice dev) {
     auto qp = (PFN_vkQueuePresentKHR)gdpa(dev, "vkQueuePresentKHR"); VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     for (int i = 0; i < 600; ++i) CHECK(qp((VkQueue)&g_q, &pi) == VK_SUCCESS);
     CHECK(g_present_calls == 600);
+}
 
+static void TestDestroy(PFN_vkGetInstanceProcAddr gipa, PFN_vkGetDeviceProcAddr gdpa, VkInstance inst, VkDevice dev, VkSwapchainKHR sc) {
     ((PFN_vkDestroySwapchainKHR)gdpa(dev, "vkDestroySwapchainKHR"))(dev, sc, nullptr); CHECK(g_sc_destroyed == 1);
     ((PFN_vkDestroyDevice)gdpa(dev, "vkDestroyDevice"))(dev, nullptr); CHECK(g_dev_destroyed == 1);
     ((PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance"))(inst, nullptr); CHECK(g_inst_destroyed == 1);
+}
+
+int main(int argc, char** argv) {
+    VkNegotiateLayerInterface nl = TestNegotiate(argv);
+    VkInstance inst = TestCreateInstance(nl);
+    auto gipa = nl.pfnGetInstanceProcAddr;
+    TestInstanceProcAddr(gipa, inst, nl);
+    auto gdpa = nl.pfnGetDeviceProcAddr;
+    VkDevice dev = TestCreateDevice(gipa, inst, gdpa);
+    VkSwapchainKHR sc = TestSwapchainCount(gdpa, dev);
+    TestPresentForward(gdpa, dev);
+    TestDestroy(gipa, gdpa, inst, dev, sc);
     std::printf("PASS: negotiate, instance/device chaining, proc-addr routing, swapchain count (3->4, clamp, no-lower), 600 presents forwarded, clean destroy\n");
 }

@@ -213,25 +213,9 @@ static Env Bring(void* lib, bool loader_callback = true) {
 
 static std::string Slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream s; s << f.rdbuf(); return s.str(); }
 
-int main(int, char** argv) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const std::string scen = argv[2] ? argv[2] : "";
-    ClearFramegenEnv();
-    char dir[] = "/tmp/vkipass_XXXXXX"; if (!mkdtemp(dir)) return 2;
-    const std::string log = std::string(dir) + "/layer.log";
-    setenv("VKIFRAME_LOG_FILE", log.c_str(), 1);
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("VKIFRAME_TARGET_FPS", "120", 1);                     // far above the game's 40 fps: the gate is active
-    g_main_thread = pthread_self();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
-    Env e = Bring(lib);
-    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
-    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+// Present 110 frames at about 40 fps through the layer's vkQueuePresentKHR
+static void PresentFrames(Env& e, VkQueue q, VkSwapchainKHR sc, bool unsupported) {
     auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
-    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    VkSwapchainKHR sc{}; CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-    const bool unsupported = scen == "unsupported";
     uint32_t frame = 0;
     for (int i = 0; i < 110; ++i) {                              // about 2.7 s at 40 fps: the per-second line and status.json are written
         usleep(25'000);
@@ -244,6 +228,10 @@ int main(int, char** argv) {
         VkResult res = VK_NOT_READY; pi.pResults = &res;
         CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
     }
+}
+
+// Check the log and status.json for the pass-through (unsupported) or generating (supported) outcome
+static void CheckOutputs(const std::string& log, const char* dir, bool unsupported) {
     std::fflush(stderr);
     const std::string text = Slurp(log), status = Slurp(std::string(dir) + "/vkiframes/status.json");
     CHECK(!status.empty());
@@ -259,9 +247,36 @@ int main(int, char** argv) {
         CHECK(status.find("\"mode\":\"interp\"") != std::string::npos);
         CHECK(r_dispatches > 0);
     }
+}
+
+// Destroy the swapchain and device, free the fake command buffers
+static void Teardown(Env& e, VkSwapchainKHR sc) {
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
     for (Fake* f : g_cbs) delete f;
+}
+
+int main(int, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const std::string scen = argv[2] ? argv[2] : "";
+    ClearFramegenEnv();
+    char dir[] = "/tmp/vkipass_XXXXXX"; if (!mkdtemp(dir)) return 2;
+    const std::string log = std::string(dir) + "/layer.log";
+    setenv("VKIFRAME_LOG_FILE", log.c_str(), 1);
+    setenv("XDG_CONFIG_HOME", dir, 1);
+    setenv("VKIFRAME_TARGET_FPS", "120", 1);                     // far above the game's 40 fps: the gate is active
+    g_main_thread = pthread_self();
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Env e = Bring(lib);
+    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    VkSwapchainKHR sc{}; CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    const bool unsupported = scen == "unsupported";
+    PresentFrames(e, q, sc, unsupported);
+    CheckOutputs(log, dir, unsupported);
+    Teardown(e, sc);
     std::printf("PASS: status line and status.json, %s chain\n", scen.c_str());
     return 0;
 }

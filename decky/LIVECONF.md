@@ -1,6 +1,6 @@
 # Live config protocol (plugin -> layer)
 
-The Decky plugin changes layer settings while a game runs. The layer implements the protocol in `src/live_config.cpp`: it reads `VKIFRAME_*` (with the `FRAMEGEN_*` fallback) at startup, re-reads the file when its mtime or size changes, and logs every change as `live: CHANGE KEY: old -> new (live.conf)` in `live.log`.
+The Decky plugin changes layer settings while a game runs. The layer implements the protocol in `src/live_config.cpp` and `src/live_config_io.cpp`: it reads `VKIFRAME_*` (with the `FRAMEGEN_*` fallback) at startup, re-reads the file when its mtime or size changes, and logs every change as `live: CHANGE KEY: old -> new (live.conf)` in `live.log`.
 
 **The plugin is the only writer today, and it is one-way.** It rewrites the whole file from its saved `settings.json` at every loader start and at every panel change, and never reads `live.conf` back. An edit from outside (a script, the planned `vkiframes-ctl`, the planned overlay) is overwritten at the next loader restart or panel change and is not shown in the panel. Do not change a setting in the panel during a benchmark or a capture; a restart of the loader (a rewrite with the same values) no longer stops a benchmark. The intended fix (the plugin merges the file at start, or the file becomes the source of truth) is an open decision for the owner; it must be settled before the overlay and `vkiframes-ctl` write the same file.
 

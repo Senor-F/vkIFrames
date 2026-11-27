@@ -1,9 +1,9 @@
-"""The launch options the panel offers to copy (decky/src/index.tsx) are exactly the lines that were tested. The plugin only copies them; it never sets a launch option.
+"""The launch options the panel offers to copy (decky/src/sections.tsx) are exactly the lines that were tested. The plugin only copies them; it never sets a launch option.
 usage: python3 -I test_launch_options.py"""
 import os, re, sys
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-src = open(os.path.join(root, "src", "index.tsx"), encoding="utf-8").read()
+src = "".join(open(os.path.join(root, "src", f), encoding="utf-8").read() for f in ("index.tsx", "sections.tsx"))
 fails = 0
 def ok(name, cond):
     global fails

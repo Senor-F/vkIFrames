@@ -10,6 +10,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <functional>
 #include <mutex>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -184,27 +185,9 @@ static Env Bring(void* lib, bool loader_callback = true) {
     return e;
 }
 
-int main(int, char** argv) {
-    ClearFramegenEnv();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
-    Env e = Bring(lib);
-    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
-    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
-    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR sc{};
-    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+using PresentFn = std::function<void(useconds_t)>;
 
-    std::set<VkSemaphore> game_sems; uint32_t frame = 0;
-    auto present_frame = [&](useconds_t gap_us) {
-        usleep(gap_us);
-        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 4; ++frame; game_sems.insert(game_sem);
-        uint64_t app_id = frame; VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR}; pid.swapchainCount = 1; pid.pPresentIds = &app_id;     // like DXVK / vkd3d-proton
-        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, &pid}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
-        VkResult res = VK_NOT_READY; pi.pResults = &res;
-        CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
-    };
-
+static void TestSynthBlend(const PresentFn& present_frame) {
     // 1) 40 FPS source, 60 FPS target: after the gate warms up, pairs get one or two ticks
     for (int i = 0; i < 80; ++i) present_frame(25'000);
     CHECK(r_pipelines == 1 && r_image_views == 7);                                  // ring 4 + synth output, one compute pipeline
@@ -212,7 +195,17 @@ int main(int, char** argv) {
     CHECK(r_dispatches == int(r_t.size()) && r_desc_updates == r_dispatches);
     for (float t : r_t) CHECK(t >= 0.0f && t <= 1.0f);
     CHECK(r_acquires > 0 && r_acquires < r_dispatches);                               // the first tick of a pair is the carrier (no acquire)
+}
 
+static void TestPresentIds(const std::vector<Present>& pre_snap, uint32_t frame) {
+    // application present ids (VK_KHR_present_id): every id is shown exactly once, in increasing order; hidden images carry none
+    { std::vector<uint64_t> ids; for (auto& p : pre_snap) if (p.id) ids.push_back(p.id);
+      CHECK(ids.size() >= frame - 2);                                                  // the newest frame is still held
+      for (size_t i = 1; i < ids.size(); ++i) CHECK(ids[i] > ids[i - 1]);
+      for (auto& p : pre_snap) if (p.image >= 4) CHECK(p.id == 0); }
+}
+
+static void TestSequencing(const std::set<VkSemaphore>& game_sems, uint32_t frame) {
     // The presenter thread may still be showing the last pair (slower under a sanitizer or on a loaded machine): wait until nothing has been presented for 80 ms (the idle
     // flush of the held frame comes after 200 ms), then analyse a snapshot taken under the recording lock.
     for (size_t last = size_t(-1), same = 0; same < 4;) { usleep(20'000); size_t n; { std::lock_guard<std::mutex> rl(g_rec_mu); n = r_presents.size(); } if (n == last) ++same; else { same = 0; last = n; } }
@@ -233,13 +226,10 @@ int main(int, char** argv) {
     for (auto s : r_acq_sems) { bool used = false; for (auto& sb : sub_snap) for (auto w : sb.waits) used |= (w == s); CHECK(used); }
     CHECK(pre_snap.size() > size_t(frame));                                         // more frames out than in
     std::printf("synth ok: %u frames in, %zu presented, %d synthetic (%d hidden)\n", frame, pre_snap.size(), r_dispatches, r_acquires);
+    TestPresentIds(pre_snap, frame);
+}
 
-    // application present ids (VK_KHR_present_id): every id is shown exactly once, in increasing order; hidden images carry none
-    { std::vector<uint64_t> ids; for (auto& p : pre_snap) if (p.id) ids.push_back(p.id);
-      CHECK(ids.size() >= frame - 2);                                                  // the newest frame is still held
-      for (size_t i = 1; i < ids.size(); ++i) CHECK(ids[i] > ids[i - 1]);
-      for (auto& p : pre_snap) if (p.image >= 4) CHECK(p.id == 0); }
-
+static void TestPresentFences(Env& e, VkQueue q, PFN_vkQueuePresentKHR qp, VkSwapchainKHR sc, uint32_t& frame) {
     // application present fences (swapchain_maintenance1): carried with the held frame, and a wait for the fence releases the frame
     { auto wff = (PFN_vkWaitForFences)e.gdpa(e.dev, "vkWaitForFences");
       for (int i = 0; i < 3; ++i) {                                                    // fresh fence per frame, like gamescope's forced maintenance1
@@ -255,7 +245,9 @@ int main(int, char** argv) {
           bool shown = false; for (auto& p : r_presents) if (p.fence == f) { shown = true; CHECK(p.mode == int(VK_PRESENT_MODE_FIFO_KHR)); }     // ...so it must have been presented, with its fence and mode
           CHECK(shown);
       } }
+}
 
+static void TestWaitForPresent(Env& e, VkQueue q, PFN_vkQueuePresentKHR qp, VkSwapchainKHR sc, uint32_t& frame) {
     // vkWaitForPresentKHR for the id of the held frame is answered at once and does not present it (DXVK waits for every present)
     { auto wfp = (PFN_vkWaitForPresentKHR)e.gdpa(e.dev, "vkWaitForPresentKHR"); CHECK(wfp);
       usleep(25'000); const uint64_t id = ++frame + 100000; VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(8000 + frame); uint32_t idx = frame % 4;
@@ -266,7 +258,9 @@ int main(int, char** argv) {
       CHECK(wfp(e.dev, sc, id, 1'000'000'000ull) == VK_SUCCESS);
       CHECK(r_presents.size() == before);                                              // the held frame was not presented by the wait
     }
+}
 
+static void TestIdleFlush(const PresentFn& present_frame) {
     // idle flush (#33): when the game stops presenting, the presenter thread shows the held frame after 200 ms. It reads sc->gpu and sc->last_queue
     // for that, and the game thread writes last_queue at every present. Repeated so that a write follows a read (ThreadSanitizer needs that order).
     for (int cycle = 0; cycle < 3; ++cycle) {
@@ -277,13 +271,18 @@ int main(int, char** argv) {
         CHECK(r_presents.size() > before_idle);                                       // the held frame was shown while the game was silent
         for (int i = 0; i < 3; ++i) present_frame(25'000);
     }
+}
+
+static void TestWatchdog(const PresentFn& present_frame) {
     // watchdog (#A5): after 2 s without a present the presenter thread logs the game's frame count and the held frame. It must not read them while the game thread
     // writes them: the game presents again after the pause (a ThreadSanitizer build reports the race if the log line reads them without the locks).
     for (int i = 0; i < 12; ++i) present_frame(25'000);
     usleep(2'600'000);
     for (int i = 0; i < 6; ++i) present_frame(25'000);
     for (int i = 0; i < 30; ++i) present_frame(25'000);                               // a pause over 100 ms resets the gate: interpolating again before the next part
+}
 
+static void TestAcquireFail(const PresentFn& present_frame) {
     // 2) a failing acquire switches synthetic frames off; the game keeps getting its frames shown
     k_acquire_fail = true; const int disp_before = r_dispatches;
     for (int i = 0; i < 6; ++i) present_frame(25'000);
@@ -292,10 +291,9 @@ int main(int, char** argv) {
     CHECK(r_dispatches == disp_after_fail);                                           // no further compute work
     CHECK(r_presents.size() >= presents_mid + 19);                                    // one present per game frame (one is held)
     (void)disp_before;
+}
 
-    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
-    CHECK(r_destroyed_images == r_images_created && r_images_created == 7);
-
+static void TestHiddenAcquireFailure(Env& e, PFN_vkCreateSwapchainKHR csc, const VkSwapchainCreateInfoKHR& sci, VkSwapchainKHR& sc, uint32_t& frame, const PresentFn& present_frame) {
     // 3) a failure after a hidden acquire (#27): the submit fails, or the driver returns an index the swapchain does not have. The acquired image is
     // presented, not lost, and synthetic frames go off. The images of a swapchain are few; one that is neither presented nor released is gone until
     // the swapchain is recreated.
@@ -319,5 +317,39 @@ int main(int, char** argv) {
         ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc2, nullptr);
         CHECK(r_destroyed_images == r_images_created);
     }
+}
+
+int main(int, char** argv) {
+    ClearFramegenEnv();
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Env e = Bring(lib);
+    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR sc{};
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+
+    std::set<VkSemaphore> game_sems; uint32_t frame = 0;
+    auto present_frame = [&](useconds_t gap_us) {
+        usleep(gap_us);
+        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 4; ++frame; game_sems.insert(game_sem);
+        uint64_t app_id = frame; VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR}; pid.swapchainCount = 1; pid.pPresentIds = &app_id;     // like DXVK / vkd3d-proton
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, &pid}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
+        VkResult res = VK_NOT_READY; pi.pResults = &res;
+        CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
+    };
+
+    TestSynthBlend(present_frame);
+    TestSequencing(game_sems, frame);
+    TestPresentFences(e, q, qp, sc, frame);
+    TestWaitForPresent(e, q, qp, sc, frame);
+    TestIdleFlush(present_frame);
+    TestWatchdog(present_frame);
+    TestAcquireFail(present_frame);
+
+    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
+    CHECK(r_destroyed_images == r_images_created && r_images_created == 7);
+    TestHiddenAcquireFailure(e, csc, sci, sc, frame, present_frame);
     std::printf("PASS: stage 3c mock driver\n");
 }

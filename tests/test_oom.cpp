@@ -21,6 +21,7 @@
 #include <chrono>
 #include <pthread.h>
 #include <new>
+#include <functional>
 #include <cstdlib>
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); std::exit(1); } } while (0)
 
@@ -233,16 +234,63 @@ static Env Bring(void* lib, bool loader_callback = true) {
 static const VkResult kOom = VK_ERROR_OUT_OF_HOST_MEMORY;
 static bool Valid(VkResult r) { return r == VK_SUCCESS || r == kOom; }
 
-int main(int, char** argv) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);                                       // a failure shows what was running
-    ClearFramegenEnv();
-    setenv("VKIFRAME_LOG_FILE", "/dev/null", 1);                                     // the layer's lines are not the point here
-    g_main_thread = pthread_self();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+// The test state and the test cases: every case is a member so that it shares the bring-up (device, queue, swapchain, counters) with the others.
+struct Rig {
+    void* lib;
+    explicit Rig(void* l) : lib(l) {}
     long oom_seen = 0;
+    Env e{};
+    VkQueue q{};
+    PFN_vkCreateSwapchainKHR csc; PFN_vkDestroySwapchainKHR dsc; PFN_vkQueuePresentKHR qp; PFN_vkWaitForFences wf;
+    PFN_vkGetFenceStatus gfs; PFN_vkAcquireNextImageKHR acq; PFN_vkWaitForPresentKHR wfp;
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    uint32_t frame = 0; VkFence last_fence = VK_NULL_HANDLE; VkSwapchainKHR sc{};
+    int made = 0;
+
+    void Setup() {                                                                   // the device calls the later cases use
+        ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
+        csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+        dsc = (PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR");
+        qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+        wf = (PFN_vkWaitForFences)e.gdpa(e.dev, "vkWaitForFences");
+        gfs = (PFN_vkGetFenceStatus)e.gdpa(e.dev, "vkGetFenceStatus");
+        acq = (PFN_vkAcquireNextImageKHR)e.gdpa(e.dev, "vkAcquireNextImageKHR");
+        wfp = (PFN_vkWaitForPresentKHR)e.gdpa(e.dev, "vkWaitForPresentKHR");
+        sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+        sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
+
+    VkResult present_frame(useconds_t gap_us) {
+        if (gap_us) usleep(gap_us);
+        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 4; ++frame;
+        uint64_t app_id = frame; VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR}; pid.swapchainCount = 1; pid.pPresentIds = &app_id;
+        last_fence = (VkFence)(uintptr_t)(7000 + frame);
+        VkSwapchainPresentFenceInfoKHR fi{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR}; fi.swapchainCount = 1; fi.pFences = &last_fence; pid.pNext = &fi;
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, &pid}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
+        VkResult res = VK_NOT_READY; pi.pResults = &res;
+        const VkResult r = qp(q, &pi);
+        CHECK(Valid(r)); if (r == VK_SUCCESS) CHECK(res == VK_SUCCESS); else CHECK(res == kOom || res == VK_NOT_READY);
+        return r;
+    }
+    void no_double_present() {                                                       // a game frame (its present id) reaches the driver at most once
+        std::lock_guard<std::mutex> rl(g_rec_mu); std::set<uint64_t> seen; for (auto& p : r_presents) if (p.id) { CHECK(seen.insert(p.id).second); }
+    }
+    template <class P, class O, class A>
+    void sweep(const char* what, P&& prepare, O&& op, A&& after) {      // prepare() -> count run -> N = 1..K+1, each on a fresh prepare()
+        prepare(); t_mode = MODE_COUNT; t_n = 0; op(); t_mode = MODE_OFF; const long k = t_n; after(true, VK_SUCCESS);
+        (void)k;                                                                       // some hooks do not allocate on the normal path: the sweep is then one plain call
+        long ooms = 0;
+        for (long n = 1; n <= k + 1; ++n) {
+            prepare(); t_mode = MODE_FAIL; t_n = 0; t_at = n; const VkResult r = op(); t_mode = MODE_OFF;
+            if (!Valid(r)) std::printf("sweep %s N=%ld returned %d\n", what, n, int(r)); CHECK(Valid(r)); if (r == kOom) { ++ooms; ++oom_seen; }
+            after(false, r);
+        }
+        std::printf("oom sweep %-34s %ld allocations, %ld calls failed with VK_ERROR_OUT_OF_HOST_MEMORY\n", what, k, ooms);
+    }
+    std::function<void()> fresh = [&] { { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.clear(); r_events.clear(); r_submits.clear(); } CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); frame = 0; g_driver_destroys = 0; };
 
     // ---- create instance and device: a failing allocation gives VK_SUCCESS or VK_ERROR_OUT_OF_HOST_MEMORY, and a clean bring-up still works afterwards
-    {
+    void TestCreateInstance() {
         auto negotiate = (PFN_vkNegotiateLoaderLayerInterfaceVersion)dlsym(lib, "FrameGen_NegotiateLoaderLayerInterfaceVersion");
         VkNegotiateLayerInterface nl{}; nl.sType = LAYER_NEGOTIATE_INTERFACE_STRUCT; nl.loaderLayerInterfaceVersion = 2; CHECK(negotiate(&nl) == VK_SUCCESS);
         auto make_instance = [&](VkInstance* out) {
@@ -264,8 +312,7 @@ int main(int, char** argv) {
             if (r == VK_SUCCESS) ((PFN_vkDestroyInstance)nl.pfnGetInstanceProcAddr(in, "vkDestroyInstance"))(in, nullptr);
         }
     }
-    Env e = Bring(lib);                                                              // after all that, a clean bring-up works
-    {   // devices: the same sweep over vkCreateDevice
+    void TestCreateDevice() {   // devices: the same sweep over vkCreateDevice
         auto cd = (PFN_vkCreateDevice)e.gipa(e.inst, "vkCreateDevice");
         auto make_device = [&](VkDevice* out) {                                       // a fresh link chain for every call, as the loader gives
             VkLayerDeviceLink dl{nullptr, nullptr, next_gdpa};
@@ -288,65 +335,30 @@ int main(int, char** argv) {
             if (r == VK_SUCCESS) ((PFN_vkDestroyDevice)e.gdpa(d, "vkDestroyDevice"))(d, nullptr);
         }
     }
-    e = Bring(lib);
-    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
-    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-    auto dsc = (PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR");
-    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
-    auto wf = (PFN_vkWaitForFences)e.gdpa(e.dev, "vkWaitForFences");
-    auto gfs = (PFN_vkGetFenceStatus)e.gdpa(e.dev, "vkGetFenceStatus");
-    auto acq = (PFN_vkAcquireNextImageKHR)e.gdpa(e.dev, "vkAcquireNextImageKHR");
-    auto wfp = (PFN_vkWaitForPresentKHR)e.gdpa(e.dev, "vkWaitForPresentKHR");
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
-    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-    uint32_t frame = 0; VkFence last_fence = VK_NULL_HANDLE; VkSwapchainKHR sc{};
-    auto present_frame = [&](useconds_t gap_us) -> VkResult {
-        if (gap_us) usleep(gap_us);
-        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 4; ++frame;
-        uint64_t app_id = frame; VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR}; pid.swapchainCount = 1; pid.pPresentIds = &app_id;
-        last_fence = (VkFence)(uintptr_t)(7000 + frame);
-        VkSwapchainPresentFenceInfoKHR fi{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR}; fi.swapchainCount = 1; fi.pFences = &last_fence; pid.pNext = &fi;
-        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, &pid}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
-        VkResult res = VK_NOT_READY; pi.pResults = &res;
-        const VkResult r = qp(q, &pi);
-        CHECK(Valid(r)); if (r == VK_SUCCESS) CHECK(res == VK_SUCCESS); else CHECK(res == kOom || res == VK_NOT_READY);
-        return r;
-    };
-    auto no_double_present = [&] {                                                   // a game frame (its present id) reaches the driver at most once
-        std::lock_guard<std::mutex> rl(g_rec_mu); std::set<uint64_t> seen; for (auto& p : r_presents) if (p.id) { CHECK(seen.insert(p.id).second); }
-    };
-    auto sweep = [&](const char* what, auto&& prepare, auto&& op, auto&& after) {      // prepare() -> count run -> N = 1..K+1, each on a fresh prepare()
-        prepare(); t_mode = MODE_COUNT; t_n = 0; op(); t_mode = MODE_OFF; const long k = t_n; after(true, VK_SUCCESS);
-        (void)k;                                                                       // some hooks do not allocate on the normal path: the sweep is then one plain call
-        long ooms = 0;
-        for (long n = 1; n <= k + 1; ++n) {
-            prepare(); t_mode = MODE_FAIL; t_n = 0; t_at = n; const VkResult r = op(); t_mode = MODE_OFF;
-            if (!Valid(r)) std::printf("sweep %s N=%ld returned %d\n", what, n, int(r)); CHECK(Valid(r)); if (r == kOom) { ++ooms; ++oom_seen; }
-            after(false, r);
-        }
-        std::printf("oom sweep %-34s %ld allocations, %ld calls failed with VK_ERROR_OUT_OF_HOST_MEMORY\n", what, k, ooms);
-    };
 
     // ---- create swapchain
-    int made = 0;
-    sweep("vkCreateSwapchainKHR", [&] {}, [&]() -> VkResult { VkSwapchainKHR s{}; const VkResult r = csc(e.dev, &sci, nullptr, &s); if (r == VK_SUCCESS) { sc = s; ++made; } return r; },
-          [&](bool, VkResult r) { if (r == VK_SUCCESS || r == VK_NOT_READY) { if (sc) { dsc(e.dev, sc, nullptr); sc = {}; } } });
+    void TestCreateSwapchain() {
+        sweep("vkCreateSwapchainKHR", [&] {}, [&]() -> VkResult { VkSwapchainKHR s{}; const VkResult r = csc(e.dev, &sci, nullptr, &s); if (r == VK_SUCCESS) { sc = s; ++made; } return r; },
+              [&](bool, VkResult r) { if (r == VK_SUCCESS || r == VK_NOT_READY) { if (sc) { dsc(e.dev, sc, nullptr); sc = {}; } } });
+    }
 
     // ---- the first present of a swapchain (GPU state setup), then the swapchain is destroyed: the driver's destroy runs exactly once per swapchain
-    auto fresh = [&] { { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.clear(); r_events.clear(); r_submits.clear(); } CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); frame = 0; g_driver_destroys = 0; };
-    sweep("first vkQueuePresentKHR (GPU setup)", fresh, [&]() -> VkResult { return present_frame(0); },
-          [&](bool, VkResult) { present_frame(0); present_frame(0); no_double_present(); dsc(e.dev, sc, nullptr); CHECK(g_driver_destroys == 1); sc = {}; });
+    void TestFirstPresent() {
+        sweep("first vkQueuePresentKHR (GPU setup)", fresh, [&]() -> VkResult { return present_frame(0); },
+              [&](bool, VkResult) { present_frame(0); present_frame(0); no_double_present(); dsc(e.dev, sc, nullptr); CHECK(g_driver_destroys == 1); sc = {}; });
+    }
 
     // ---- a steady-state present while the layer holds a frame (gate open after the warm-up), then more presents with no failure
-    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); frame = 0; { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.clear(); }
-    for (int i = 0; i < 80; ++i) CHECK(present_frame(25'000) == VK_SUCCESS);
-    sweep("steady-state vkQueuePresentKHR", [&] { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.clear(); }, [&]() -> VkResult { return present_frame(25'000); },
-          [&](bool, VkResult) { for (int i = 0; i < 3; ++i) present_frame(25'000); no_double_present(); });
-    { std::lock_guard<std::mutex> rl(g_rec_mu); CHECK(r_presents.size() > 0); }
+    void TestSteadyPresent() {
+        CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS); frame = 0; { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.clear(); }
+        for (int i = 0; i < 80; ++i) CHECK(present_frame(25'000) == VK_SUCCESS);
+        sweep("steady-state vkQueuePresentKHR", [&] { std::lock_guard<std::mutex> rl(g_rec_mu); r_presents.clear(); }, [&]() -> VkResult { return present_frame(25'000); },
+              [&](bool, VkResult) { for (int i = 0; i < 3; ++i) present_frame(25'000); no_double_present(); });
+        { std::lock_guard<std::mutex> rl(g_rec_mu); CHECK(r_presents.size() > 0); }
+    }
 
     // ---- wait and fence hooks: a failing allocation goes on to the real call
-    {
+    void TestWaitAndFenceHooks() {
         VkFence f = last_fence;
         sweep("vkWaitForFences", [&] {}, [&]() -> VkResult { return wf(e.dev, 1, &f, VK_TRUE, 1'000'000); }, [&](bool, VkResult) {});
         sweep("vkGetFenceStatus", [&] {}, [&]() -> VkResult { return gfs(e.dev, f); }, [&](bool, VkResult) {});
@@ -356,30 +368,55 @@ int main(int, char** argv) {
     }
 
     // ---- the presenter thread: a failing allocation in any thread during a stretch of presents must not end the process or leave the game waiting
-    for (long n = 1; n <= 24; ++n) {
-        g_global_at = n;
-        for (int i = 0; i < 6; ++i) { const VkResult r = present_frame(25'000); CHECK(Valid(r)); }
-        g_global_at = 0;
-        for (int i = 0; i < 4; ++i) present_frame(25'000);
-        no_double_present();
+    void TestPresenterThread() {
+        for (long n = 1; n <= 24; ++n) {
+            g_global_at = n;
+            for (int i = 0; i < 6; ++i) { const VkResult r = present_frame(25'000); CHECK(Valid(r)); }
+            g_global_at = 0;
+            for (int i = 0; i < 4; ++i) present_frame(25'000);
+            no_double_present();
+        }
     }
 
     // ---- destroy: the driver's destroy runs exactly once, whatever fails on the way
-    dsc(e.dev, sc, nullptr); sc = {};
-    sweep("vkDestroySwapchainKHR", fresh, [&]() -> VkResult { for (int i = 0; i < 3; ++i) present_frame(0); g_driver_destroys = 0; t_mode = MODE_OFF; return VK_SUCCESS; }, [&](bool, VkResult) {});
-    // (the sweep above only prepares the state; the destroy itself is swept next, armed after the presents)
-    for (long n = 1; n <= 60; ++n) {
-        fresh(); for (int i = 0; i < 3; ++i) present_frame(0);
-        g_driver_destroys = 0; t_mode = MODE_FAIL; t_n = 0; t_at = n; dsc(e.dev, sc, nullptr); t_mode = MODE_OFF;
-        CHECK(g_driver_destroys == 1); sc = {};
+    void TestDestroySwapchain() {
+        dsc(e.dev, sc, nullptr); sc = {};
+        sweep("vkDestroySwapchainKHR", fresh, [&]() -> VkResult { for (int i = 0; i < 3; ++i) present_frame(0); g_driver_destroys = 0; t_mode = MODE_OFF; return VK_SUCCESS; }, [&](bool, VkResult) {});
+        // (the sweep above only prepares the state; the destroy itself is swept next, armed after the presents)
+        for (long n = 1; n <= 60; ++n) {
+            fresh(); for (int i = 0; i < 3; ++i) present_frame(0);
+            g_driver_destroys = 0; t_mode = MODE_FAIL; t_n = 0; t_at = n; dsc(e.dev, sc, nullptr); t_mode = MODE_OFF;
+            CHECK(g_driver_destroys == 1); sc = {};
+        }
     }
-    {
+    void TestDestroyDevice() {
         long dd = g_driver_device_destroys; auto dev_destroy = (PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice");
         t_mode = MODE_FAIL; t_n = 0; t_at = 1; dev_destroy(e.dev, nullptr); t_mode = MODE_OFF;
         CHECK(g_driver_device_destroys == dd + 1);                                   // the destroy reached the driver once
     }
-    CHECK(oom_seen > 20);                                                            // the replacement operator new really reached the layer
+};
+
+int main(int, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);                                       // a failure shows what was running
+    ClearFramegenEnv();
+    setenv("VKIFRAME_LOG_FILE", "/dev/null", 1);                                     // the layer's lines are not the point here
+    g_main_thread = pthread_self();
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Rig rig(lib);
+    rig.TestCreateInstance();
+    rig.e = Bring(lib);                                                              // after all that, a clean bring-up works
+    rig.TestCreateDevice();
+    rig.e = Bring(lib);
+    rig.Setup();
+    rig.TestCreateSwapchain();
+    rig.TestFirstPresent();
+    rig.TestSteadyPresent();
+    rig.TestWaitAndFenceHooks();
+    rig.TestPresenterThread();
+    rig.TestDestroySwapchain();
+    rig.TestDestroyDevice();
+    CHECK(rig.oom_seen > 20);                                                        // the replacement operator new really reached the layer
     for (Fake* f : g_cbs) delete f;
-    std::printf("PASS: host out-of-memory sweeps (%ld failed calls)\n", oom_seen);
+    std::printf("PASS: host out-of-memory sweeps (%ld failed calls)\n", rig.oom_seen);
     return 0;
 }

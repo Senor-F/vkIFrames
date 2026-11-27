@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <functional>
 #include <set>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -140,34 +141,11 @@ static Env Bring(void* lib, bool loader_callback = true) {
     return e;
 }
 
-int main(int, char** argv) {
-    ClearFramegenEnv();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
-    Env e = Bring(lib);
-    CHECK(r_dev_exts.count(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) && r_sync2_feature);               // sync2 switched on by the layer
+using PresentFrame = std::function<std::pair<VkSemaphore, uint32_t>(useconds_t)>;
 
-    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);              // registers the queue's family
-    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
-    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR sc{};
-    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-    CHECK(r_min_images == 3 + 4 + 2 && (r_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && (r_usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT));
-    CHECK(sci.minImageCount == 3 && sci.imageUsage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);              // app struct untouched
-
-    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
-    uint32_t frame = 0; std::vector<uint32_t> game_images;                                               // image index of every frame the game presented
-    auto present_frame = [&](useconds_t gap_us) {
-        usleep(gap_us);
-        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 8; ++frame; game_images.push_back(idx);
-        VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
-        VkResult res = VK_NOT_READY; pi.pResults = &res; (void)st;
-        CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
-        return std::pair<VkSemaphore, uint32_t>{game_sem, idx};
-    };
-
-    // 1) a game at 25 ms per frame (40 FPS) with the default 60 FPS target: first the gate warms up in bypass (frames are presented 1:1)
-    size_t held_start = 0;
+// 1) a game at 25 ms per frame (40 FPS) with the default 60 FPS target: first the gate warms up in bypass (frames are presented 1:1)
+static void CaseWarmupThenHold(PresentFrame& present_frame, uint32_t& frame, std::vector<uint32_t>& game_images, size_t& held_start,
+                               size_t& presents_at_hold, uint32_t& held_image, VkSemaphore& held_sem) {
     for (int i = 0; i < 60; ++i) {
         const size_t p0 = r_presents.size(), s0 = r_submits.size();
         auto [gsem, idx] = present_frame(25'000);
@@ -178,11 +156,13 @@ int main(int, char** argv) {
     CHECK(held_start > 0);                                                                               // the gate needed its dwell frames
     // first held frame: captured, nothing presented
     CHECK(r_submits.back().waits.size() == 1 && r_submits.back().waits[0] == (VkSemaphore)(uintptr_t)(5000 + frame - 1));   // waits for the game's rendering
-    const size_t presents_at_hold = r_presents.size();
-    const uint32_t held_image = game_images.back(); VkSemaphore held_sem = r_submits.back().signal;
+    presents_at_hold = r_presents.size();
+    held_image = game_images.back(); held_sem = r_submits.back().signal;
     CHECK(r_blits >= 1 && r_barriers == 3 && r_loader_data_calls == 32);
+}
 
-    // 2) next frames: the previous image is presented (waiting on its capture semaphore), the new one is captured
+// 2) next frames: the previous image is presented (waiting on its capture semaphore), the new one is captured
+static void CaseHeldSequence(PresentFrame& present_frame, size_t presents_at_hold, uint32_t held_image, VkSemaphore& held_sem) {
     for (int i = 0; i < 20; ++i) {
         const size_t p0 = r_presents.size(), s0 = r_submits.size();
         auto [gsem, idx] = present_frame(25'000);
@@ -198,30 +178,81 @@ int main(int, char** argv) {
         static uint32_t prev; (void)prev;
     }
     CHECK(r_presents.size() > presents_at_hold);
+}
 
-    // 3) a stall (300 ms): the held frame is flushed first, then the game's frame goes through untouched
+// 3) a stall (300 ms): the held frame is flushed first, then the game's frame goes through untouched
+static void CaseStallFlush(PresentFrame& present_frame, VkSemaphore held_sem) {
     const size_t before = r_presents.size();
     auto [gsem, idx] = present_frame(300'000);
     CHECK(r_presents.size() == before + 2);
     CHECK(r_presents[before].wait == held_sem);                                                           // the held one
     CHECK(r_presents[before + 1].image == idx && r_presents[before + 1].wait == gsem);                   // then the game's own present
+}
 
-    // 4) every image the game presented was presented exactly once and in order (frames are shifted by one, none lost or doubled)
+// 4) every image the game presented was presented exactly once and in order (frames are shifted by one, none lost or doubled)
+static void CaseEveryImageOnce(const std::vector<uint32_t>& game_images, size_t held_start) {
     std::vector<uint32_t> shown; for (auto& p : r_presents) shown.push_back(p.image);
     CHECK(shown == game_images);                                                                          // same sequence, same count
     std::printf("hold sequencing ok: %zu frames in, %zu presented, first held at frame %zu\n", game_images.size(), shown.size(), held_start);
+}
 
-    // 5) destroying the swapchain frees the GPU resources
+// 5) destroying the swapchain frees the GPU resources
+static void CaseDestroyFrees(Env& e, VkSwapchainKHR sc) {
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     CHECK(r_destroyed_images == r_images_created && r_images_created == 7);
+}
 
-    // 6) without the loader's data callback the layer must not hold (it could not initialise the command buffers)
+// 6) without the loader's data callback the layer must not hold (it could not initialise the command buffers)
+static void CaseNoLoaderCallback(void* lib, VkSwapchainCreateInfoKHR& sci) {
     { r_submits.clear(); r_presents.clear(); r_events.clear();
       Env e2 = Bring(lib, /*loader_callback=*/false); VkQueue q2; ((PFN_vkGetDeviceQueue)e2.gdpa(e2.dev, "vkGetDeviceQueue"))(e2.dev, 0, 0, &q2);
       VkSwapchainKHR sc2{}; ((PFN_vkCreateSwapchainKHR)e2.gdpa(e2.dev, "vkCreateSwapchainKHR"))(e2.dev, &sci, nullptr, &sc2);
       CHECK(r_min_images == 4 && !(r_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)); }                         // no extra images, no transfer usage
-    // 7) surface that cannot give spare images: passthrough
+}
+
+// 7) surface that cannot give spare images: passthrough
+static void CaseSmallSurfacePassthrough(void* lib, VkSwapchainCreateInfoKHR& sci) {
     { k_surface_max_small = true; Env e3 = Bring(lib); VkSwapchainKHR sc3{}; ((PFN_vkCreateSwapchainKHR)e3.gdpa(e3.dev, "vkCreateSwapchainKHR"))(e3.dev, &sci, nullptr, &sc3);
       CHECK(r_min_images == 3 && !(r_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)); k_surface_max_small = false; }
+}
+
+// Device features, swapchain image count/usage (app struct untouched)
+static void CaseSwapchainCreate(Env& e, VkSwapchainCreateInfoKHR& sci, VkSwapchainKHR& sc) {
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    CHECK(r_min_images == 3 + 4 + 2 && (r_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && (r_usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT));
+    CHECK(sci.minImageCount == 3 && sci.imageUsage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);              // app struct untouched
+}
+
+int main(int, char** argv) {
+    ClearFramegenEnv();
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Env e = Bring(lib);
+    CHECK(r_dev_exts.count(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) && r_sync2_feature);               // sync2 switched on by the layer
+
+    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);              // registers the queue's family
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR sc{};
+    CaseSwapchainCreate(e, sci, sc);
+
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+    uint32_t frame = 0; std::vector<uint32_t> game_images;                                               // image index of every frame the game presented
+    PresentFrame present_frame = [&](useconds_t gap_us) {
+        usleep(gap_us);
+        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 8; ++frame; game_images.push_back(idx);
+        VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
+        VkResult res = VK_NOT_READY; pi.pResults = &res; (void)st;
+        CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
+        return std::pair<VkSemaphore, uint32_t>{game_sem, idx};
+    };
+    size_t held_start = 0, presents_at_hold = 0; uint32_t held_image = 0; VkSemaphore held_sem = VK_NULL_HANDLE;
+    CaseWarmupThenHold(present_frame, frame, game_images, held_start, presents_at_hold, held_image, held_sem);
+    CaseHeldSequence(present_frame, presents_at_hold, held_image, held_sem);
+    CaseStallFlush(present_frame, held_sem);
+    CaseEveryImageOnce(game_images, held_start);
+    CaseDestroyFrees(e, sc);
+    CaseNoLoaderCallback(lib, sci);
+    CaseSmallSurfacePassthrough(lib, sci);
     std::printf("PASS: stage 3b mock driver\n");
 }

@@ -118,6 +118,38 @@ def _give_to_user_fd(fd):
             pass
 
 
+def _parts_under_home(path):
+    """(home folder, the folder names from it down to `path`); OSError if `path` is not inside the home folder."""
+    home = USER_HOME.rstrip("/") or "/"
+    rel = os.path.relpath(path, home)
+    if rel == ".":
+        return home, []
+    if rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
+        raise OSError(errno.EINVAL, "not inside the home folder: %s" % path)
+    return home, rel.split(os.sep)
+
+
+def _open_component(fd, part, last, create, mode, private, own, shown):
+    """Opens the folder `part` below the descriptor `fd` with O_NOFOLLOW (made first when missing and `create`); a link or a non-folder is an ELOOP OSError."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        return os.open(part, flags, dir_fd=fd)
+    except FileNotFoundError:
+        if not create:
+            raise
+        try:
+            os.mkdir(part, (0o700 if private else mode) if last else 0o755, dir_fd=fd)
+            if own and os.geteuid() == 0:
+                os.chown(part, own[0], own[1], dir_fd=fd, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        return os.open(part, flags, dir_fd=fd)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise OSError(errno.ELOOP, "a symbolic link or not a folder: %s" % shown)
+        raise
+
+
 def _open_dir(path, create=False, mode=0o755, private=False):
     """An open file descriptor for the folder `path`, which must be the home folder or below it. Every component below the home folder is opened with
     O_NOFOLLOW|O_DIRECTORY relative to the one before it: a symbolic link anywhere in the path (also an ancestor such as ~/.local/share) is refused with an
@@ -125,37 +157,13 @@ def _open_dir(path, create=False, mode=0o755, private=False):
     reached through a link (/home may be a link on some systems). With create, missing folders are made (the last one with `mode`, or 0700 with `private`;
     the ones above it 0755) and given to the user when the backend runs as root; private also sets the last folder to 0700. Callers do every file operation
     relative to the returned descriptor and close it."""
-    home = USER_HOME.rstrip("/") or "/"
-    rel = os.path.relpath(path, home)
-    if rel == ".":
-        parts = []
-    elif rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
-        raise OSError(errno.EINVAL, "not inside the home folder: %s" % path)
-    else:
-        parts = rel.split(os.sep)
+    home, parts = _parts_under_home(path)
     own = _owner()
     allowed = ({own[0]} if own else set()) | {0, os.geteuid()}
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for i, part in enumerate(parts):
-            last = i == len(parts) - 1
-            try:
-                nfd = os.open(part, flags, dir_fd=fd)
-            except FileNotFoundError:
-                if not create:
-                    raise
-                try:
-                    os.mkdir(part, (0o700 if private else mode) if last else 0o755, dir_fd=fd)
-                    if own and os.geteuid() == 0:
-                        os.chown(part, own[0], own[1], dir_fd=fd, follow_symlinks=False)
-                except FileExistsError:
-                    pass
-                nfd = os.open(part, flags, dir_fd=fd)
-            except OSError as e:
-                if e.errno in (errno.ELOOP, errno.ENOTDIR):
-                    raise OSError(errno.ELOOP, "a symbolic link or not a folder: %s" % os.path.join(home, *parts[:i + 1]))
-                raise
+            nfd = _open_component(fd, part, i == len(parts) - 1, create, mode, private, own, os.path.join(home, *parts[:i + 1]))
             os.close(fd)
             fd = nfd
             if os.fstat(fd).st_uid not in allowed:
@@ -540,38 +548,34 @@ class Plugin:
             "bundled_available": os.path.exists(BUNDLED_LIB),
         }
 
-    async def install_layer(self, lib_path: str = ""):
-        """Install from the plugin's bin/ folder, or point the manifest at lib_path
-        (for example the repo's build/ directory, so rebuilds go live without copying)."""
-        if lib_path:
-            if not os.path.isabs(lib_path) or not os.path.isfile(lib_path):
-                raise ValueError("library not found: %s" % lib_path)
-            target = _check_library(lib_path)               # the real path that was checked goes into the manifest, not the name that could be repointed afterwards
-        else:
-            if not os.path.exists(BUNDLED_LIB):
-                raise ValueError("no libvkIFrames.so bundled in the plugin's bin/ folder")
+    def _copy_bundled_lib(self):
+        """Copies the bundled library to INSTALLED_LIB (temporary file, then a rename) and returns INSTALLED_LIB."""
+        try:
+            dfd = _open_dir(DATA_DIR, create=True, private=True)     # no symbolic link anywhere below the home folder; every step below is relative to dfd
+        except OSError as e:
+            raise ValueError("the data folder is not a private folder of the user: %s" % e)
+        try:
+            final = os.path.basename(INSTALLED_LIB)
+            tmp = final + ".new"
             try:
-                dfd = _open_dir(DATA_DIR, create=True, private=True)     # no symbolic link anywhere below the home folder; every step below is relative to dfd
-            except OSError as e:
-                raise ValueError("the data folder is not a private folder of the user: %s" % e)
-            try:
-                final = os.path.basename(INSTALLED_LIB)
-                tmp = final + ".new"
-                try:
-                    os.unlink(tmp, dir_fd=dfd)                       # a leftover or planted file (or symlink) goes; unlink never follows
-                except FileNotFoundError:
-                    pass
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o755, dir_fd=dfd)
-                with os.fdopen(fd, "wb") as out, open(BUNDLED_LIB, "rb") as src:
-                    shutil.copyfileobj(src, out)
-                    out.flush()
-                    os.fchmod(out.fileno(), 0o755)
-                    _give_to_user_fd(out.fileno())
-                os.replace(tmp, final, src_dir_fd=dfd, dst_dir_fd=dfd)
-            finally:
-                os.close(dfd)
-            target = INSTALLED_LIB
-        manifest = {
+                os.unlink(tmp, dir_fd=dfd)                       # a leftover or planted file (or symlink) goes; unlink never follows
+            except FileNotFoundError:
+                pass
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o755, dir_fd=dfd)
+            with os.fdopen(fd, "wb") as out, open(BUNDLED_LIB, "rb") as src:
+                shutil.copyfileobj(src, out)
+                out.flush()
+                os.fchmod(out.fileno(), 0o755)
+                _give_to_user_fd(out.fileno())
+            os.replace(tmp, final, src_dir_fd=dfd, dst_dir_fd=dfd)
+        finally:
+            os.close(dfd)
+        return INSTALLED_LIB
+
+    @staticmethod
+    def _manifest_for(target):
+        """The layer manifest (Vulkan loader JSON) that points at the library `target`."""
+        return {
             "file_format_version": "1.1.2",
             "layer": {
                 "name": "VK_LAYER_CUSTOM_frame_gen",
@@ -589,7 +593,19 @@ class Plugin:
                 "disable_environment": {"VKIFRAME_DISABLE": "1"},
             },
         }
-        _atomic_write(MANIFEST, json.dumps(manifest, indent=2) + "\n", dir_mode=0o755)
+
+    async def install_layer(self, lib_path: str = ""):
+        """Install from the plugin's bin/ folder, or point the manifest at lib_path
+        (for example the repo's build/ directory, so rebuilds go live without copying)."""
+        if lib_path:
+            if not os.path.isabs(lib_path) or not os.path.isfile(lib_path):
+                raise ValueError("library not found: %s" % lib_path)
+            target = _check_library(lib_path)               # the real path that was checked goes into the manifest, not the name that could be repointed afterwards
+        else:
+            if not os.path.exists(BUNDLED_LIB):
+                raise ValueError("no libvkIFrames.so bundled in the plugin's bin/ folder")
+            target = self._copy_bundled_lib()
+        _atomic_write(MANIFEST, json.dumps(self._manifest_for(target), indent=2) + "\n", dir_mode=0o755)
         decky.logger.info("layer manifest written, library %s", target)
         return self._layer_info()
 

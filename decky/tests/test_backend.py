@@ -1,3 +1,4 @@
+# Decky backend tests: clamp, launch options, status text, symlinks.
 import asyncio, importlib.util, json, os, sys, tempfile, types
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

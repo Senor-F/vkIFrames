@@ -27,7 +27,7 @@ The Deck is the harder case: a small GPU shared with the game, 800p, and an immu
 
 1. **Both pacing paths must work.** Timed path (desktop Wayland, Mesa ≥ 26.1) and vblank fallback (Game Mode, XWayland on older Mesa). The Stage 3 output clock already uses the same `t` values for both; Stage 3 testing must cover the fallback first, not as an afterthought.
 2. **The game's frame limit.** In Game Mode the Steam frame limiter acts at the display side, below this layer. It would cap the layer's *output*, not the game's base rate. Options: cap the base rate in the game or with `DXVK_FRAME_RATE`, or the layer's own base-rate limiter, `VKIFRAME_BASE_FPS_CAP`, which is built (default 45, live; it waits after the game's present so the game samples input as late as it can, `VKIFRAME_CAP_EARLY=1` waits before). It is what the Deck runs use.
-3. **Performance budget on the Deck.** The GPU is a fraction of a desktop card and is already busy with the game. The 2.5 ms / 1080p budget in STAGE6 is a desktop number. For the Deck, the flow field is estimated at quarter resolution by default (`VKIFRAME_FLOW_LEVEL`, 1 = half, 2 = quarter, 3 = eighth; STAGE6 §6, lever 1). Measured on the Deck: about 5 ms per pair at 720p, which is more than the budget (STATUS.md). Measure with timestamp queries on the Deck before trusting any figure.
+3. **Performance budget on the Deck.** The GPU is a fraction of a desktop card and is already busy with the game. The 2.5 ms / 1080p budget in STAGE6 (stage6/02-packaging-as-an-implicit-layer.md §6) is a desktop number. For the Deck, the flow field is estimated at quarter resolution by default (`VKIFRAME_FLOW_LEVEL`, 1 = half, 2 = quarter, 3 = eighth; STAGE6 §6, lever 1). Measured on the Deck: about 5 ms per pair at 720p, which is more than the budget (STATUS.md). Measure with timestamp queries on the Deck before trusting any figure.
 4. **Presets.** Likely useful: Deck 30 → 60, 40 → 80 on OLED, 45 → 90; desktop 60 → 120/144 depending on the monitor. The bypass gate (`VKIFRAME_MIN_GAIN`) decides how close to the target a game must be before the layer steps aside; the shipped default is 1.01, so a 55 FPS game is interpolated to 60 unless you raise it (1.12 was the simulated choice and keeps 54 to 60 FPS in bypass). The target defaults to 90 on the Deck OLED and is limited to the display's refresh rate.
 
 ## 4. Building for SteamOS
@@ -41,7 +41,7 @@ So neither build is safe from a new toolchain. Recommended: **build inside the S
 
 Fallback if the SDK route is awkward: a small Ubuntu 20.04 / Debian 11 container with a newer CMake and Vulkan-Headers.
 
-Installing (no root needed): put the library and an implicit-layer manifest under `~/.local/share/vulkan/implicit_layer.d/` and enable per game with `VKIFRAME_ENABLE=1` (STAGE6 §5). **(verify)** that the Steam container exposes this directory's layers to games; if not, the manifest must be placed where pressure-vessel imports host layers, or the game launched with `VK_ADD_LAYER_PATH` / `VK_LAYER_PATH` set in the launch options.
+Installing (no root needed): put the library and an implicit-layer manifest under `~/.local/share/vulkan/implicit_layer.d/` and enable per game with `VKIFRAME_ENABLE=1` (STAGE6 §5, stage6/02-packaging-as-an-implicit-layer.md). **(verify)** that the Steam container exposes this directory's layers to games; if not, the manifest must be placed where pressure-vessel imports host layers, or the game launched with `VK_ADD_LAYER_PATH` / `VK_LAYER_PATH` set in the launch options.
 
 ## 5. Test plan by environment
 

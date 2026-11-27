@@ -62,83 +62,16 @@ public:
     // values), `raw` is the un-clamped interval to the previous native frame.
     Plan OnNativeFrame(double now, double smoothed, double jitter, double raw, const Params& p) {
         Plan plan;
-        const bool stalled = raw > 100e6;                                   // pause / loading screen
-        m_gate.enter = p.min_gain;
-        m_gate.exit  = 1.0 + (p.min_gain - 1.0) / 4.0;
-        const bool interpolate = !stalled && m_gate.Update(smoothed / p.target_ns);
-        if (stalled) m_gate.Reset();
-
-        if (!interpolate) {                                                 // bypass: flush the held frame, then pass through
-            plan.kind = Kind::Bypass;
-            plan.flush_held = m_held;
-            m_held = false; m_running = false;
-            return plan;
-        }
-
-        // Smoothed arrival times of A and B: advance on the smoothed cadence, slew 1/8 toward the real arrival.
-        if (!m_running) m_v_cur = now;
-        else { m_v_prev = m_v_cur; m_v_cur += smoothed; m_v_cur += (now - m_v_cur) / 8.0; }
-
+        if (!GateStep(smoothed, raw, p)) return BypassPlan();
+        AdvanceVirtualTimes(now, smoothed);
         const double wanted = WantedDelay(smoothed, jitter);
-        if (!m_held) {                                                      // first frame of a run: hold it, start the clock
-            m_held = true; m_running = true;
-            m_v_prev = m_v_cur - smoothed;
-            m_L = wanted;
-            m_anchor = m_v_cur + m_L;
-            m_next = 0; m_period = p.target_ns;
-            plan.kind = Kind::Hold;
-            return plan;
-        }
-
+        if (!m_held) return StartRun(smoothed, wanted, p);
         RebaseOnPeriodChange(p.target_ns);                                  // TARGET_FPS changed while running (live settings): keep the grid continuous
-
-        // L moves toward its wanted value by at most 2% of a target frame per pair: a hitch cannot run content backwards.
-        const double step = 0.02 * p.target_ns;
-        bool locking = false;
-        if (p.phase_lock) {
-            const double r = smoothed / p.target_ns, ri = std::round(r);
-            if (ri >= 2.0 && std::fabs(r - ri) < 0.03) {
-                const double T = p.target_ns;
-                const double tick0 = m_anchor + double(m_next) * T;
-                double d = std::fmod(tick0 - m_L - m_v_prev - p.phase_offset * T, T);
-                if (d < 0) d += T;
-                double delta = 0;
-                if (d > 0.01 * T && d < 0.99 * T) {
-                    const double up = d, down = -(T - d);                    // later or earlier content: both reach the same phase
-                    const bool up_ok = m_L + up <= wanted + T, down_ok = m_L + down >= wanted;
-                    if (up_ok && down_ok) delta = (d < 0.5 * T) ? up : down;
-                    else if (up_ok) delta = up;
-                    else if (down_ok) delta = down;                         // at most one extra target frame of latency
-                }
-                m_L += std::clamp(delta, -2.5 * step, 2.5 * step);
-                locking = true;
-            }
-        }
-        if (!locking) m_L += std::clamp(wanted - m_L, -step, step);
-        else if (m_L < wanted) m_L += std::min(wanted - m_L, step);
+        SlewDelay(smoothed, wanted, p);
 
         plan.kind = Kind::Pair;
-        int emitted = 0;
-        const double span = m_v_cur - m_v_prev;
-        for (int guard = 0; guard < 256; ++guard) {
-            const double tick = m_anchor + double(m_next) * p.target_ns;
-            const double tau  = tick - m_L;                                 // content time of this tick
-            if (tau >= m_v_cur) break;                                      // belongs to the next pair
-            // A tick within kNativeFrac of B (the phase lock puts one there) is B itself: leave it to the next pair, where it is t = 0
-            // and shows the native frame without an interpolation pass. Without this a tick a few ns before B was t = 1 in this pair,
-            // a full pass for a frame that is B. The first tick of a pair is never deferred, so a pair keeps at least one tick.
-            if (emitted > 0 && span > 0 && tau >= m_v_cur - kNativeFrac * span) break;
-            ++m_next;
-            if (emitted > p.k_max) { ++plan.dropped; continue; }
-            const double t = span > 0 ? std::clamp((tau - m_v_prev) / span, 0.0, 1.0) : 0.0;
-            if (plan.n < kMaxTicks) plan.ticks[plan.n++] = {tick, t, t < kNativeFrac};
-            ++emitted;
-        }
-        if (plan.n == 0) {                                                  // the held frame must still go out
-            plan.carrier_only = true;
-            plan.carrier_time_ns = m_anchor + double(m_next) * p.target_ns;
-            ++m_next;
-        }
+        EmitTicks(plan, p);
+        AddCarrierIfEmpty(plan, p);
         return plan;
     }
 
@@ -185,6 +118,95 @@ private:
         if (period == m_period) return;
         if (m_period > 0.0) { m_anchor += double(m_next) * m_period; m_next = 0; }
         m_period = period;
+    }
+
+    bool GateStep(double smoothed, double raw, const Params& p) {          // true: interpolate this frame
+        const bool stalled = raw > 100e6;                                   // pause / loading screen
+        m_gate.enter = p.min_gain;
+        m_gate.exit  = 1.0 + (p.min_gain - 1.0) / 4.0;
+        const bool interpolate = !stalled && m_gate.Update(smoothed / p.target_ns);
+        if (stalled) m_gate.Reset();
+        return interpolate;
+    }
+
+    Plan BypassPlan() {                                                     // bypass: flush the held frame, then pass through
+        Plan plan;
+        plan.kind = Kind::Bypass;
+        plan.flush_held = m_held;
+        m_held = false; m_running = false;
+        return plan;
+    }
+
+    // Smoothed arrival times of A and B: advance on the smoothed cadence, slew 1/8 toward the real arrival.
+    void AdvanceVirtualTimes(double now, double smoothed) {
+        if (!m_running) m_v_cur = now;
+        else { m_v_prev = m_v_cur; m_v_cur += smoothed; m_v_cur += (now - m_v_cur) / 8.0; }
+    }
+
+    Plan StartRun(double smoothed, double wanted, const Params& p) {        // first frame of a run: hold it, start the clock
+        Plan plan;
+        m_held = true; m_running = true;
+        m_v_prev = m_v_cur - smoothed;
+        m_L = wanted;
+        m_anchor = m_v_cur + m_L;
+        m_next = 0; m_period = p.target_ns;
+        plan.kind = Kind::Hold;
+        return plan;
+    }
+
+    // L moves toward its wanted value by at most 2% of a target frame per pair: a hitch cannot run content backwards.
+    void SlewDelay(double smoothed, double wanted, const Params& p) {
+        const double step = 0.02 * p.target_ns;
+        const bool locking = PhaseLockStep(smoothed, wanted, step, p);
+        if (!locking) m_L += std::clamp(wanted - m_L, -step, step);
+        else if (m_L < wanted) m_L += std::min(wanted - m_L, step);
+    }
+
+    bool PhaseLockStep(double smoothed, double wanted, double step, const Params& p) {   // true: L was steered by the lock
+        if (!p.phase_lock) return false;
+        const double r = smoothed / p.target_ns, ri = std::round(r);
+        if (!(ri >= 2.0 && std::fabs(r - ri) < 0.03)) return false;
+        const double T = p.target_ns;
+        const double tick0 = m_anchor + double(m_next) * T;
+        double d = std::fmod(tick0 - m_L - m_v_prev - p.phase_offset * T, T);
+        if (d < 0) d += T;
+        double delta = 0;
+        if (d > 0.01 * T && d < 0.99 * T) {
+            const double up = d, down = -(T - d);                            // later or earlier content: both reach the same phase
+            const bool up_ok = m_L + up <= wanted + T, down_ok = m_L + down >= wanted;
+            if (up_ok && down_ok) delta = (d < 0.5 * T) ? up : down;
+            else if (up_ok) delta = up;
+            else if (down_ok) delta = down;                                 // at most one extra target frame of latency
+        }
+        m_L += std::clamp(delta, -2.5 * step, 2.5 * step);
+        return true;
+    }
+
+    void EmitTicks(Plan& plan, const Params& p) {                           // the ticks of the output clock that fall in this pair
+        int emitted = 0;
+        const double span = m_v_cur - m_v_prev;
+        for (int guard = 0; guard < 256; ++guard) {
+            const double tick = m_anchor + double(m_next) * p.target_ns;
+            const double tau  = tick - m_L;                                 // content time of this tick
+            if (tau >= m_v_cur) break;                                      // belongs to the next pair
+            // A tick within kNativeFrac of B (the phase lock puts one there) is B itself: leave it to the next pair, where it is t = 0
+            // and shows the native frame without an interpolation pass. Without this a tick a few ns before B was t = 1 in this pair,
+            // a full pass for a frame that is B. The first tick of a pair is never deferred, so a pair keeps at least one tick.
+            if (emitted > 0 && span > 0 && tau >= m_v_cur - kNativeFrac * span) break;
+            ++m_next;
+            if (emitted > p.k_max) { ++plan.dropped; continue; }
+            const double t = span > 0 ? std::clamp((tau - m_v_prev) / span, 0.0, 1.0) : 0.0;
+            if (plan.n < kMaxTicks) plan.ticks[plan.n++] = {tick, t, t < kNativeFrac};
+            ++emitted;
+        }
+    }
+
+    void AddCarrierIfEmpty(Plan& plan, const Params& p) {
+        if (plan.n == 0) {                                                  // the held frame must still go out
+            plan.carrier_only = true;
+            plan.carrier_time_ns = m_anchor + double(m_next) * p.target_ns;
+            ++m_next;
+        }
     }
 
     static double WantedDelay(double smoothed, double jitter) {             // one frame to hold + a jitter buffer (2x, capped at half a frame)

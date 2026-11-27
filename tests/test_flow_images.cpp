@@ -33,10 +33,58 @@ static void VKAPI_CALL F_DestroyView(VkDevice, VkImageView, const VkAllocationCa
 
 static void Reset() { f_format_has_transfer_src = true; f_driver_refuses_flag = f_driver_refuses_all = f_alloc_fails = false; f_creates = f_with_flag = f_views = f_images_live = f_mems_live = f_format_queries = 0; f_last_usage = 0; }
 
-int main() {
+static int TestTimestampSlots() {
     // timestamp slots (#F3): a flow pass at every finished level (FLOW_LEVEL 1..3, i.e. fin 0..2) fits its slots, and the interpolation slots are the last two
     for (uint32_t fin = 0; fin <= 2; ++fin) { if (FlowState::StampCount(fin) > FlowState::kFlowStamps) { std::printf("FAIL: %u stamps at fin %u\n", FlowState::StampCount(fin), fin); return 1; } }
     if (FlowState::StampCount(0) != 7 || FlowState::StampCount(2) != 5 || FlowState::kQSlots != 10 || FlowState::kInterpFirst != 8) { std::printf("FAIL: timestamp slot values changed\n"); return 1; }
+    return 0;
+}
+
+// supported: the flag is kept
+static void TestFlagKept(const DeviceDispatch& dt, VkExtent2D ext, VkImageUsageFlags kStorage, VkImageUsageFlags kDump) {
+    Reset(); FlowImage im;
+    CHECK(CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im) && im.transfer_src && (f_last_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && f_creates == 1);
+    DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0 && f_views == 0);
+}
+
+// an image that does not ask for the flag never gets it, and the format is not even queried
+static void TestNoFlagRequested(const DeviceDispatch& dt, VkExtent2D ext, VkImageUsageFlags kStorage, VkImageUsageFlags kDump) {
+    Reset(); FlowImage im;
+    CHECK(CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext, kStorage, im) && !im.transfer_src && f_last_usage == kStorage && f_format_queries == 0);
+    DestroyFlowImage(dt, im);
+}
+
+// the format does not list the feature: created without the flag, and the driver is not even asked with it
+static void TestFormatLacksFeature(const DeviceDispatch& dt, VkExtent2D ext, VkImageUsageFlags kStorage, VkImageUsageFlags kDump) {
+    Reset(); f_format_has_transfer_src = false; FlowImage im;
+    CHECK(CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im) && !im.transfer_src && f_with_flag == 0 && f_last_usage == kStorage);
+    DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0);
+}
+
+// the driver refuses the image with the flag: one retry without it, the engine's image exists
+static void TestDriverRefusesFlag(const DeviceDispatch& dt, VkExtent2D ext, VkImageUsageFlags kStorage, VkImageUsageFlags kDump) {
+    Reset(); f_driver_refuses_flag = true; FlowImage im;
+    CHECK(CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im) && !im.transfer_src && f_creates == 2 && f_with_flag == 1 && f_last_usage == kStorage);
+    DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0 && f_views == 0);
+}
+
+// the driver refuses even the plain image: false, and no retry loop (a request without the flag is not retried)
+static void TestDriverRefusesAll(const DeviceDispatch& dt, VkExtent2D ext, VkImageUsageFlags kStorage, VkImageUsageFlags kDump) {
+    Reset(); f_driver_refuses_all = true; FlowImage a, b;
+    CHECK(!CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext, kStorage, a) && f_creates == 1);
+    Reset(); f_driver_refuses_all = true;
+    CHECK(!CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, b) && f_creates == 2 && !b.transfer_src);
+}
+
+// memory allocation fails: false and the image can be destroyed by the caller
+static void TestAllocFails(const DeviceDispatch& dt, VkExtent2D ext, VkImageUsageFlags kStorage, VkImageUsageFlags kDump) {
+    Reset(); f_alloc_fails = true; FlowImage im;
+    CHECK(!CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im));
+    DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0);
+}
+
+int main() {
+    if (int rc = TestTimestampSlots()) return rc;
     InstanceDispatch inst; inst.GetPhysicalDeviceFormatProperties = F_FormatProps; inst.GetPhysicalDeviceMemoryProperties = F_MemProps;
     DeviceDispatch dt; dt.instance = &inst;
     dt.CreateImage = F_CreateImage; dt.DestroyImage = F_DestroyImage; dt.GetImageMemoryRequirements = F_GetReq; dt.AllocateMemory = F_Alloc; dt.FreeMemory = F_Free;
@@ -44,38 +92,12 @@ int main() {
     std::freopen("/dev/null", "w", stderr);
     const VkExtent2D ext{320, 180};
     const VkImageUsageFlags kStorage = VK_IMAGE_USAGE_STORAGE_BIT, kDump = kStorage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-
-    {   // supported: the flag is kept
-        Reset(); FlowImage im;
-        CHECK(CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im) && im.transfer_src && (f_last_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && f_creates == 1);
-        DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0 && f_views == 0);
-    }
-    {   // an image that does not ask for the flag never gets it, and the format is not even queried
-        Reset(); FlowImage im;
-        CHECK(CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext, kStorage, im) && !im.transfer_src && f_last_usage == kStorage && f_format_queries == 0);
-        DestroyFlowImage(dt, im);
-    }
-    {   // the format does not list the feature: created without the flag, and the driver is not even asked with it
-        Reset(); f_format_has_transfer_src = false; FlowImage im;
-        CHECK(CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im) && !im.transfer_src && f_with_flag == 0 && f_last_usage == kStorage);
-        DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0);
-    }
-    {   // the driver refuses the image with the flag: one retry without it, the engine's image exists
-        Reset(); f_driver_refuses_flag = true; FlowImage im;
-        CHECK(CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im) && !im.transfer_src && f_creates == 2 && f_with_flag == 1 && f_last_usage == kStorage);
-        DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0 && f_views == 0);
-    }
-    {   // the driver refuses even the plain image: false, and no retry loop (a request without the flag is not retried)
-        Reset(); f_driver_refuses_all = true; FlowImage a, b;
-        CHECK(!CreateStorageImage(dt, VK_FORMAT_R32_SFLOAT, ext, kStorage, a) && f_creates == 1);
-        Reset(); f_driver_refuses_all = true;
-        CHECK(!CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, b) && f_creates == 2 && !b.transfer_src);
-    }
-    {   // memory allocation fails: false and the image can be destroyed by the caller
-        Reset(); f_alloc_fails = true; FlowImage im;
-        CHECK(!CreateStorageImage(dt, VK_FORMAT_R16G16B16A16_SFLOAT, ext, kDump, im));
-        DestroyFlowImage(dt, im); CHECK(f_images_live == 0 && f_mems_live == 0);
-    }
+    TestFlagKept(dt, ext, kStorage, kDump);
+    TestNoFlagRequested(dt, ext, kStorage, kDump);
+    TestFormatLacksFeature(dt, ext, kStorage, kDump);
+    TestDriverRefusesFlag(dt, ext, kStorage, kDump);
+    TestDriverRefusesAll(dt, ext, kStorage, kDump);
+    TestAllocFails(dt, ext, kStorage, kDump);
     std::printf(g_fail ? "FAILED\n" : "flow images: ok\n");
     return g_fail ? 1 : 0;
 }

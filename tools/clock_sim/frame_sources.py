@@ -1,3 +1,4 @@
+# Synthetic game frame-time patterns for the simulator.
 import random, statistics as st, sys
 MS=1e6
 class Timing:

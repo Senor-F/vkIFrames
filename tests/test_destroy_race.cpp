@@ -200,6 +200,38 @@ static Env Bring(void* lib, bool loader_callback = true) {
     return e;
 }
 
+template <class F>
+static void TestFenceFlushDuringDestroy(Env& e, VkSwapchainCreateInfoKHR& sci, VkSwapchainKHR& sc, VkFence& last_fence, F& present_frame,
+    PFN_vkCreateSwapchainKHR csc, PFN_vkDestroySwapchainKHR dsc, PFN_vkWaitForFences wf) {
+    // ---- A: a fence-wait thread flushes the held frame while the swapchain is destroyed
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    for (int i = 0; i < 80; ++i) present_frame(25'000);                              // the gate opens: a frame is held, with its present fence
+    CHECK(r_dispatches > 10);
+    VkFence held = last_fence;
+    std::thread waiter([&] { t_waiter = true; (void)wf(e.dev, 1, &held, VK_TRUE, 1'000'000); });
+    for (int i = 0; i < 300 && g_waiter_state != 1; ++i) usleep(10'000);
+    CHECK(g_waiter_state == 1);                                                       // the waiter is inside the layer, presenting the held frame
+    dsc(e.dev, sc, nullptr);                                                          // destroy on the main thread, meanwhile
+    waiter.join();
+    CHECK(g_destroy_done && g_waiter_state == 2);
+    CHECK(!g_violation);                                                              // the destroy waited for the flush (and under ASan: no use after free)
+}
+
+template <class F>
+static void TestSubmitDuringDestroy(Env& e, VkSwapchainCreateInfoKHR& sci, VkSwapchainKHR& sc, VkQueue q, F& present_frame,
+    PFN_vkCreateSwapchainKHR csc, PFN_vkDestroySwapchainKHR dsc, PFN_vkQueueSubmit qs) {
+    // ---- B: a game thread submits while the GPU state is destroyed (vkDeviceWaitIdle in the mock sleeps 200 ms)
+    g_destroy_done = false;
+    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    for (int i = 0; i < 80; ++i) present_frame(25'000);
+    g_probe = true;
+    std::thread submitter([&] { while (!g_go) usleep(100); (void)qs(q, 0, nullptr, VK_NULL_HANDLE); });
+    dsc(e.dev, sc, nullptr);
+    submitter.join();
+    g_probe = false;
+    CHECK(!g_overlap);                                                                // the submit waited for vkDeviceWaitIdle
+}
+
 int main(int, char** argv) {
     ClearFramegenEnv();
     g_main_thread = pthread_self();
@@ -226,29 +258,8 @@ int main(int, char** argv) {
         CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
     };
 
-    // ---- A: a fence-wait thread flushes the held frame while the swapchain is destroyed
-    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-    for (int i = 0; i < 80; ++i) present_frame(25'000);                              // the gate opens: a frame is held, with its present fence
-    CHECK(r_dispatches > 10);
-    VkFence held = last_fence;
-    std::thread waiter([&] { t_waiter = true; (void)wf(e.dev, 1, &held, VK_TRUE, 1'000'000); });
-    for (int i = 0; i < 300 && g_waiter_state != 1; ++i) usleep(10'000);
-    CHECK(g_waiter_state == 1);                                                       // the waiter is inside the layer, presenting the held frame
-    dsc(e.dev, sc, nullptr);                                                          // destroy on the main thread, meanwhile
-    waiter.join();
-    CHECK(g_destroy_done && g_waiter_state == 2);
-    CHECK(!g_violation);                                                              // the destroy waited for the flush (and under ASan: no use after free)
-
-    // ---- B: a game thread submits while the GPU state is destroyed (vkDeviceWaitIdle in the mock sleeps 200 ms)
-    g_destroy_done = false;
-    CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
-    for (int i = 0; i < 80; ++i) present_frame(25'000);
-    g_probe = true;
-    std::thread submitter([&] { while (!g_go) usleep(100); (void)qs(q, 0, nullptr, VK_NULL_HANDLE); });
-    dsc(e.dev, sc, nullptr);
-    submitter.join();
-    g_probe = false;
-    CHECK(!g_overlap);                                                                // the submit waited for vkDeviceWaitIdle
+    TestFenceFlushDuringDestroy(e, sci, sc, last_fence, present_frame, csc, dsc, wf);
+    TestSubmitDuringDestroy(e, sci, sc, q, present_frame, csc, dsc, qs);
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
     for (Fake* f : g_cbs) delete f;                                                   // the mock allocated the layer's command buffer handles
     g_cbs.clear();

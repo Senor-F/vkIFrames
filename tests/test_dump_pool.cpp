@@ -58,6 +58,51 @@ static void Reset(int fail_call, int fail_after, long budget_mb) {
 }
 static bool Clean() { return f_bufs.empty() && f_mems.empty() && f_mapped.empty() && f_store.empty(); }
 
+// success: 30 + 4 + 10 buffers, all mapped, layout accessors, then freed
+static void TestSuccess(DeviceDispatch& dt, const DumpLayout& l) {
+        Reset(-1, 0, -1); f_cached = true;
+        DumpPool p;
+        CHECK(p.Create(dt, l, 30) && p.ready && p.frames == 30 && p.bufs.size() == 44);
+        CHECK(&p.B() == &p.bufs[30] && &p.Mask() == &p.bufs[33] && &p.Synth(9) == &p.bufs[43]);
+        CHECK(p.A(0).ptr && p.Mask().bytes == 50 && p.A(29).bytes == 1000);
+        p.Destroy(dt); CHECK(Clean() && !p.ready);
+        p.Destroy(dt);                                       // twice is safe
+}
+
+// each kind of call failing at several points: 30 frames fail, the pool falls back to 15 frames and the failed attempt is fully freed
+static void TestFailAtEveryStep(DeviceDispatch& dt, const DumpLayout& l) {
+    for (int kind = 0; kind < 4; ++kind) for (int after : {0, 1, 17, 43}) {
+        Reset(kind, after, -1); DumpPool p;
+        const bool ok = p.Create(dt, l, 30);
+        // the failing kind keeps failing after `after` successes, in every attempt: so no size can succeed unless it needs fewer than `after` calls
+        if (ok) { CHECK(p.frames < 30); p.Destroy(dt); }
+        CHECK(Clean());
+    }
+}
+
+// memory runs out: 44 buffers need 44 MiB, 29 MiB fit 15 frames (15+4+10 = 29)
+static void TestMemoryRunsOut(DeviceDispatch& dt, const DumpLayout& l) {
+        Reset(-1, 0, 29); f_cached = false; DumpPool p;
+        CHECK(p.Create(dt, l, 30) && p.frames == 15 && p.bufs.size() == 29);
+        p.Destroy(dt); CHECK(Clean());
+}
+
+// not even 5 frames: 19 MiB needed, 18 available
+static void TestTooLittleMemory(DeviceDispatch& dt, const DumpLayout& l) {
+        Reset(-1, 0, 18); DumpPool p;
+        CHECK(!p.Create(dt, l, 30) && !p.ready && p.bufs.empty() && Clean());
+}
+
+// a missing function: off, no crash
+static void TestMissingFunction(InstanceDispatch& inst, const DumpLayout& l) {
+        DeviceDispatch d2; d2.instance = &inst; DumpPool p; CHECK(!p.Create(d2, l, 30));
+}
+
+// the window never goes below 5 even if asked for less
+static void TestMinimumWindow(DeviceDispatch& dt, const DumpLayout& l) {
+        Reset(-1, 0, -1); DumpPool p; CHECK(p.Create(dt, l, 2) && p.frames == 5); p.Destroy(dt); CHECK(Clean());
+}
+
 int main() {
     InstanceDispatch inst; inst.GetPhysicalDeviceMemoryProperties = F_MemProps;
     DeviceDispatch dt;
@@ -67,38 +112,12 @@ int main() {
     std::freopen("/dev/null", "w", stderr);
     DumpLayout l; l.a_bytes = 1000; l.b_bytes = 1000; l.fwd_bytes = l.bwd_bytes = 100; l.mask_bytes = 50; l.synth = 10;
 
-    {   // success: 30 + 4 + 10 buffers, all mapped, layout accessors, then freed
-        Reset(-1, 0, -1); f_cached = true;
-        DumpPool p;
-        CHECK(p.Create(dt, l, 30) && p.ready && p.frames == 30 && p.bufs.size() == 44);
-        CHECK(&p.B() == &p.bufs[30] && &p.Mask() == &p.bufs[33] && &p.Synth(9) == &p.bufs[43]);
-        CHECK(p.A(0).ptr && p.Mask().bytes == 50 && p.A(29).bytes == 1000);
-        p.Destroy(dt); CHECK(Clean() && !p.ready);
-        p.Destroy(dt);                                       // twice is safe
-    }
-    // each kind of call failing at several points: 30 frames fail, the pool falls back to 15 frames and the failed attempt is fully freed
-    for (int kind = 0; kind < 4; ++kind) for (int after : {0, 1, 17, 43}) {
-        Reset(kind, after, -1); DumpPool p;
-        const bool ok = p.Create(dt, l, 30);
-        // the failing kind keeps failing after `after` successes, in every attempt: so no size can succeed unless it needs fewer than `after` calls
-        if (ok) { CHECK(p.frames < 30); p.Destroy(dt); }
-        CHECK(Clean());
-    }
-    {   // memory runs out: 44 buffers need 44 MiB, 29 MiB fit 15 frames (15+4+10 = 29)
-        Reset(-1, 0, 29); f_cached = false; DumpPool p;
-        CHECK(p.Create(dt, l, 30) && p.frames == 15 && p.bufs.size() == 29);
-        p.Destroy(dt); CHECK(Clean());
-    }
-    {   // not even 5 frames: 19 MiB needed, 18 available
-        Reset(-1, 0, 18); DumpPool p;
-        CHECK(!p.Create(dt, l, 30) && !p.ready && p.bufs.empty() && Clean());
-    }
-    {   // a missing function: off, no crash
-        DeviceDispatch d2; d2.instance = &inst; DumpPool p; CHECK(!p.Create(d2, l, 30));
-    }
-    {   // the window never goes below 5 even if asked for less
-        Reset(-1, 0, -1); DumpPool p; CHECK(p.Create(dt, l, 2) && p.frames == 5); p.Destroy(dt); CHECK(Clean());
-    }
+    TestSuccess(dt, l);
+    TestFailAtEveryStep(dt, l);
+    TestMemoryRunsOut(dt, l);
+    TestTooLittleMemory(dt, l);
+    TestMissingFunction(inst, l);
+    TestMinimumWindow(dt, l);
     std::printf(g_fail ? "FAILED\n" : "dump pool: ok\n");
     return g_fail ? 1 : 0;
 }

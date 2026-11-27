@@ -1,3 +1,4 @@
+// VK_EXT_present_timing: time domains, past presentation timings, refresh duration.
 #include "present_timing.hpp"
 #include "live_config.hpp"
 

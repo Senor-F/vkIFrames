@@ -232,26 +232,16 @@ static Env Bring(void* lib, bool loader_callback = true) {
 static std::string Slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream s; s << f.rdbuf(); return s.str(); }
 static double Field(const std::string& line, const char* key) { const size_t p = line.find(key); return p == std::string::npos ? -1.0 : std::atof(line.c_str() + p + std::strlen(key)); }
 
-int main(int, char** argv) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const bool early = std::string(argv[2]) == "early", frames_mode = std::string(argv[2]) == "frames";   // frames: late mode with VKIFRAME_STATS_FRAMES=1
-    ClearFramegenEnv();
-    char dir[] = "/tmp/vkicapstats_XXXXXX"; if (!mkdtemp(dir)) return 2;
+static void SetupEnv(const char* dir, bool early, bool frames_mode) {
     setenv("VKIFRAME_LOG_FILE", (std::string(dir) + "/layer.log").c_str(), 1);
     setenv("XDG_CONFIG_HOME", dir, 1);
     setenv("VKIFRAME_STATS", "1", 1);
     setenv("VKIFRAME_BASE_FPS_CAP", "30", 1);
     if (early) setenv("VKIFRAME_CAP_EARLY", "1", 1);
     if (frames_mode) setenv("VKIFRAME_STATS_FRAMES", "1", 1);
-    g_main_thread = pthread_self();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
-    Env e = Bring(lib);
-    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
-    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
-    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    VkSwapchainKHR sc{}; CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+}
+
+static void PresentFrames(PFN_vkQueuePresentKHR qp, VkQueue q, VkSwapchainKHR& sc) {
     uint32_t frame = 0;
     for (int i = 0; i < 100; ++i) {                              // about 3.3 s at 30 fps
         usleep(3000);                                            // the game's render time
@@ -260,9 +250,9 @@ int main(int, char** argv) {
         VkResult res = VK_NOT_READY; pi.pResults = &res;
         CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
     }
-    const std::string stats = Slurp(std::string(dir) + "/vkiframes/stats.jsonl");
-    CHECK(!stats.empty());
-    int rows = 0, good = 0;
+}
+
+static void ScanStats(const std::string& stats, bool early, int& rows, int& good) {
     for (size_t pos = 0; pos < stats.size();) {
         size_t nl = stats.find('\n', pos); if (nl == std::string::npos) nl = stats.size();
         const std::string line = stats.substr(pos, nl - pos); pos = nl + 1;
@@ -272,6 +262,9 @@ int main(int, char** argv) {
         CHECK(long(pid) == long(getpid()));                                           // every row names its process
         if (early ? (hold > 20.0 && hold < 34.0 && wait == 0.0) : (wait > 20.0 && wait < 34.0 && hold == 0.0)) ++good;
     }
+}
+
+static void CheckFramesFile(const char* dir, const std::string& stats, bool frames_mode) {
     if (frames_mode) {
         const std::string fr = Slurp(std::string(dir) + "/vkiframes/stats-frames.jsonl");
         int lines = 0, okl = 0;
@@ -290,6 +283,29 @@ int main(int, char** argv) {
     } else {
         CHECK(Slurp(std::string(dir) + "/vkiframes/stats-frames.jsonl").empty());       // off unless asked for
     }
+}
+
+int main(int, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const bool early = std::string(argv[2]) == "early", frames_mode = std::string(argv[2]) == "frames";   // frames: late mode with VKIFRAME_STATS_FRAMES=1
+    ClearFramegenEnv();
+    char dir[] = "/tmp/vkicapstats_XXXXXX"; if (!mkdtemp(dir)) return 2;
+    SetupEnv(dir, early, frames_mode);
+    g_main_thread = pthread_self();
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Env e = Bring(lib);
+    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
+    auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+    sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    VkSwapchainKHR sc{}; CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    PresentFrames(qp, q, sc);
+    const std::string stats = Slurp(std::string(dir) + "/vkiframes/stats.jsonl");
+    CHECK(!stats.empty());
+    int rows = 0, good = 0;
+    ScanStats(stats, early, rows, good);
+    CheckFramesFile(dir, stats, frames_mode);
     CHECK(rows >= 2 && good >= 1);                                                    // the full seconds show the sleep of the mode in use, and only that one
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
