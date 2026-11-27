@@ -190,16 +190,11 @@ static Env Bring(void* lib, bool loader_callback = true) {
 // Swapchain capacity for synthetic frames: C = min(limit, max(MAX_SYNTHETIC at start, 4)); the swapchain is asked for app_min + C + 2 images; what the driver
 // grants limits C further (C_eff = granted - app_min - 2); EXPERIMENTAL only raises the ceiling. argv[2] names the scenario.
 static std::string Slurp(const std::string& p) { std::ifstream f(p); std::stringstream s; s << f.rdbuf(); return s.str(); }
-int main(int, char** argv) {
-    ClearFramegenEnv();
-    const std::string sc_name = argv[2];
-    char dir[] = "/tmp/vkicap_XXXXXX"; if (!mkdtemp(dir)) return 2;
-    const std::string conf = std::string(dir) + "/live.conf", logf = std::string(dir) + "/live.log";
-    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1); setenv("VKIFRAME_LIVE_LOG", logf.c_str(), 1); setenv("XDG_CONFIG_HOME", dir, 1);
-    auto wconf = [&](const std::string& t) { std::ofstream f(conf, std::ios::trunc); f << t; };
-    struct Sc { const char* name; int env_max; bool env_exp; const char* conf; uint32_t surface_max; uint32_t want_images; int want_cap; };
+struct Sc { const char* name; int env_max; bool env_exp; const char* conf; uint32_t surface_max; uint32_t want_images; int want_cap; };
+struct Game { Env e; VkQueue q; VkSwapchainCreateInfoKHR sci; VkSwapchainKHR swc; };
+static const Sc* find_scenario(const std::string& sc_name) {
     // want_images is what the layer asks for with the app's 3 (3 + C + 2), then limited by the surface; want_cap is C_eff
-    const Sc table[] = {
+    static const Sc table[] = {
         {"default",          0, false, "",                                        0, 9,  4},     // C = 4: unchanged
         {"exp3",             3, true,  "",                                        0, 9,  4},     // EXPERIMENTAL with MAX_SYNTHETIC 3: no extra images
         {"exp4",             4, true,  "",                                        0, 9,  4},
@@ -215,8 +210,10 @@ int main(int, char** argv) {
         {"max6_default",     0, false, "",                                        6, 6,  1},
     };
     const Sc* sc = nullptr; for (const Sc& t : table) if (sc_name == t.name) sc = &t;
-    const bool flow_test = sc_name == "flow_full" || sc_name == "flow_small";
-    if (!sc && !flow_test) { std::printf("unknown scenario %s\n", sc_name.c_str()); return 2; }
+    return sc;
+}
+static void apply_scenario(const Sc* sc, const std::string& sc_name, const std::string& conf) {
+    auto wconf = [&](const std::string& t) { std::ofstream f(conf, std::ios::trunc); f << t; };
     if (sc) {
         if (sc->env_max) setenv("VKIFRAME_MAX_SYNTHETIC", std::to_string(sc->env_max).c_str(), 1);
         if (sc->env_exp) setenv("VKIFRAME_EXPERIMENTAL", "1", 1);
@@ -226,46 +223,51 @@ int main(int, char** argv) {
         setenv("VKIFRAME_TARGET_FPS", "160", 1); setenv("VKIFRAME_BASE_FPS_CAP", "0", 1);      // 40 fps source against 160: four synthetic frames are wanted
         k_surface_max = sc_name == "flow_small" ? 6 : 0;                                       // 6 images: capacity 1
     }
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+}
+static Game open_game(void* lib) {
     Env e = Bring(lib);
     VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
     auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
     sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; VkSwapchainKHR swc{};
     CHECK(csc(e.dev, &sci, nullptr, &swc) == VK_SUCCESS);
-    std::fflush(nullptr);
-    const std::string log = Slurp(logf);
-    if (sc) {
-        CHECK(r_min_images == (sc->want_cap == 0 ? 3u : sc->want_images));
-        if (sc->want_cap == 0) {
-            // pass-through: the swapchain was made once with the layer's extras, found too small for a synthetic frame, and made again exactly as the game asked
-            // (3 images, its usage, flags and present mode), with the first one as oldSwapchain; the first was destroyed and the game got the second
-            CHECK(r_creates == 2 && r_min_images == 3 && r_usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT && r_flags_last == 0 && r_mode_last == sci.presentMode);
-            CHECK(r_old_last == (VkSwapchainKHR)(uintptr_t)(0x77 + 1) && r_destroyed_sc.size() == 1 && r_destroyed_sc[0] == r_old_last);
-            CHECK(swc == (VkSwapchainKHR)(uintptr_t)(0x77 + 2));                                                                      // pass-through: no capacity line, holding off, every present forwarded as it is
-            CHECK(log.find("frame holding is off for this swapchain") != std::string::npos);
-            CHECK(log.find("capacity ") == std::string::npos);
-            auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
-            for (uint32_t f = 0; f < 40; ++f) {
-                usleep(10'000);
-                VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + f); uint32_t idx = f % 4;
-                VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &swc; pi.pImageIndices = &idx;
-                VkResult res = VK_NOT_READY; pi.pResults = &res; CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
-            }
-            usleep(200'000);
-            CHECK(r_presents.size() == 40);                                                           // one present per game frame, no synthetic frame
-            for (size_t i = 0; i < r_presents.size(); ++i) CHECK(r_presents[i].image == uint32_t(i % 4));   // the game's own image indices
-            std::printf("capacity %s: ok (pass-through, %zu presents for 40 game frames)\n", sc->name, r_presents.size());
-            std::string c0 = std::string("rm -rf ") + dir; if (std::system(c0.c_str()) != 0) (void)0;
-            return 0;
-        }
-        char want[80]; std::snprintf(want, sizeof want, "capacity %d", sc->want_cap);
-        CHECK(log.find(want) != std::string::npos);
-        CHECK((log.find("fewer than wanted") != std::string::npos) == (sc->surface_max != 0));        // only a surface that limits the image count makes the capacity smaller than wanted
-        std::printf("capacity %s: ok (minImageCount asked %u, %s)\n", sc->name, r_min_images, want);
-        std::string cmd = std::string("rm -rf ") + dir; if (std::system(cmd.c_str()) != 0) (void)0;
-        return 0;
+    return {e, q, sci, swc};
+}
+static int test_passthrough(const Sc* sc, Game& g, const std::string& log, const char* dir) {
+    auto& [e, q, sci, swc] = g;
+    // pass-through: the swapchain was made once with the layer's extras, found too small for a synthetic frame, and made again exactly as the game asked
+    // (3 images, its usage, flags and present mode), with the first one as oldSwapchain; the first was destroyed and the game got the second
+    CHECK(r_creates == 2 && r_min_images == 3 && r_usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT && r_flags_last == 0 && r_mode_last == sci.presentMode);
+    CHECK(r_old_last == (VkSwapchainKHR)(uintptr_t)(0x77 + 1) && r_destroyed_sc.size() == 1 && r_destroyed_sc[0] == r_old_last);
+    CHECK(swc == (VkSwapchainKHR)(uintptr_t)(0x77 + 2));                                                                      // pass-through: no capacity line, holding off, every present forwarded as it is
+    CHECK(log.find("frame holding is off for this swapchain") != std::string::npos);
+    CHECK(log.find("capacity ") == std::string::npos);
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
+    for (uint32_t f = 0; f < 40; ++f) {
+        usleep(10'000);
+        VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + f); uint32_t idx = f % 4;
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &game_sem; pi.swapchainCount = 1; pi.pSwapchains = &swc; pi.pImageIndices = &idx;
+        VkResult res = VK_NOT_READY; pi.pResults = &res; CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
     }
+    usleep(200'000);
+    CHECK(r_presents.size() == 40);                                                           // one present per game frame, no synthetic frame
+    for (size_t i = 0; i < r_presents.size(); ++i) CHECK(r_presents[i].image == uint32_t(i % 4));   // the game's own image indices
+    std::printf("capacity %s: ok (pass-through, %zu presents for 40 game frames)\n", sc->name, r_presents.size());
+    std::string c0 = std::string("rm -rf ") + dir; if (std::system(c0.c_str()) != 0) (void)0;
+    return 0;
+}
+static int test_scenario(const Sc* sc, Game& g, const std::string& log, const char* dir) {
+    CHECK(r_min_images == (sc->want_cap == 0 ? 3u : sc->want_images));
+    if (sc->want_cap == 0) return test_passthrough(sc, g, log, dir);
+    char want[80]; std::snprintf(want, sizeof want, "capacity %d", sc->want_cap);
+    CHECK(log.find(want) != std::string::npos);
+    CHECK((log.find("fewer than wanted") != std::string::npos) == (sc->surface_max != 0));        // only a surface that limits the image count makes the capacity smaller than wanted
+    std::printf("capacity %s: ok (minImageCount asked %u, %s)\n", sc->name, r_min_images, want);
+    std::string cmd = std::string("rm -rf ") + dir; if (std::system(cmd.c_str()) != 0) (void)0;
+    return 0;
+}
+static int test_flow(const std::string& sc_name, Game& g, const char* dir) {
+    auto& [e, q, sci, swc] = g;
     // flow: how many frames are shown per game frame with the capacity the swapchain has
     auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
     uint32_t frame = 0;
@@ -284,4 +286,21 @@ int main(int, char** argv) {
     else CHECK(per_native > 2.6);                                                         // capacity 3 or 4: the wanted three synthetic frames show up
     std::string cmd = std::string("rm -rf ") + dir; if (std::system(cmd.c_str()) != 0) return 1;
     return 0;
+}
+int main(int, char** argv) {
+    ClearFramegenEnv();
+    const std::string sc_name = argv[2];
+    char dir[] = "/tmp/vkicap_XXXXXX"; if (!mkdtemp(dir)) return 2;
+    const std::string conf = std::string(dir) + "/live.conf", logf = std::string(dir) + "/live.log";
+    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1); setenv("VKIFRAME_LIVE_LOG", logf.c_str(), 1); setenv("XDG_CONFIG_HOME", dir, 1);
+    const Sc* sc = find_scenario(sc_name);
+    const bool flow_test = sc_name == "flow_full" || sc_name == "flow_small";
+    if (!sc && !flow_test) { std::printf("unknown scenario %s\n", sc_name.c_str()); return 2; }
+    apply_scenario(sc, sc_name, conf);
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Game g = open_game(lib);
+    std::fflush(nullptr);
+    const std::string log = Slurp(logf);
+    if (sc) return test_scenario(sc, g, log, dir);
+    return test_flow(sc_name, g, dir);
 }
