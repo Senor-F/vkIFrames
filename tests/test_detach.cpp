@@ -183,6 +183,39 @@ static Env Bring(void* lib, bool loader_callback = true) {
     return e;
 }
 
+// Warm-up: the gate opens and the presenter thread is working; the next present will block it
+template <class F> static void TestWarmUp(F& present_frame) {
+    for (int i = 0; i < 80; ++i) present_frame(25'000);                              // the gate opens, the presenter thread is working
+    CHECK(r_dispatches > 10);
+    g_block_present = true;
+}
+// A helper thread presents one more frame; the presenter thread blocks in it
+template <class F> static std::thread TestBlockPresenter(F& present_frame) {
+    // one more frame, from a helper thread (the game thread's present waits for the presenter): its ticks reach the presenter thread,
+    // which blocks in the first present of them
+    std::thread game([&] { g_game_thread = pthread_self(); g_game_set = true; present_frame(25'000); });
+    for (int i = 0; i < 300 && !g_blocked; ++i) usleep(10'000);
+    CHECK(g_blocked == 1);                                                            // the presenter thread is inside vkQueuePresentKHR
+    return game;
+}
+// Destroying the swapchain and the device while the presenter thread is stuck
+static void TestDestroyWhileStuck(const Env& e, VkSwapchainKHR sc) {
+    const auto t0 = std::chrono::steady_clock::now();
+    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
+    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("vkDestroySwapchainKHR returned after %.2f s with the presenter thread stuck\n", waited);
+    CHECK(waited > 2.5 && waited < 4.5);                                              // it waited 3 s for the thread, then detached it
+    CHECK(g_blocked == 1);
+    ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);        // the stuck thread holds the queue mutex: the queue infos must stay allocated
+}
+// The stuck thread wakes up and runs on live objects
+static void TestStuckThreadWakes(std::thread& game) {
+    sleep(6);                                                                         // the thread wakes up and runs on (under ASan: no use after free)
+    CHECK(g_blocked == 2);
+    game.join();
+    std::printf("PASS: a detached presenter thread keeps running on live objects\n");
+}
+
 int main(int, char** argv) {
     ClearFramegenEnv();
     g_main_thread = pthread_self();
@@ -205,23 +238,8 @@ int main(int, char** argv) {
         CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
     };
 
-    for (int i = 0; i < 80; ++i) present_frame(25'000);                              // the gate opens, the presenter thread is working
-    CHECK(r_dispatches > 10);
-    g_block_present = true;
-    // one more frame, from a helper thread (the game thread's present waits for the presenter): its ticks reach the presenter thread,
-    // which blocks in the first present of them
-    std::thread game([&] { g_game_thread = pthread_self(); g_game_set = true; present_frame(25'000); });
-    for (int i = 0; i < 300 && !g_blocked; ++i) usleep(10'000);
-    CHECK(g_blocked == 1);                                                            // the presenter thread is inside vkQueuePresentKHR
-    const auto t0 = std::chrono::steady_clock::now();
-    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
-    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("vkDestroySwapchainKHR returned after %.2f s with the presenter thread stuck\n", waited);
-    CHECK(waited > 2.5 && waited < 4.5);                                              // it waited 3 s for the thread, then detached it
-    CHECK(g_blocked == 1);
-    ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);        // the stuck thread holds the queue mutex: the queue infos must stay allocated
-    sleep(6);                                                                         // the thread wakes up and runs on (under ASan: no use after free)
-    CHECK(g_blocked == 2);
-    game.join();
-    std::printf("PASS: a detached presenter thread keeps running on live objects\n");
+    TestWarmUp(present_frame);
+    std::thread game = TestBlockPresenter(present_frame);
+    TestDestroyWhileStuck(e, sc);
+    TestStuckThreadWakes(game);
 }
