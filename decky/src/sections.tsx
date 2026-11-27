@@ -1,5 +1,6 @@
 // Panel sections: the types and the plain functions that build the JSX of the quick-access panel (no hooks).
-import { ButtonItem, Focusable, PanelSection, PanelSectionRow } from "@decky/ui";
+import type { Dispatch, ReactElement, SetStateAction } from "react";
+import { ButtonItem, Focusable, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
 
 export type Term = { key: string; eq: number };
 export type SchemaItem = {
@@ -183,6 +184,145 @@ export function renderLogSection(log: string[]) {
         </div>
       </PanelSectionRow>
       <EndMarker text="End of change log" />
+    </PanelSection>
+  );
+}
+
+// Section: the main settings and the fine-steps switch.
+export function renderMainSection(schema: SchemaItem[], fine: boolean, setFine: (on: boolean) => void, renderItem: (item: SchemaItem) => ReactElement) {
+  return (
+    <PanelSection title="Main settings (applies while playing)">
+      <PanelSectionRow>
+        <ToggleField
+          label="Fine slider steps"
+          checked={fine}
+          onChange={(on: boolean) => setFine(on)}
+          description={
+            <div style={{ fontSize: 11, opacity: 0.75 }}>
+              Smaller slider steps. With a slider selected, the button named at the bottom of the screen switches it too.
+            </div>
+          }
+        />
+      </PanelSectionRow>
+      {schema.filter((i) => i.group === "main").map(renderItem)}
+    </PanelSection>
+  );
+}
+
+// The "needs restart" notice between the live and the restart-only settings.
+export function renderRestartNotice() {
+  return (
+    <PanelSectionRow>
+      <div style={{ marginTop: 12, padding: "6px 8px", borderLeft: "3px solid #e8a33d", background: "rgba(232, 163, 61, 0.12)" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>⚠ NEEDS RESTART</div>
+        <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.3 }}>
+          Read only when a game starts. Change them, then restart the game.
+        </div>
+      </div>
+    </PanelSectionRow>
+  );
+}
+
+// Section: the more settings, folded away until opened.
+export function renderMoreSection(schema: SchemaItem[], showMore: boolean, setShowMore: Dispatch<SetStateAction<boolean>>, renderItem: (item: SchemaItem) => ReactElement, onReset: () => void) {
+  return (
+    <PanelSection title="More settings">
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => setShowMore((v) => !v)}>
+          {showMore ? "▾ Hide more settings" : "▸ Show more settings"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {showMore && (
+        <>
+          <PanelSectionRow>
+            <div style={{ fontSize: 11, opacity: 0.85 }}>
+              Untested: these can add latency, glitches or crashes. They can only be changed while Experimental is on.
+            </div>
+          </PanelSectionRow>
+          {schema.filter((i) => i.group === "gate").map(renderItem)}
+          {schema.filter((i) => i.group === "more" && (i.needsLayer ?? "live") === "live").map(renderItem)}
+          {renderRestartNotice()}
+          {schema.filter((i) => i.group === "more" && i.needsLayer === "restart").map(renderItem)}
+        </>
+      )}
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={onReset}>
+          Reset all to defaults
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+}
+
+// Section: shown while frame generation is off.
+export function renderSettingsOff(onReset: () => void) {
+  return (
+    <PanelSection title="Settings">
+      <PanelSectionRow>
+        <div style={{ fontSize: 11, opacity: 0.75 }}>Turn Frame generation on to see the settings.</div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={onReset}>
+          Reset all to defaults
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+}
+
+// The two-step uninstall rows: ask first, then confirm or cancel.
+export function renderUninstallRows(confirmUninstall: boolean, setConfirmUninstall: (on: boolean) => void, onUninstall: () => void) {
+  return confirmUninstall ? (
+    <>
+      <PanelSectionRow>
+        <div style={{ fontSize: 12, fontWeight: 600 }}>Remove the layer? Games run without frame generation until you install it again.</div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => { setConfirmUninstall(false); onUninstall(); }}>
+          Yes, uninstall the layer
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => setConfirmUninstall(false)}>
+          Cancel
+        </ButtonItem>
+      </PanelSectionRow>
+    </>
+  ) : (
+    <PanelSectionRow>
+      <ButtonItem layout="below" onClick={() => setConfirmUninstall(true)}>
+        Uninstall layer…
+      </ButtonItem>
+    </PanelSectionRow>
+  );
+}
+
+// Section: reinstall and uninstall of the layer.
+export function renderMaintenance(layer: LayerInfo, confirmUninstall: boolean, setConfirmUninstall: (on: boolean) => void, onReinstall: () => void, onUninstall: () => void) {
+  return (
+    <PanelSection title="Layer maintenance">
+      <PanelSectionRow>
+        <div style={{ fontSize: 11, opacity: 0.75 }}>
+          Reinstall copies this plugin's layer over the installed one (after a plugin update). Uninstall removes the layer; games run without it until you install it again.
+        </div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          disabled={!layer.bundled_available}
+          onClick={onReinstall}
+        >
+          Reinstall layer
+        </ButtonItem>
+      </PanelSectionRow>
+      {!layer.bundled_available && (
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.7 }}>
+            No library in the plugin's bin/ folder, so it cannot be reinstalled (scripts/link-build.sh points at a local build).
+          </div>
+        </PanelSectionRow>
+      )}
+      {renderUninstallRows(confirmUninstall, setConfirmUninstall, onUninstall)}
     </PanelSection>
   );
 }

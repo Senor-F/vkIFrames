@@ -1,6 +1,5 @@
 // Quick-access panel UI (React).
 import {
-  ButtonItem,
   PanelSection,
   PanelSectionRow,
   SliderField,
@@ -10,7 +9,7 @@ import {
 import { callable, definePlugin, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { FaFilm } from "react-icons/fa";
-import { Gap, describeValue, renderBenchSection, renderLaunchSection, renderLogSection, renderStatusSection } from "./sections";
+import { Gap, describeValue, renderBenchSection, renderLaunchSection, renderLogSection, renderMainSection, renderMaintenance, renderMoreSection, renderSettingsOff, renderStatusSection } from "./sections";
 import type { LayerInfo, SchemaItem, State } from "./sections";
 
 const getState = callable<[], State>("get_state");
@@ -196,69 +195,15 @@ function Content() {
       {values.ENABLED ? (
         <>
           <Gap />
-          <PanelSection title="Main settings (applies while playing)">
-            <PanelSectionRow>
-              <ToggleField
-                label="Fine slider steps"
-                checked={fine}
-                onChange={(on: boolean) => setFine(on)}
-                description={
-                  <div style={{ fontSize: 11, opacity: 0.75 }}>
-                    Smaller slider steps. With a slider selected, the button named at the bottom of the screen switches it too.
-                  </div>
-                }
-              />
-            </PanelSectionRow>
-            {schema.filter((i) => i.group === "main").map(renderItem)}
-          </PanelSection>
+          {renderMainSection(schema, fine, setFine, renderItem)}
 
           <Gap />
-          <PanelSection title="More settings">
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => setShowMore((v) => !v)}>
-                {showMore ? "▾ Hide more settings" : "▸ Show more settings"}
-              </ButtonItem>
-            </PanelSectionRow>
-            {showMore && (
-              <>
-                <PanelSectionRow>
-                  <div style={{ fontSize: 11, opacity: 0.85 }}>
-                    Untested: these can add latency, glitches or crashes. They can only be changed while Experimental is on.
-                  </div>
-                </PanelSectionRow>
-                {schema.filter((i) => i.group === "gate").map(renderItem)}
-                {schema.filter((i) => i.group === "more" && (i.needsLayer ?? "live") === "live").map(renderItem)}
-                <PanelSectionRow>
-                  <div style={{ marginTop: 12, padding: "6px 8px", borderLeft: "3px solid #e8a33d", background: "rgba(232, 163, 61, 0.12)" }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>⚠ NEEDS RESTART</div>
-                    <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.3 }}>
-                      Read only when a game starts. Change them, then restart the game.
-                    </div>
-                  </div>
-                </PanelSectionRow>
-                {schema.filter((i) => i.group === "more" && i.needsLayer === "restart").map(renderItem)}
-              </>
-            )}
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => act(() => resetValues(), "Defaults restored")}>
-                Reset all to defaults
-              </ButtonItem>
-            </PanelSectionRow>
-          </PanelSection>
+          {renderMoreSection(schema, showMore, setShowMore, renderItem, () => act(() => resetValues(), "Defaults restored"))}
         </>
       ) : (
         <>
           <Gap />
-          <PanelSection title="Settings">
-            <PanelSectionRow>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>Turn Frame generation on to see the settings.</div>
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => act(() => resetValues(), "Defaults restored")}>
-                Reset all to defaults
-              </ButtonItem>
-            </PanelSectionRow>
-          </PanelSection>
+          {renderSettingsOff(() => act(() => resetValues(), "Defaults restored"))}
         </>
       )}
       <Gap />
@@ -271,52 +216,7 @@ function Content() {
       {layer.installed && (
         <>
           <Gap />
-          <PanelSection title="Layer maintenance">
-            <PanelSectionRow>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>
-                Reinstall copies this plugin's layer over the installed one (after a plugin update). Uninstall removes the layer; games run without it until you install it again.
-              </div>
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <ButtonItem
-                layout="below"
-                disabled={!layer.bundled_available}
-                onClick={() => act(() => installLayer(""), "Layer reinstalled")}
-              >
-                Reinstall layer
-              </ButtonItem>
-            </PanelSectionRow>
-            {!layer.bundled_available && (
-              <PanelSectionRow>
-                <div style={{ fontSize: 11, opacity: 0.7 }}>
-                  No library in the plugin's bin/ folder, so it cannot be reinstalled (scripts/link-build.sh points at a local build).
-                </div>
-              </PanelSectionRow>
-            )}
-            {confirmUninstall ? (
-              <>
-                <PanelSectionRow>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>Remove the layer? Games run without frame generation until you install it again.</div>
-                </PanelSectionRow>
-                <PanelSectionRow>
-                  <ButtonItem layout="below" onClick={() => { setConfirmUninstall(false); act(() => uninstallLayer(), "Layer removed"); }}>
-                    Yes, uninstall the layer
-                  </ButtonItem>
-                </PanelSectionRow>
-                <PanelSectionRow>
-                  <ButtonItem layout="below" onClick={() => setConfirmUninstall(false)}>
-                    Cancel
-                  </ButtonItem>
-                </PanelSectionRow>
-              </>
-            ) : (
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => setConfirmUninstall(true)}>
-                  Uninstall layer…
-                </ButtonItem>
-              </PanelSectionRow>
-            )}
-          </PanelSection>
+          {renderMaintenance(layer, confirmUninstall, setConfirmUninstall, () => act(() => installLayer(""), "Layer reinstalled"), () => act(() => uninstallLayer(), "Layer removed"))}
         </>
       )}
     </>
