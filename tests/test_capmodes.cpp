@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <functional>
 #include <algorithm>
 #include <unistd.h>
 #include <fstream>
@@ -242,21 +243,30 @@ static Env Bring(void* lib, bool loader_callback = true) {
 
 
 
-int main(int, char** argv) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const std::string mode = argv[2]; const double cap = std::atof(argv[3]); const bool tolerant = argv[4] && std::string(argv[4]) == "tolerant";
-    const double slot = 1000.0 / cap, tol = tolerant ? 4.0 : 1.5;
-    ClearFramegenEnv();
-    char dir[] = "/tmp/vkicapmodes_XXXXXX"; if (!mkdtemp(dir)) return 2;
+// Shared state of one run: the settings from the command line, the swapchain and the scenario helpers (defined in RunScenarios)
+struct Ctx {
+    std::string mode; double cap = 0, slot = 0, tol = 0; bool tolerant = false, late = false;
+    std::string live_conf; Env e{}; VkQueue q{}; VkSwapchainKHR sc{}; PFN_vkQueuePresentKHR qp = nullptr;
+    std::function<std::vector<double>(const std::vector<double>&, size_t)> run;
+    std::function<double(const std::vector<double>&)> mean, vmax;
+    std::function<double(std::vector<double>)> vmax2;
+};
+
+// the temp dir, the config and the environment variables of the run; false when the temp dir cannot be made
+static bool SetupEnv(char** argv, const std::string& mode, std::string& out_live_conf) {
+    char dir[] = "/tmp/vkicapmodes_XXXXXX"; if (!mkdtemp(dir)) return false;
     setenv("VKIFRAME_LOG_FILE", (std::string(dir) + "/layer.log").c_str(), 1);
     setenv("XDG_CONFIG_HOME", dir, 1);
-    const std::string live_conf = std::string(dir) + "/live.conf";
+    const std::string live_conf = std::string(dir) + "/live.conf"; out_live_conf = live_conf;
     setenv("VKIFRAME_LIVE_CONF", live_conf.c_str(), 1);
     setenv("VKIFRAME_TARGET_FPS", "10", 1);                      // below the game's slowest rate here (about 26 fps): the gate stays in bypass, the game's present goes straight to the driver
     setenv("VKIFRAME_BASE_FPS_CAP", argv[3], 1);
     setenv("VKIFRAME_CAP_MODE", mode.c_str(), 1);
-    g_main_thread = pthread_self();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    return true;
+}
+
+// the layer's device and swapchain on the mock driver
+static void SetupSwapchain(Ctx& c, void* lib) {
     Env e = Bring(lib);
     VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
     auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
@@ -264,6 +274,74 @@ int main(int, char** argv) {
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
     sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkSwapchainKHR sc{}; CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    c.e = e; c.q = q; c.sc = sc; c.qp = qp;
+}
+
+// startup: the first frames of the process, then the steady run
+static void TestStartupSteady(Ctx& c) {
+    const std::string& mode = c.mode; const double cap = c.cap, slot = c.slot, tol = c.tol; auto& run = c.run; auto& mean = c.mean; auto& vmax = c.vmax;
+    auto first = run(std::vector<double>(50, 3.0), 0);                              // the very first frames of the process
+    std::printf("%s cap %.0f startup:   %.2f %.2f %.2f\n", mode.c_str(), cap, first[0], first[1], first[2]);
+    for (int i = 0; i < 3; ++i) CHECK(first[i] <= slot + 3.0 + tol && first[i] >= 2.5);   // no stall at startup (the late mode sleeps one slot after the first present; the early mode may come early)
+    auto steady = std::vector<double>(first.begin() + 12, first.end());
+    std::printf("%s cap %.0f steady:    mean %.2f max %.2f (slot %.2f)\n", mode.c_str(), cap, mean(steady), vmax(steady), slot);
+    CHECK(std::fabs(mean(steady) - slot) < 0.03 * slot);
+}
+
+// sustained: a long render time right after the steady run
+static void TestSustained(Ctx& c) {
+    const std::string& mode = c.mode; const double cap = c.cap, slot = c.slot; const bool late = c.late; auto& run = c.run; auto& mean = c.mean; auto& vmax = c.vmax;
+    // right after the steady run, the game's render-time average is still about 3 ms (the situation of a scene that suddenly gets heavy)
+    const double longr = 2.25 * slot;
+    auto sustained = run(std::vector<double>(40, longr), 10);
+    std::printf("%s cap %.0f sustained: mean %.2f max %.2f (render %.2f)\n", mode.c_str(), cap, mean(sustained), vmax(sustained), longr);
+    if (late && slot >= 8.0) CHECK(mean(sustained) > 1.2 * longr);
+    else if (late) CHECK(mean(sustained) < 1.2 * longr);          // a 4 ms slot: no visible penalty                                // documents the defect: every frame gets about a slot of sleep
+    else      CHECK(mean(sustained) < 1.1 * longr + 0.5 && mean(sustained) > 0.9 * longr);
+}
+
+// jitter: random render times between 0.5 and 0.85 slot
+static void TestJitter(Ctx& c) {
+    const std::string& mode = c.mode; const double cap = c.cap, slot = c.slot, tol = c.tol; const bool late = c.late;
+    auto& run = c.run; auto& mean = c.mean; auto& vmax = c.vmax; auto& vmax2 = c.vmax2;
+    std::vector<double> jr; unsigned seed = 12345; for (int i = 0; i < 120; ++i) { seed = seed * 1103515245u + 12345u; jr.push_back((0.5 + 0.35 * double((seed >> 8) & 0xffff) / 65535.0) * slot); }
+    auto jitter = run(jr, 45);
+    std::printf("%s cap %.0f jitter:    mean %.2f max %.2f (slot %.2f)\n", mode.c_str(), cap, mean(jitter), vmax(jitter), slot);
+    CHECK(std::fabs(mean(jitter) - slot) < 0.03 * slot);
+    // the late defects need a slot long enough for the sleep and the jitter to matter (at cap 240 the slot is 4 ms: the extra sleep is under a millisecond), so they are pinned for slots of 8 ms and more
+    if (late && slot >= 8.0) CHECK(vmax2(jitter) > slot + 2.0);
+    else if (late) {}                                    // documents the defect: the render jitter reaches the present interval
+    else      CHECK(vmax2(jitter) <= slot + tol);
+}
+
+// stall: steady with one 3-slot frame
+static void TestStall(Ctx& c) {
+    const std::string& mode = c.mode; const double cap = c.cap, slot = c.slot; const bool tolerant = c.tolerant; auto& run = c.run; auto& vmax = c.vmax;
+    std::vector<double> sr(45, 3.0); sr[25] = 3.0 * slot;
+    auto stall = run(sr, 10);                                                       // interval i is the one that ends at frame 11 + i; the stall frame ends interval 14, the next frame interval 15
+    std::printf("%s cap %.0f stall:     stall interval %.2f, next %.2f, max %.2f (slot %.2f)\n", mode.c_str(), cap, stall[14], stall[15], vmax(stall), slot);
+    CHECK(stall[15] <= slot + 3.0 + (tolerant ? 3.0 : 0.0));
+    CHECK(stall[14] <= 4.0 * slot + 3.0);
+}
+
+// live: the cap is halved in live.conf while the game runs
+static void TestLiveCapChange(Ctx& c) {
+    const std::string& mode = c.mode; const double cap = c.cap, slot = c.slot, tol = c.tol; const bool late = c.late; const std::string& live_conf = c.live_conf;
+    auto& run = c.run; auto& mean = c.mean; auto& vmax = c.vmax; auto& vmax2 = c.vmax2;
+    {   // live cap change: halve the cap in live.conf (the layer polls it once a second), the intervals follow
+        { std::ofstream f(live_conf, std::ios::binary); f << "REV=1\nBASE_FPS_CAP=" << cap / 2.0 << "\n"; }
+        auto live = run(std::vector<double>(int(2.0 * cap / 2.0 * 1.0) + 60, 3.0), 0);   // about 1 s + 60 frames of the slow slot
+        const size_t n = live.size(); std::vector<double> tail(live.end() - 20, live.end());
+        std::printf("%s cap %.0f live:      tail mean %.2f max %.2f (new slot %.2f)\n", mode.c_str(), cap, mean(tail), vmax(tail), 2.0 * slot);
+        (void)n;
+        CHECK(std::fabs(mean(tail) - 2.0 * slot) < 0.05 * 2.0 * slot);
+        CHECK(vmax2(tail) <= 2.0 * slot + tol + (late ? 3.0 : 0.0));
+    }
+}
+
+// the mock game thread (render, present) and the scenarios, in order
+static void RunScenarios(Ctx& c) {
+    VkQueue& q = c.q; VkSwapchainKHR& sc = c.sc; auto& qp = c.qp; const double slot = c.slot;
     uint32_t frame = 0;
     auto present = [&] {
         VkSemaphore game_sem = (VkSemaphore)(uintptr_t)(5000 + frame); uint32_t idx = frame % 4; ++frame;
@@ -285,47 +363,28 @@ int main(int, char** argv) {
     auto vmax = [](const std::vector<double>& v) { double m = 0; for (double x : v) m = std::max(m, x); return m; };
     // the second largest: one OS hiccup on a busy machine (a few ms, seen once in many runs) is not the cap\'s doing; two in a row would be
     auto vmax2 = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v.size() < 2 ? 0.0 : v[v.size() - 2]; };
-    const bool late = mode == "late";
+    const std::string& mode = c.mode; const bool late = mode == "late";
+    c.late = late;
+    c.run = run; c.mean = mean; c.vmax = vmax; c.vmax2 = vmax2;
+    TestStartupSteady(c);
+    TestSustained(c);
+    TestJitter(c);
+    TestStall(c);
+    TestLiveCapChange(c);
+}
 
-    auto first = run(std::vector<double>(50, 3.0), 0);                              // the very first frames of the process
-    std::printf("%s cap %.0f startup:   %.2f %.2f %.2f\n", mode.c_str(), cap, first[0], first[1], first[2]);
-    for (int i = 0; i < 3; ++i) CHECK(first[i] <= slot + 3.0 + tol && first[i] >= 2.5);   // no stall at startup (the late mode sleeps one slot after the first present; the early mode may come early)
-    auto steady = std::vector<double>(first.begin() + 12, first.end());
-    std::printf("%s cap %.0f steady:    mean %.2f max %.2f (slot %.2f)\n", mode.c_str(), cap, mean(steady), vmax(steady), slot);
-    CHECK(std::fabs(mean(steady) - slot) < 0.03 * slot);
-
-    // right after the steady run, the game's render-time average is still about 3 ms (the situation of a scene that suddenly gets heavy)
-    const double longr = 2.25 * slot;
-    auto sustained = run(std::vector<double>(40, longr), 10);
-    std::printf("%s cap %.0f sustained: mean %.2f max %.2f (render %.2f)\n", mode.c_str(), cap, mean(sustained), vmax(sustained), longr);
-    if (late && slot >= 8.0) CHECK(mean(sustained) > 1.2 * longr);
-    else if (late) CHECK(mean(sustained) < 1.2 * longr);          // a 4 ms slot: no visible penalty                                // documents the defect: every frame gets about a slot of sleep
-    else      CHECK(mean(sustained) < 1.1 * longr + 0.5 && mean(sustained) > 0.9 * longr);
-
-    std::vector<double> jr; unsigned seed = 12345; for (int i = 0; i < 120; ++i) { seed = seed * 1103515245u + 12345u; jr.push_back((0.5 + 0.35 * double((seed >> 8) & 0xffff) / 65535.0) * slot); }
-    auto jitter = run(jr, 45);
-    std::printf("%s cap %.0f jitter:    mean %.2f max %.2f (slot %.2f)\n", mode.c_str(), cap, mean(jitter), vmax(jitter), slot);
-    CHECK(std::fabs(mean(jitter) - slot) < 0.03 * slot);
-    // the late defects need a slot long enough for the sleep and the jitter to matter (at cap 240 the slot is 4 ms: the extra sleep is under a millisecond), so they are pinned for slots of 8 ms and more
-    if (late && slot >= 8.0) CHECK(vmax2(jitter) > slot + 2.0);
-    else if (late) {}                                    // documents the defect: the render jitter reaches the present interval
-    else      CHECK(vmax2(jitter) <= slot + tol);
-
-    std::vector<double> sr(45, 3.0); sr[25] = 3.0 * slot;
-    auto stall = run(sr, 10);                                                       // interval i is the one that ends at frame 11 + i; the stall frame ends interval 14, the next frame interval 15
-    std::printf("%s cap %.0f stall:     stall interval %.2f, next %.2f, max %.2f (slot %.2f)\n", mode.c_str(), cap, stall[14], stall[15], vmax(stall), slot);
-    CHECK(stall[15] <= slot + 3.0 + (tolerant ? 3.0 : 0.0));
-    CHECK(stall[14] <= 4.0 * slot + 3.0);
-
-    {   // live cap change: halve the cap in live.conf (the layer polls it once a second), the intervals follow
-        { std::ofstream f(live_conf, std::ios::binary); f << "REV=1\nBASE_FPS_CAP=" << cap / 2.0 << "\n"; }
-        auto live = run(std::vector<double>(int(2.0 * cap / 2.0 * 1.0) + 60, 3.0), 0);   // about 1 s + 60 frames of the slow slot
-        const size_t n = live.size(); std::vector<double> tail(live.end() - 20, live.end());
-        std::printf("%s cap %.0f live:      tail mean %.2f max %.2f (new slot %.2f)\n", mode.c_str(), cap, mean(tail), vmax(tail), 2.0 * slot);
-        (void)n;
-        CHECK(std::fabs(mean(tail) - 2.0 * slot) < 0.05 * 2.0 * slot);
-        CHECK(vmax2(tail) <= 2.0 * slot + tol + (late ? 3.0 : 0.0));
-    }
+int main(int, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const std::string mode = argv[2]; const double cap = std::atof(argv[3]); const bool tolerant = argv[4] && std::string(argv[4]) == "tolerant";
+    const double slot = 1000.0 / cap, tol = tolerant ? 4.0 : 1.5;
+    ClearFramegenEnv();
+    Ctx c; c.mode = mode; c.cap = cap; c.slot = slot; c.tol = tol; c.tolerant = tolerant;
+    if (!SetupEnv(argv, mode, c.live_conf)) return 2;
+    g_main_thread = pthread_self();
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    SetupSwapchain(c, lib);
+    RunScenarios(c);
+    Env& e = c.e; VkSwapchainKHR& sc = c.sc;
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
     for (Fake* f : g_cbs) delete f;
