@@ -122,6 +122,7 @@ find_package(Threads REQUIRED)
 set(FRAMEGEN_LIVE_SOURCES src/live_config.cpp src/live_config_io.cpp)   # the live-config code that the tests build in directly
 set(FRAMEGEN_LAYER_SOURCES
     src/layer_main.cpp
+    src/layer_present_steps.cpp
     src/layer_swapchain.cpp
     src/layer_instance.cpp
     src/layer_dispatch.cpp
