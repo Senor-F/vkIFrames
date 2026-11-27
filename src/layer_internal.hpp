@@ -39,11 +39,6 @@ extern thread_local SwapchainState* t_guard_present_sc;
 // structures cannot be re-created for a frame shown later, so those leave the swapchain in passthrough.
 enum class AppChain { Plain, Carried, Unsupported };
 struct AppChainInfo { AppChain kind{AppChain::Plain}; uint64_t id{0}; VkFence fence{}; VkPresentModeKHR mode{}; bool has_mode{false}; };
-// Used by Impl_CreateDevice until it moves next to them (removed again in that commit).
-VkLayerDeviceCreateInfo* FindDeviceLink(const VkDeviceCreateInfo* ci);
-VkLayerDeviceCreateInfo* FindDeviceCallback(const VkDeviceCreateInfo* ci);
-bool HasExt(const char* const* exts, uint32_t n, const char* name);
-bool DeviceExtSupported(const std::vector<VkExtensionProperties>& props, const char* name);
 const VkBaseInStructure* FindInChain(const void* chain, VkStructureType type);
 void GuardNote(const char* hook, const char* what) noexcept;
 PairScheduler::Plan PlanAndCount(SwapchainState& sc, uint64_t now);
