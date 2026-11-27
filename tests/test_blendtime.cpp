@@ -223,23 +223,30 @@ static Env Bring(void* lib, bool loader_callback = true) {
 
 static std::string Slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream s; s << f.rdbuf(); return s.str(); }
 
-int main(int, char** argv) {
+// Fresh temp config dir and the layer's environment; false when the dir cannot be made
+static bool SetUpEnv(char* dir) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ClearFramegenEnv();
-    char dir[] = "/tmp/vkibt_XXXXXX"; if (!mkdtemp(dir)) return 2;
+    if (!mkdtemp(dir)) return false;
     setenv("VKIFRAME_LOG_FILE", (std::string(dir) + "/layer.log").c_str(), 1);
     setenv("XDG_CONFIG_HOME", dir, 1);
     setenv("VKIFRAME_TARGET_FPS", "120", 1);
     setenv("VKIFRAME_STATS", "1", 1);                           // one record a second in stats.jsonl
     g_main_thread = pthread_self();
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
-    Env e = Bring(lib);
-    VkQueue q; ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
+    return true;
+}
+
+static VkSwapchainKHR MakeSwapchain(Env& e, VkQueue& q) {
+    ((PFN_vkGetDeviceQueue)e.gdpa(e.dev, "vkGetDeviceQueue"))(e.dev, 0, 0, &q);
     auto csc = (PFN_vkCreateSwapchainKHR)e.gdpa(e.dev, "vkCreateSwapchainKHR");
-    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR}; sci.minImageCount = 3; sci.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
     sci.imageExtent = {640, 480}; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkSwapchainKHR sc{}; CHECK(csc(e.dev, &sci, nullptr, &sc) == VK_SUCCESS);
+    return sc;
+}
+
+static void PresentLoop(Env& e, VkQueue q, VkSwapchainKHR sc) {
+    auto qp = (PFN_vkQueuePresentKHR)e.gdpa(e.dev, "vkQueuePresentKHR");
     uint32_t frame = 0;
     for (int i = 0; i < 130; ++i) {                              // about 3.2 s at 40 fps toward 120: generated frames, several stats records
         usleep(25'000);
@@ -249,6 +256,9 @@ int main(int, char** argv) {
         VkResult res = VK_NOT_READY; pi.pResults = &res;
         CHECK(qp(q, &pi) == VK_SUCCESS && res == VK_SUCCESS);
     }
+}
+
+static void CheckStats(const char* dir) {
     const std::string stats = Slurp(std::string(dir) + "/vkiframes/stats.jsonl");
     CHECK(g_ts_pools == 1);                                                              // one pool, made without the optical flow
     CHECK(g_ts_writes > 20 && r_dispatches > 20);                                        // generated frames were stamped
@@ -262,9 +272,22 @@ int main(int, char** argv) {
     }
     CHECK(found);
     CHECK(stats.find("\"interp_ms\":0.0000") != std::string::npos || found);              // (the first records may be before the first read-back)
+}
+
+static void TearDown(Env& e, VkSwapchainKHR sc) {
     ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
     ((PFN_vkDestroyDevice)e.gdpa(e.dev, "vkDestroyDevice"))(e.dev, nullptr);
     for (Fake* f : g_cbs) delete f;
+}
+
+int main(int, char** argv) {
+    char dir[] = "/tmp/vkibt_XXXXXX"; if (!SetUpEnv(dir)) return 2;
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
+    Env e = Bring(lib);
+    VkQueue q; VkSwapchainKHR sc = MakeSwapchain(e, q);
+    PresentLoop(e, q, sc);
+    CheckStats(dir);
+    TearDown(e, sc);
     std::printf("PASS: the cross-fade pass is timed (%d stamps, %d dispatches)\n", int(g_ts_writes), int(r_dispatches));
     return 0;
 }
