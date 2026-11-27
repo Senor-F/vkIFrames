@@ -173,30 +173,16 @@ static void TestAborted() {
     CHECK(j.find("a setting was changed") != std::string::npos);
 }
 
-int main() {
-    TestPercentiles();
-    TestDerivedSecond();
-    TestSchedule();
-    TestSpread();
-    TestSettingsEcho();
-    TestLabels();
-    TestAborted();
-
-    // ---- through bench.req and live.conf: a benchmark request, the run, the files ----
-    char dir[] = "/tmp/vkistats_XXXXXX";
-    if (!mkdtemp(dir)) return 2;
-    const std::string conf = std::string(dir) + "/vkiframes/live.conf";
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
-    setenv("VKIFRAME_LIVE_LOG", (std::string(dir) + "/vkiframes/live.log").c_str(), 1);
-    ::mkdir((std::string(dir) + "/vkiframes").c_str(), 0700);
+static void TestOldStatsMode(const char* dir) {
     {   // a stats.jsonl left at 0644 by an older build is tightened to 0600 on first use
         const std::string old = std::string(dir) + "/vkiframes/stats.jsonl";
         const int fd = ::open(old.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd >= 0) { ::fchmod(fd, 0644); ::close(fd); }
         struct stat st0; CHECK(stat(old.c_str(), &st0) == 0 && (st0.st_mode & 0777) == 0644);
     }
-    const std::string req = std::string(dir) + "/vkiframes/bench.req";
+}
+
+static void TestRequestWaiting(const std::string& conf, const std::string& req) {
     Put(req, "1699999999\n");                                            // a request left from an earlier game run is not a request now
     Poll();                                                              // no live.conf yet
     CHECK(!StatsOn() && !StatsWantsSecond());                            // off: nothing is asked of the layer
@@ -207,80 +193,86 @@ int main() {
     Put(req, "1700000001\n");
     Poll();
     CHECK(StatsWantsSecond() && !StatsOn());                             // a request is waiting
-    {
-        int seconds = 0; int enabled_seen_off = 0;
-        stats::Record r = Second(true);
-        StatsOnSecond(r, g_now);                                         // starts the run; this second is not part of it
-        CHECK(StatsBenchActive() && StatsOn() && Live().enabled.load() == 1);
-        while (StatsBenchActive() && seconds < 1000) {
-            stats::Record q = Second(Live().enabled.load() != 0);
-            StatsOnSecond(q, g_now);
-            ++seconds;
-            if (Live().enabled.load() == 0) ++enabled_seen_off;
-        }
-        CHECK(seconds == 30 + 12 * 60 && enabled_seen_off > 0);
-        CHECK(Live().enabled.load() == 1);                               // restored
-        CHECK(!StatsBenchActive() && !StatsOn());
-        CHECK(std::string(StatsBenchLabel()) == "done");
-        const std::string bj = dir + std::string("/vkiframes/bench.json"), sj = dir + std::string("/vkiframes/stats.jsonl");
-        struct stat st;
-        CHECK(stat(bj.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
-        CHECK(stat(sj.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
-        CHECK(stat((std::string(dir) + "/vkiframes").c_str(), &st) == 0 && (st.st_mode & 0777) == 0700);
-        const std::string j = Slurp(bj);
-        CHECK(j.find("\"status\":\"complete\"") != std::string::npos && j.find("\"derived\":{") != std::string::npos);
-        CHECK(j.find(dir) == std::string::npos && j.find("/home") == std::string::npos);         // no path anywhere
-        // one line per second of the run, each a single JSON object
-        std::ifstream f(sj); std::string line; int lines = 0, labelled = 0;
-        while (std::getline(f, line)) { ++lines; CHECK(line.front() == '{' && line.back() == '}'); if (line.find("\"bench\":\"\"") == std::string::npos) ++labelled; }
-        CHECK(lines == seconds && labelled == seconds);
+}
+
+static void TestBenchRun(const char* dir) {
+    int seconds = 0; int enabled_seen_off = 0;
+    stats::Record r = Second(true);
+    StatsOnSecond(r, g_now);                                         // starts the run; this second is not part of it
+    CHECK(StatsBenchActive() && StatsOn() && Live().enabled.load() == 1);
+    while (StatsBenchActive() && seconds < 1000) {
+        stats::Record q = Second(Live().enabled.load() != 0);
+        StatsOnSecond(q, g_now);
+        ++seconds;
+        if (Live().enabled.load() == 0) ++enabled_seen_off;
     }
+    CHECK(seconds == 30 + 12 * 60 && enabled_seen_off > 0);
+    CHECK(Live().enabled.load() == 1);                               // restored
+    CHECK(!StatsBenchActive() && !StatsOn());
+    CHECK(std::string(StatsBenchLabel()) == "done");
+    const std::string bj = dir + std::string("/vkiframes/bench.json"), sj = dir + std::string("/vkiframes/stats.jsonl");
+    struct stat st;
+    CHECK(stat(bj.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
+    CHECK(stat(sj.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
+    CHECK(stat((std::string(dir) + "/vkiframes").c_str(), &st) == 0 && (st.st_mode & 0777) == 0700);
+    const std::string j = Slurp(bj);
+    CHECK(j.find("\"status\":\"complete\"") != std::string::npos && j.find("\"derived\":{") != std::string::npos);
+    CHECK(j.find(dir) == std::string::npos && j.find("/home") == std::string::npos);         // no path anywhere
+    // one line per second of the run, each a single JSON object
+    std::ifstream f(sj); std::string line; int lines = 0, labelled = 0;
+    while (std::getline(f, line)) { ++lines; CHECK(line.front() == '{' && line.back() == '}'); if (line.find("\"bench\":\"\"") == std::string::npos) ++labelled; }
+    CHECK(lines == seconds && labelled == seconds);
+}
+
+static void TestSecondRun(const std::string& conf, const std::string& req, const char* dir) {
     // the same token does not start a second run; a new one does; a setting change stops it and keeps the user's value
     Poll(); CHECK(!StatsWantsSecond());
     Put(conf, "REV=3\nENABLED=1\nBASE_FPS_CAP=60\n");
     Put(req, "1700000002\n");
     Poll(); CHECK(StatsWantsSecond());
-    {
-        stats::Record r = Second(true); StatsOnSecond(r, g_now);
-        CHECK(StatsBenchActive());
-        for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }    // warm-up over, an "off" segment running
-        CHECK(Live().enabled.load() == 0);
-        // writes that change no setting do not stop the run, in an "off" second too: the plugin rewriting live.conf (new REV, same values; an old plugin's BENCH line),
-        // and bench.req itself being rewritten with the same or another number
-        Put(conf, "REV=3a\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000002\n");
-        Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
-        CHECK(StatsBenchActive() && Live().enabled.load() == 0);
-        Put(conf, "REV=3b\nENABLED=1\nBASE_FPS_CAP=60\n");
-        Put(req, "1700000002\n");
-        Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
-        CHECK(StatsBenchActive() && Live().enabled.load() == 0);
-        Put(req, "1700000077\n");                                         // a new number while a run is going is not a second run and not a stop
-        Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
-        CHECK(StatsBenchActive());
-        Put(conf, "REV=4\nENABLED=1\nBASE_FPS_CAP=60\nTARGET_FPS=75\n");
-        Poll();
-        stats::Record q = Second(false); StatsOnSecond(q, g_now);
-        CHECK(!StatsBenchActive());
-        CHECK(Live().enabled.load() == 1 && Live().target_fps.load() == 75.0f);       // the file's values stand
-        CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("a setting was changed") != std::string::npos);
-        CHECK(std::string(StatsBenchLabel()) == "aborted");
-        Poll(); CHECK(!StatsWantsSecond());                                   // the number that arrived during the run (…077) was acknowledged: it does not start a second run now
-    }
+    stats::Record r = Second(true); StatsOnSecond(r, g_now);
+    CHECK(StatsBenchActive());
+    for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }    // warm-up over, an "off" segment running
+    CHECK(Live().enabled.load() == 0);
+    // writes that change no setting do not stop the run, in an "off" second too: the plugin rewriting live.conf (new REV, same values; an old plugin's BENCH line),
+    // and bench.req itself being rewritten with the same or another number
+    Put(conf, "REV=3a\nENABLED=1\nBASE_FPS_CAP=60\nBENCH=1700000002\n");
+    Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
+    CHECK(StatsBenchActive() && Live().enabled.load() == 0);
+    Put(conf, "REV=3b\nENABLED=1\nBASE_FPS_CAP=60\n");
+    Put(req, "1700000002\n");
+    Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
+    CHECK(StatsBenchActive() && Live().enabled.load() == 0);
+    Put(req, "1700000077\n");                                         // a new number while a run is going is not a second run and not a stop
+    Poll(); { stats::Record q = Second(false); StatsOnSecond(q, g_now); }
+    CHECK(StatsBenchActive());
+    Put(conf, "REV=4\nENABLED=1\nBASE_FPS_CAP=60\nTARGET_FPS=75\n");
+    Poll();
+    stats::Record q = Second(false); StatsOnSecond(q, g_now);
+    CHECK(!StatsBenchActive());
+    CHECK(Live().enabled.load() == 1 && Live().target_fps.load() == 75.0f);       // the file's values stand
+    CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("a setting was changed") != std::string::npos);
+    CHECK(std::string(StatsBenchLabel()) == "aborted");
+    Poll(); CHECK(!StatsWantsSecond());                                   // the number that arrived during the run (…077) was acknowledged: it does not start a second run now
+}
+
+static void TestCancel(const std::string& req, const char* dir) {
     // bench.req set to 0 stops a run and restores ENABLED (scripts/vkiframes-bench.sh --cancel); 0 with nothing running asks for nothing and is not kept
     Put(req, "0\n"); Poll();
     { stats::Record q = Second(true); StatsOnSecond(q, g_now); }
     CHECK(!StatsBenchActive() && !StatsWantsSecond());
     Put(req, "1700000004\n"); Poll();
-    {
-        stats::Record r = Second(true); StatsOnSecond(r, g_now);
-        for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }
-        CHECK(StatsBenchActive() && Live().enabled.load() == 0);
-        Put(req, "0\n"); Poll();
-        stats::Record q = Second(false); StatsOnSecond(q, g_now);
-        CHECK(!StatsBenchActive() && Live().enabled.load() == 1);
-        CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("cancelled") != std::string::npos);
-        CHECK(std::string(StatsBenchLabel()) == "aborted");
-    }
+    stats::Record r = Second(true); StatsOnSecond(r, g_now);
+    for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }
+    CHECK(StatsBenchActive() && Live().enabled.load() == 0);
+    Put(req, "0\n"); Poll();
+    stats::Record q = Second(false); StatsOnSecond(q, g_now);
+    CHECK(!StatsBenchActive() && Live().enabled.load() == 1);
+    CHECK(Slurp(std::string(dir) + "/vkiframes/bench.json").find("cancelled") != std::string::npos);
+    CHECK(std::string(StatsBenchLabel()) == "aborted");
+}
+
+static void TestGameClose(const std::string& conf, const std::string& req) {
     // leaving the game stops a run and restores ENABLED
     Put(conf, "REV=5\nENABLED=1\nBASE_FPS_CAP=60\n");
     Put(req, "1700000003\n");
@@ -292,27 +284,31 @@ int main() {
         StatsBenchAbort("the game closed its swapchain");
         CHECK(!StatsBenchActive() && Live().enabled.load() == 1);
     }
+}
+
+static void TestReasonText(const std::string& req, const char* dir) {
     // bench.json is built whole, whatever the length of the reason text, and a bench.json that cannot be written is reported
-    {
-        const std::string bj = std::string(dir) + "/vkiframes/bench.json", lg = std::string(dir) + "/vkiframes/live.log";
-        auto run_and_abort = [&](const char* token, const std::string& reason) {
-            Put(req, std::string(token) + "\n"); Poll();
-            stats::Record r = Second(true); StatsOnSecond(r, g_now);
-            for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }
-            CHECK(StatsBenchActive());
-            StatsBenchAbort(reason.c_str());
-        };
-        const std::string reason = std::string(3000, 'r') + "END";
-        run_and_abort("1700000005", reason);
-        const std::string j = Slurp(bj);
-        CHECK(j.find(reason) != std::string::npos && j.size() > 3000 && j.compare(j.size() - 2, 2, "}\n") == 0);      // the whole text and a closed object (a fixed buffer cut it)
-        unlink(bj.c_str());                                                                    // a folder in the place of bench.json: the rename cannot succeed
-        CHECK(::mkdir(bj.c_str(), 0700) == 0 && ::mkdir((bj + "/x").c_str(), 0700) == 0);
-        run_and_abort("1700000006", "short");
-        CHECK(Slurp(lg).find("bench.json could NOT be written") != std::string::npos);
-        CHECK(!StatsBenchActive() && Live().enabled.load() == 1);                              // the run still ended and ENABLED is back
-        rmdir((bj + "/x").c_str()); rmdir(bj.c_str());
-    }
+    const std::string bj = std::string(dir) + "/vkiframes/bench.json", lg = std::string(dir) + "/vkiframes/live.log";
+    auto run_and_abort = [&](const char* token, const std::string& reason) {
+        Put(req, std::string(token) + "\n"); Poll();
+        stats::Record r = Second(true); StatsOnSecond(r, g_now);
+        for (int i = 0; i < 40; ++i) { stats::Record q = Second(Live().enabled.load() != 0); StatsOnSecond(q, g_now); }
+        CHECK(StatsBenchActive());
+        StatsBenchAbort(reason.c_str());
+    };
+    const std::string reason = std::string(3000, 'r') + "END";
+    run_and_abort("1700000005", reason);
+    const std::string j = Slurp(bj);
+    CHECK(j.find(reason) != std::string::npos && j.size() > 3000 && j.compare(j.size() - 2, 2, "}\n") == 0);      // the whole text and a closed object (a fixed buffer cut it)
+    unlink(bj.c_str());                                                                    // a folder in the place of bench.json: the rename cannot succeed
+    CHECK(::mkdir(bj.c_str(), 0700) == 0 && ::mkdir((bj + "/x").c_str(), 0700) == 0);
+    run_and_abort("1700000006", "short");
+    CHECK(Slurp(lg).find("bench.json could NOT be written") != std::string::npos);
+    CHECK(!StatsBenchActive() && Live().enabled.load() == 1);                              // the run still ended and ENABLED is back
+    rmdir((bj + "/x").c_str()); rmdir(bj.c_str());
+}
+
+static void TestStatsAlone(const std::string& conf, const char* dir) {
     // STATS=1 alone: records, no run
     Put(conf, "REV=6\nSTATS=1\n");
     Poll();
@@ -326,6 +322,33 @@ int main() {
     }
     Put(conf, "REV=7\nSTATS=0\n");
     Poll(); CHECK(!StatsOn());
+}
+
+int main() {
+    TestPercentiles();
+    TestDerivedSecond();
+    TestSchedule();
+    TestSpread();
+    TestSettingsEcho();
+    TestLabels();
+    TestAborted();
+    // ---- through bench.req and live.conf: a benchmark request, the run, the files ----
+    char dir[] = "/tmp/vkistats_XXXXXX";
+    if (!mkdtemp(dir)) return 2;
+    const std::string conf = std::string(dir) + "/vkiframes/live.conf";
+    setenv("XDG_CONFIG_HOME", dir, 1);
+    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
+    setenv("VKIFRAME_LIVE_LOG", (std::string(dir) + "/vkiframes/live.log").c_str(), 1);
+    ::mkdir((std::string(dir) + "/vkiframes").c_str(), 0700);
+    TestOldStatsMode(dir);
+    const std::string req = std::string(dir) + "/vkiframes/bench.req";
+    TestRequestWaiting(conf, req);
+    TestBenchRun(dir);
+    TestSecondRun(conf, req, dir);
+    TestCancel(req, dir);
+    TestGameClose(conf, req);
+    TestReasonText(req, dir);
+    TestStatsAlone(conf, dir);
 
     std::printf(g_fail ? "stats: %d check(s) FAILED\n" : "stats tests passed\n", g_fail);
     return g_fail ? 1 : 0;
