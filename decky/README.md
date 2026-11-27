@@ -4,6 +4,7 @@ Quick-access panel on the Steam Deck for the vkIFrames Vulkan layer: install or 
 
 * `main.py` Python backend: writes `~/.config/vkiframes/live.conf`, installs the layer manifest.
 * `src/index.tsx` the panel.
+* `src/sections.tsx` the panel's sections (plain JSX builders) and shared types.
 * `settings_schema.json` the list of settings shown. Keep it in step with the layer (see LIVECONF.md).
 * `LIVECONF.md` the file protocol the layer must follow.
 * `scripts/deploy.sh` copy to Decky's plugin folder and restart the loader (Decky has no hot reload).
