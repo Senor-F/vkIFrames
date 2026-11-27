@@ -20,14 +20,7 @@ static uint64_t g_now = 1'000'000'000ull;
 static void Write(const std::string& p, const std::string& t) { { std::ofstream f(p, std::ios::trunc); f << t; } struct timespec ts[2]; static int n = 0; clock_gettime(CLOCK_REALTIME, &ts[0]); ts[0].tv_sec += 10 * ++n; ts[1] = ts[0]; utimensat(AT_FDCWD, p.c_str(), ts, 0); }
 static void Poll() { g_now += 1'100'000'000ull; LivePoll(g_now); }
 
-int main() {
-    char dir[] = "/tmp/vkicaplive_XXXXXX"; if (!mkdtemp(dir)) return 2;
-    const std::string conf = std::string(dir) + "/live.conf", log = std::string(dir) + "/live.log";
-    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1); setenv("VKIFRAME_LIVE_LOG", log.c_str(), 1); setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("VKIFRAME_EXPERIMENTAL", "1", 1);                         // the limit is 10
-    LiveSettings& L = Live();
-    CHECK(LiveMaxSyntheticLimit() == 10);
-
+static void TestFormula(const std::string& conf) {
     // the formula: no file, the environment's request
     CHECK(LiveSynthCapacityFor(1) == 4 && LiveSynthCapacityFor(3) == 4 && LiveSynthCapacityFor(4) == 4 && LiveSynthCapacityFor(8) == 8 && LiveSynthCapacityFor(10) == 10);
     Write(conf, "VKIFRAME_MAX_SYNTHETIC=7\n");
@@ -40,7 +33,9 @@ int main() {
     CHECK(LiveRequestedMaxSynthetic() == 0);
     unlink(conf.c_str());
     CHECK(LiveRequestedMaxSynthetic() == 0);
+}
 
+static void TestClampRewrites(const std::string& conf, const std::string& log, LiveSettings& L) {
     // the live clamp: the swapchain was built for 4
     LiveSetSynthCapacity(4);
     CHECK(LiveSynthCapacity() == 4);
@@ -53,6 +48,9 @@ int main() {
     CHECK(L.max_synthetic == 4 && Count(Slurp(log), "above the 4 this game's swapchain was built for") == 2);
     Write(conf, "MAX_SYNTHETIC=3\n"); Poll();                                                     // within the capacity: taken as it is
     CHECK(L.max_synthetic == 3);
+}
+
+static void TestClampSmallerCapacity(const std::string& conf, const std::string& log, LiveSettings& L) {
     // a smaller capacity (fewer images granted than wanted) clamps the running value at once
     Write(conf, "MAX_SYNTHETIC=4\n"); Poll();
     CHECK(L.max_synthetic == 4);
@@ -62,6 +60,19 @@ int main() {
     LiveSetSynthCapacity(0);
     Write(conf, "MAX_SYNTHETIC=9\n"); Poll();
     CHECK(L.max_synthetic == 9);
+}
+
+int main() {
+    char dir[] = "/tmp/vkicaplive_XXXXXX"; if (!mkdtemp(dir)) return 2;
+    const std::string conf = std::string(dir) + "/live.conf", log = std::string(dir) + "/live.log";
+    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1); setenv("VKIFRAME_LIVE_LOG", log.c_str(), 1); setenv("XDG_CONFIG_HOME", dir, 1);
+    setenv("VKIFRAME_EXPERIMENTAL", "1", 1);                         // the limit is 10
+    LiveSettings& L = Live();
+    CHECK(LiveMaxSyntheticLimit() == 10);
+
+    TestFormula(conf);
+    TestClampRewrites(conf, log, L);
+    TestClampSmallerCapacity(conf, log, L);
 
     if (g_fail) std::printf("%s\n", Slurp(log).c_str()); std::string cmd = std::string("rm -rf ") + dir; if (std::system(cmd.c_str()) != 0) ++g_fail;
     std::printf(g_fail ? "capacity live: FAILED\n" : "capacity live: ok\n");
