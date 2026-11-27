@@ -1,5 +1,7 @@
 # Rules for every session working on this repository
 
+Find files: rg -i <word> INDEX.md index/
+
 ## Roles
 - The Builder is the only one who changes code. The Auditor reviews and keeps AUDIT.md. The PM keeps the plan and the .md docs.
 - Nothing is merged until the owner has reviewed it and said so. The PM may do the merge after that. The Auditor never merges.
