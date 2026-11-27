@@ -189,9 +189,9 @@ struct InterpOpts {
     int   cand_radius{2};        // candidates come from the (2r+1)^2 field pixels around the pixel, forward vectors and negated backward vectors
 };
 
-inline float InterpPixel(const Img& a, const Img& b, const Flow& fwd, const std::vector<float>& mask, int x, int y, float t, float scale = 2.0f,
-                       const InterpOpts& o = InterpOpts{}, const Flow* bwd = nullptr) {
-    const float fx = (float(x) + 0.5f) / scale - 0.5f, fy = (float(y) + 0.5f) / scale - 0.5f;
+// InterpPixel helper: the field vector (full-resolution pixels) and match cost at output pixel (x, y), interpolated between the four nearest field pixels.
+struct InterpVec { float vx, vy, cost; };
+inline InterpVec InterpField(const Img& a, const Flow& fwd, int x, int y, float scale, const InterpOpts& o, float fx, float fy) {
     const int ix = int(std::floor(fx)), iy = int(std::floor(fy));
     const float tx = fx - float(ix), ty = fy - float(iy);
     const float gp = a.get(x, y);
@@ -210,6 +210,36 @@ inline float InterpPixel(const Img& a, const Img& b, const Flow& fwd, const std:
         }
     const float inv = 1.0f / std::max(wsum, 1e-6f);
     vx *= inv * scale; vy *= inv * scale; cost *= inv;                          // full-resolution pixels
+    return {vx, vy, cost};
+}
+
+// InterpPixel helper: candidate search; the best vector and its cost (A and B disagreement plus a small bias towards the interpolated vector (vx, vy)).
+struct InterpCand { float best, bvx, bvy; };
+inline InterpCand InterpSearch(const Img& a, const Img& b, const Flow& fwd, const Flow* bwd, int x, int y, float t, float scale,
+                               int qx, int qy, float vx, float vy, const InterpOpts& o) {
+    float best = 1e30f, bvx = 0.0f, bvy = 0.0f;
+    auto try_vec = [&](float cvx, float cvy, float bias) {
+        const float ca = a.get(int(std::lround(float(x) - t * cvx)), int(std::lround(float(y) - t * cvy)));
+        const float cb = b.get(int(std::lround(float(x) + (1 - t) * cvx)), int(std::lround(float(y) + (1 - t) * cvy)));
+        const float c = std::fabs(ca - cb) + bias;
+        if (c < best) { best = c; bvx = cvx; bvy = cvy; }
+    };
+    try_vec(0.0f, 0.0f, 0.0f);
+    for (int dy = -o.cand_radius; dy <= o.cand_radius; ++dy)
+        for (int dx = -o.cand_radius; dx <= o.cand_radius; ++dx) {
+            const size_t fi = fwd.idx(std::clamp(qx + dx, 0, fwd.w - 1), std::clamp(qy + dy, 0, fwd.h - 1));
+            try_vec(fwd.x[fi] * scale, fwd.y[fi] * scale, 0.0005f * (std::fabs(fwd.x[fi] * scale - vx) + std::fabs(fwd.y[fi] * scale - vy)));
+            const size_t bi = bwd->idx(std::clamp(qx + dx, 0, bwd->w - 1), std::clamp(qy + dy, 0, bwd->h - 1));
+            try_vec(-bwd->x[bi] * scale, -bwd->y[bi] * scale, 0.0005f * (std::fabs(-bwd->x[bi] * scale - vx) + std::fabs(-bwd->y[bi] * scale - vy)));
+        }
+    return {best, bvx, bvy};
+}
+
+inline float InterpPixel(const Img& a, const Img& b, const Flow& fwd, const std::vector<float>& mask, int x, int y, float t, float scale = 2.0f,
+                       const InterpOpts& o = InterpOpts{}, const Flow* bwd = nullptr) {
+    const float fx = (float(x) + 0.5f) / scale - 0.5f, fy = (float(y) + 0.5f) / scale - 0.5f;
+    const InterpVec iv = InterpField(a, fwd, x, y, scale, o, fx, fy);
+    const float vx = iv.vx, vy = iv.vy, cost = iv.cost;                      // full-resolution pixels
     const int qx = std::clamp(int(std::floor(fx + 0.5f)), 0, fwd.w - 1), qy = std::clamp(int(std::floor(fy + 0.5f)), 0, fwd.h - 1);
     const size_t qi = fwd.idx(qx, qy);
     const float fade = (1 - t) * a.get(x, y) + t * b.get(x, y);
@@ -219,21 +249,8 @@ inline float InterpPixel(const Img& a, const Img& b, const Flow& fwd, const std:
     // Occluded or badly matched pixel: the vector of the neighbouring field pixels that makes A and B agree at this pixel's position wins.
     // That is how the strip behind a moving sprite finds the background's vector and the strip in front finds the sprite's.
     if (o.cand && bwd && k > o.cand_trigger) {
-        float best = 1e30f, bvx = 0.0f, bvy = 0.0f;
-        auto try_vec = [&](float cvx, float cvy, float bias) {
-            const float ca = a.get(int(std::lround(float(x) - t * cvx)), int(std::lround(float(y) - t * cvy)));
-            const float cb = b.get(int(std::lround(float(x) + (1 - t) * cvx)), int(std::lround(float(y) + (1 - t) * cvy)));
-            const float c = std::fabs(ca - cb) + bias;
-            if (c < best) { best = c; bvx = cvx; bvy = cvy; }
-        };
-        try_vec(0.0f, 0.0f, 0.0f);
-        for (int dy = -o.cand_radius; dy <= o.cand_radius; ++dy)
-            for (int dx = -o.cand_radius; dx <= o.cand_radius; ++dx) {
-                const size_t fi = fwd.idx(std::clamp(qx + dx, 0, fwd.w - 1), std::clamp(qy + dy, 0, fwd.h - 1));
-                try_vec(fwd.x[fi] * scale, fwd.y[fi] * scale, 0.0005f * (std::fabs(fwd.x[fi] * scale - vx) + std::fabs(fwd.y[fi] * scale - vy)));
-                const size_t bi = bwd->idx(std::clamp(qx + dx, 0, bwd->w - 1), std::clamp(qy + dy, 0, bwd->h - 1));
-                try_vec(-bwd->x[bi] * scale, -bwd->y[bi] * scale, 0.0005f * (std::fabs(-bwd->x[bi] * scale - vx) + std::fabs(-bwd->y[bi] * scale - vy)));
-            }
+        const InterpCand cd = InterpSearch(a, b, fwd, bwd, x, y, t, scale, qx, qy, vx, vy, o);
+        const float best = cd.best, bvx = cd.bvx, bvy = cd.bvy;
         if (best < o.cand_thr) {
             const float w2 = (1 - t) * Bilinear(a, float(x) - t * bvx, float(y) - t * bvy) + t * Bilinear(b, float(x) + (1 - t) * bvx, float(y) + (1 - t) * bvy);
             const float sp = Smoothstep(kFastLow, kFastHigh, std::sqrt(bvx * bvx + bvy * bvy));
