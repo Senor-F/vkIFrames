@@ -103,7 +103,7 @@ With `VKIFRAME_TICKMARK` the push constant `t` carries extra information (`t >= 
 | `motion_interp.comp` with `sampler2D` inputs, `rg16f`/`r8` images, a stats buffer | `flow_interp.comp` with `rgba16f`/`r32f` storage images and its own bilinear sampler |
 | One-sided gather | One-sided and two-sided (default), match-cost fade, optional candidate search, extrapolation |
 | `InterpolationEngine` class with `RecordPairPasses` / `RecordInterp` | `GpuSynthesize` binds the images and pushes ten floats per tick; the per-pair work is the flow only |
-| Compute queue plus a flow timeline semaphore | Present queue; barriers inside the command buffers (STAGE4.md §3) |
+| Compute queue plus a flow timeline semaphore | Present queue; barriers inside the command buffers (stage4/01-overview-objectives.md §3) |
 
 ---
 
@@ -124,7 +124,7 @@ export VKIFRAME_TARGET_FPS=60 VKIFRAME_INTERPOLATE=1 VKIFRAME_BASE_FPS_CAP=30
 <game>                                    # or DXVK_FRAME_RATE=30 <game>
 ```
 
-For image quality without a GPU, dump a capture (`VKIFRAME_DUMP=N`, `VKIFRAME_DUMP_DIR`) and score the methods offline with `tools/interp_eval` (README.md, "Evaluating changes offline").
+For image quality without a GPU, dump a capture (`VKIFRAME_DUMP=N`, `VKIFRAME_DUMP_DIR`) and score the methods offline with `tools/interp_eval` (readme/03-live-settings.md, "Evaluating changes offline").
 
 ### Step 3: Success criteria
 1. **HUD integrity:** 2D interface elements stay sharp and still; they do not shift or smear into moving geometry (`VKIFRAME_UI_MASK_THRESHOLD`).

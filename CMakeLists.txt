@@ -28,7 +28,7 @@ add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=$
 # Developer builds with a sanitizer (never the release binary; package.sh does not pass this):
 #   -DFRAMEGEN_SANITIZER=address   AddressSanitizer + UndefinedBehaviorSanitizer
 #   -DFRAMEGEN_SANITIZER=thread    ThreadSanitizer
-# The C++ runtime stays dynamic then (the sanitizers want the shared runtime), and every ctest test runs with the options below; see README, "Sanitizer builds".
+# The C++ runtime stays dynamic then (the sanitizers want the shared runtime), and every ctest test runs with the options below; see README, "Sanitizer builds" (readme/02-how-it-works.md).
 set(FRAMEGEN_SANITIZER "" CACHE STRING "Developer builds only: address (ASan+UBSan) or thread (TSan); empty = none")
 if(FRAMEGEN_SANITIZER)
     if(NOT FRAMEGEN_SANITIZER MATCHES "^(address|thread)$")
