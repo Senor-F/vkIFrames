@@ -19,41 +19,28 @@ static long long Ino(const std::string& p) { struct stat st; return ::stat(p.c_s
 static int OpenFds() { int n = 0; if (DIR* d = opendir("/proc/self/fd")) { while (readdir(d)) ++n; closedir(d); } return n; }
 static void Fill(const std::string& p, size_t bytes) { FILE* f = std::fopen(p.c_str(), "w"); std::string line(99, 'x'); line += '\n'; for (size_t i = 0; i < bytes / 100; ++i) std::fputs(line.c_str(), f); std::fclose(f); chmod(p.c_str(), 0600); }
 
-int main(int argc, char** argv) {
-    char tmpl[] = "/tmp/vkilogcap_XXXXXX";
-    const std::string root = mkdtemp(tmpl) ? tmpl : "";
-    const bool nofile = argc > 1 && std::strcmp(argv[1], "nofile") == 0;
-    unsetenv("VKIFRAME_LIVE_LOG"); unsetenv("VKIFRAME_LIVE_CONF");
-    const std::string xdg = nofile ? root + "/afile/under" : root;                 // under a regular file: the folder cannot be made
-    if (nofile) { FILE* f = std::fopen((root + "/afile").c_str(), "w"); std::fclose(f); }
-    setenv("XDG_CONFIG_HOME", xdg.c_str(), 1);
-    const std::string dir = xdg + "/vkiframes", log = dir + "/live.log", stats = dir + "/stats.jsonl";
-    if (nofile) {
-        CHECK(!LiveLogOpen() && !LiveLogIsFile());
-        // lines that repeat while the game runs: one a minute per call site when they would go to the game's stderr
-        std::atomic<uint64_t> last{0};
-        int allowed = 0;
-        for (int sec = 1; sec <= 300; ++sec) if (LiveLogAllowAt(last, uint64_t(sec) * 1'000'000'000ull)) ++allowed;      // five minutes, one call a second
-        CHECK(allowed == 5);
-        const std::string errf = root + "/stderr.txt";
-        CHECK(std::freopen(errf.c_str(), "w", stderr) != nullptr);
-        for (int i = 0; i < 300; ++i) FG_LOG_ROUTINE("routine line %d", i);                       // 300 calls from one site, within one second
-        std::fflush(stderr);
-        { FILE* f = std::fopen(errf.c_str(), "r"); int lines = 0, c; while (f && (c = std::fgetc(f)) != EOF) if (c == '\n') ++lines; if (f) std::fclose(f); CHECK(lines == 1); }
-        std::string cmd = "rm -rf " + root; (void)std::system(cmd.c_str());
-        std::printf(g_fail ? "logcap nofile: FAILED\n" : "logcap nofile: ok\n");
-        return g_fail ? 1 : 0;
-    }
-    const long long cap = 10000;
-    LiveLogSetCap(cap);
-    mkdir(dir.c_str(), 0700);
-    Fill(log, 20000); Fill(stats, 20000);                                          // left over from an earlier run, above the cap
+static void CaseNofile(const std::string& root) {
+    CHECK(!LiveLogOpen() && !LiveLogIsFile());
+    // lines that repeat while the game runs: one a minute per call site when they would go to the game's stderr
+    std::atomic<uint64_t> last{0};
+    int allowed = 0;
+    for (int sec = 1; sec <= 300; ++sec) if (LiveLogAllowAt(last, uint64_t(sec) * 1'000'000'000ull)) ++allowed;      // five minutes, one call a second
+    CHECK(allowed == 5);
+    const std::string errf = root + "/stderr.txt";
+    CHECK(std::freopen(errf.c_str(), "w", stderr) != nullptr);
+    for (int i = 0; i < 300; ++i) FG_LOG_ROUTINE("routine line %d", i);                       // 300 calls from one site, within one second
+    std::fflush(stderr);
+    { FILE* f = std::fopen(errf.c_str(), "r"); int lines = 0, c; while (f && (c = std::fgetc(f)) != EOF) if (c == '\n') ++lines; if (f) std::fclose(f); CHECK(lines == 1); }
+}
 
+static void CaseRotateOnOpen(const std::string& log, const std::string& stats, long long cap) {
     CHECK(LiveLogOpen() && LiveLogIsFile());
     CHECK(Size(log + ".1") == 20000 && Size(log) >= 0 && Size(log) < cap);         // rotated when opened
     CHECK(LiveStatsAppend("first line"));
     CHECK(Size(stats + ".1") == 20000 && Size(stats) > 0 && Size(stats) < cap);    // the same for stats.jsonl, before the first append
+}
 
+static void CaseLogGrowth(const std::string& log, long long cap) {
     // growth while running: about 8000 lines of ~90 bytes, the cap checked once per 20 lines (the layer checks once a second)
     const int fds0 = OpenFds();
     long long worst = 0; int rotations_seen = 0; long long last_ino = Ino(log + ".1");
@@ -71,19 +58,24 @@ int main(int argc, char** argv) {
     CHECK(access((log + ".2").c_str(), F_OK) != 0);                                // one old file only
     CHECK(OpenFds() <= fds0 + 2);                                                  // retired streams are closed: no descriptor per rotation
     CHECK(LiveLogIsFile());
+}
 
+static void CaseStatsGrowth(const std::string& log, const std::string& stats, long long cap, const std::string& rec) {
     // stats.jsonl: 5000 records of 100 bytes, checked every 60 lines
-    const std::string rec(99, 'y');
     long long sworst = 0;
     for (int i = 0; i < 5000; ++i) { LiveStatsAppend(rec); sworst = std::max(sworst, Size(stats)); }
     CHECK(sworst < cap + 61 * 100 && Size(stats + ".1") > 0 && access((stats + ".2").c_str(), F_OK) != 0);
     // the total on disk stays below two caps (plus the check interval) for each file
     CHECK(Size(log) + Size(log + ".1") < 2 * cap + 2 * 20 * 140);
     CHECK(Size(stats) + Size(stats + ".1") < 2 * cap + 2 * 61 * 100);
+}
 
+static void CaseNoThrottle() {
     // with live.log a file, repeating lines are not throttled
     { std::atomic<uint64_t> l2{0}; int a = 0; for (int sec = 1; sec <= 300; ++sec) if (LiveLogAllowAt(l2, uint64_t(sec) * 1'000'000'000ull)) ++a; CHECK(a == 300); }
+}
 
+static void CaseBenchNoRotate(const std::string& stats, long long cap, const std::string& rec) {
     // a benchmark run does not rotate stats.jsonl: prefill just under the cap, append past it with rotation off, everything stays in one file
     unlink((stats + ".1").c_str());
     CHECK(truncate(stats.c_str(), cap - 300) == 0);                                              // same file, so the open append stream continues at the new end
@@ -91,6 +83,34 @@ int main(int argc, char** argv) {
     CHECK(Size(stats) > cap && access((stats + ".1").c_str(), F_OK) != 0);                      // over the cap, not rotated
     for (int i = 0; i < 70; ++i) LiveStatsAppend(rec, true);                                    // after the run the cap applies again
     CHECK(Size(stats + ".1") > cap && Size(stats) < cap);
+}
+
+int main(int argc, char** argv) {
+    char tmpl[] = "/tmp/vkilogcap_XXXXXX";
+    const std::string root = mkdtemp(tmpl) ? tmpl : "";
+    const bool nofile = argc > 1 && std::strcmp(argv[1], "nofile") == 0;
+    unsetenv("VKIFRAME_LIVE_LOG"); unsetenv("VKIFRAME_LIVE_CONF");
+    const std::string xdg = nofile ? root + "/afile/under" : root;                 // under a regular file: the folder cannot be made
+    if (nofile) { FILE* f = std::fopen((root + "/afile").c_str(), "w"); std::fclose(f); }
+    setenv("XDG_CONFIG_HOME", xdg.c_str(), 1);
+    const std::string dir = xdg + "/vkiframes", log = dir + "/live.log", stats = dir + "/stats.jsonl";
+    if (nofile) {
+        CaseNofile(root);
+        std::string cmd = "rm -rf " + root; (void)std::system(cmd.c_str());
+        std::printf(g_fail ? "logcap nofile: FAILED\n" : "logcap nofile: ok\n");
+        return g_fail ? 1 : 0;
+    }
+    const long long cap = 10000;
+    LiveLogSetCap(cap);
+    mkdir(dir.c_str(), 0700);
+    Fill(log, 20000); Fill(stats, 20000);                                          // left over from an earlier run, above the cap
+
+    const std::string rec(99, 'y');
+    CaseRotateOnOpen(log, stats, cap);
+    CaseLogGrowth(log, cap);
+    CaseStatsGrowth(log, stats, cap, rec);
+    CaseNoThrottle();
+    CaseBenchNoRotate(stats, cap, rec);
 
     std::string cmd = "rm -rf " + root; (void)std::system(cmd.c_str());
     std::printf(g_fail ? "logcap: FAILED\n" : "logcap: ok\n");
