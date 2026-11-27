@@ -7,7 +7,9 @@ Update this file in the same commit that adds, moves or deletes a file.
 src/layer_dispatch.cpp | loader negotiation, GetProcAddr routing, dispatch-table registries | negotiate, GetInstanceProcAddr, GetDeviceProcAddr, dispatch table, HOOK, FrameGen_Negotiate
 src/layer_main.cpp | all hooks: instance/device/swapchain create, present hook, presenter thread, hold-one | Hook_QueuePresentKHR, Hook_CreateSwapchainKHR, PresenterMain, StopPresenter, hold, cap mode, base fps cap, acquire, fence
 include/vk_iframes_layer.hpp | shared declarations: dispatch tables, SwapchainState, hook list, log macros | SwapchainState, DeviceDispatch, FG_LOG, FRAMEGEN_EXPORT, CAP_MODE, gpu_mu
-src/live_config.cpp | settings parser: VKIFRAME_* env, live.conf polling, clamping, live.log, status.json | live.conf, LiveSettings, parse, clamp, REV, hostile env, FRAMEGEN_ fallback, default
+src/live_config.cpp | settings parser: VKIFRAME_* env, live.conf polling, clamping, Apply | live.conf, LiveSettings, parse, clamp, REV, hostile env, FRAMEGEN_ fallback, default
+src/live_config_io.cpp | live config files and logs: live.log rotation, status.json, stats.jsonl | live.log, ReadOwnFile, ConfDir, status.json, stats.jsonl, rotate
+src/live_config_internal.hpp | internal declarations shared by the two live_config sources | liveconf, ConfDir, LogLine, ReadOwnFile
 include/live_config.hpp | LiveSettings struct and live-config API | LiveSettings, live.conf, VKIFRAME_LIVE_CONF, status.json
 include/timing_engine.hpp | TimingEngine: EMA frame-time filter, smoothed arrival times | TimingEngine, EMA, frame time, alpha, jitter
 include/output_clock.hpp | PairScheduler: bypass gate, output clock, per-tick t, jitter buffer | PairScheduler, pacer, bypass, kmax, tick, content delay, target fps, ratio
