@@ -28,59 +28,60 @@ static void Touch(const std::string& path, int sec_ahead) {      // the mtime ha
     utimensat(AT_FDCWD, path.c_str(), ts, 0);
 }
 
-int main() {
-    {   // TARGET_FPS is limited to a fixed refresh rate, not to a variable one or an unknown one
-        const uint64_t hz90 = 11'111'111ull, hz60 = 16'666'667ull;
-        CHECK(std::abs(EffectiveTargetFps(120, hz90, false) - 90.0) < 0.01);                 // above the refresh rate: limited
-        CHECK(EffectiveTargetFps(90, hz90, false) == 90.0);                                  // equal (inside the slack): untouched
-        CHECK(EffectiveTargetFps(60, hz90, false) == 60.0);                                  // below: untouched
-        CHECK(EffectiveTargetFps(1000, hz90, true) == 1000.0);                               // variable refresh: not limited
-        CHECK(EffectiveTargetFps(120, 0, false) == 120.0);                                   // unknown: not limited
-        CHECK(std::abs(EffectiveTargetFps(90, hz60, false) - 60.0) < 0.01);                  // a 60 Hz screen
-        CHECK(std::abs(LayerCostRatio(180.0, 45.0, 1.0) - 0.225) < 1e-12);                   // 4 ms x 45 + 1 ms x 45 of a second
-        CHECK(LayerCostRatio(900.0, 300.0, 1.0) > 1.0 && LayerCostRatio(1.0, 1.0, 0.0) == 0.0);
-    }
-    char dir[] = "/tmp/vkilive_XXXXXX";
-    if (!mkdtemp(dir)) return 2;
-    const std::string conf = std::string(dir) + "/live.conf", log = std::string(dir) + "/live.log";
-    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
-    setenv("VKIFRAME_LIVE_LOG", log.c_str(), 1);
-    setenv("VKIFRAME_TARGET_FPS", "90", 1);
-    setenv("VKIFRAME_BASE_FPS_CAP", "45", 1);
-    setenv("VKIFRAME_WARP", "1", 1);                              // the oldest name of OPTICAL_FLOW still works
 
+// TARGET_FPS is limited to a fixed refresh rate, not to a variable one or an unknown one
+static void TestRefreshClamp() {
+    const uint64_t hz90 = 11'111'111ull, hz60 = 16'666'667ull;
+    CHECK(std::abs(EffectiveTargetFps(120, hz90, false) - 90.0) < 0.01);                 // above the refresh rate: limited
+    CHECK(EffectiveTargetFps(90, hz90, false) == 90.0);                                  // equal (inside the slack): untouched
+    CHECK(EffectiveTargetFps(60, hz90, false) == 60.0);                                  // below: untouched
+    CHECK(EffectiveTargetFps(1000, hz90, true) == 1000.0);                               // variable refresh: not limited
+    CHECK(EffectiveTargetFps(120, 0, false) == 120.0);                                   // unknown: not limited
+    CHECK(std::abs(EffectiveTargetFps(90, hz60, false) - 60.0) < 0.01);                  // a 60 Hz screen
+    CHECK(std::abs(LayerCostRatio(180.0, 45.0, 1.0) - 0.225) < 1e-12);                   // 4 ms x 45 + 1 ms x 45 of a second
+    CHECK(LayerCostRatio(900.0, 300.0, 1.0) > 1.0 && LayerCostRatio(1.0, 1.0, 0.0) == 0.0);
+}
+
+static void TestStartupKeys(const std::string& conf) {
     Write(conf, "REV=0\nFRAMEGEN_EXTRAPOLATE=1\nVKIFRAME_UI_MASK_THRESHOLD=0.03\nTARGET_FPS=75\n");
     CHECK(EnvVar("EXTRAPOLATE") && std::string(EnvVar("EXTRAPOLATE")) == "1");          // startup-only keys come from the file
     CHECK(EnvVar("UI_MASK_THRESHOLD") && std::string(EnvVar("UI_MASK_THRESHOLD")) == "0.03");
     CHECK(!EnvVar("FLOW_LEVEL"));                          // not in the file / not a startup key
     unlink(conf.c_str());
+}
 
-    {   // defaults by machine (cap / target): Deck OLED 45 / 90, Deck LCD 30 / 60, any other machine 60 / 120
-        const std::string dmi = std::string(dir) + "/dmi";
-        auto is = [&](const char* name, float cap, float target) { Write(dmi, name); MachineDefaults m = MachineDefaultsFor(dmi.c_str()); return m.base_fps_cap == cap && m.target_fps == target && DefaultTargetFps(dmi.c_str()) == target && DefaultBaseFpsCap(dmi.c_str()) == cap; };
-        CHECK(is("Galileo\n", 45.0f, 90.0f));
-        CHECK(is("Jupiter\n", 30.0f, 60.0f));
-        CHECK(is("MS-7E12\n", 60.0f, 120.0f));
-        CHECK(is("\n", 60.0f, 120.0f));
-        CHECK(is("", 60.0f, 120.0f));
-        CHECK(MachineDefaultsFor("/nonexistent/dmi").target_fps == 120.0f && MachineDefaultsFor("/nonexistent/dmi").base_fps_cap == 60.0f);
-        Write(dmi, "Galileo\n"); setenv("VKIFRAME_DMI_FILE", dmi.c_str(), 1);              // the hook: the default argument follows VKIFRAME_DMI_FILE
-        CHECK(MachineDefaultsFor().target_fps == 90.0f && DefaultBaseFpsCap() == 45.0f);
+// a FIFO (nobody writes to it), a directory and a missing file: no hang, the other-machine row
+static void TestDmiSpecialFiles(const char* dir) {
+        const std::string fifo = std::string(dir) + "/dmi_fifo";
+        unlink(fifo.c_str()); CHECK(mkfifo(fifo.c_str(), 0600) == 0);
+        setenv("VKIFRAME_DMI_FILE", fifo.c_str(), 1);
+        MachineDefaults f = MachineDefaultsFor(); CHECK(f.target_fps == 120.0f && f.base_fps_cap == 60.0f);
+        setenv("VKIFRAME_DMI_FILE", dir, 1);
+        f = MachineDefaultsFor(); CHECK(f.target_fps == 120.0f && f.base_fps_cap == 60.0f);
+        f = MachineDefaultsFor(fifo.c_str()); CHECK(f.target_fps == 120.0f);
         setenv("VKIFRAME_DMI_FILE", "/nonexistent/dmi", 1);
-        CHECK(MachineDefaultsFor().target_fps == 120.0f);
-        {   // a FIFO (nobody writes to it), a directory and a missing file: no hang, the other-machine row
-            const std::string fifo = std::string(dir) + "/dmi_fifo";
-            unlink(fifo.c_str()); CHECK(mkfifo(fifo.c_str(), 0600) == 0);
-            setenv("VKIFRAME_DMI_FILE", fifo.c_str(), 1);
-            MachineDefaults f = MachineDefaultsFor(); CHECK(f.target_fps == 120.0f && f.base_fps_cap == 60.0f);
-            setenv("VKIFRAME_DMI_FILE", dir, 1);
-            f = MachineDefaultsFor(); CHECK(f.target_fps == 120.0f && f.base_fps_cap == 60.0f);
-            f = MachineDefaultsFor(fifo.c_str()); CHECK(f.target_fps == 120.0f);
-            setenv("VKIFRAME_DMI_FILE", "/nonexistent/dmi", 1);
-            unlink(fifo.c_str());
-        }
-        unlink(dmi.c_str());
-    }
+        unlink(fifo.c_str());
+}
+
+// defaults by machine (cap / target): Deck OLED 45 / 90, Deck LCD 30 / 60, any other machine 60 / 120
+static void TestMachineDefaults(const char* dir) {
+    const std::string dmi = std::string(dir) + "/dmi";
+    auto is = [&](const char* name, float cap, float target) { Write(dmi, name); MachineDefaults m = MachineDefaultsFor(dmi.c_str()); return m.base_fps_cap == cap && m.target_fps == target && DefaultTargetFps(dmi.c_str()) == target && DefaultBaseFpsCap(dmi.c_str()) == cap; };
+    CHECK(is("Galileo\n", 45.0f, 90.0f));
+    CHECK(is("Jupiter\n", 30.0f, 60.0f));
+    CHECK(is("MS-7E12\n", 60.0f, 120.0f));
+    CHECK(is("\n", 60.0f, 120.0f));
+    CHECK(is("", 60.0f, 120.0f));
+    CHECK(MachineDefaultsFor("/nonexistent/dmi").target_fps == 120.0f && MachineDefaultsFor("/nonexistent/dmi").base_fps_cap == 60.0f);
+    Write(dmi, "Galileo\n"); setenv("VKIFRAME_DMI_FILE", dmi.c_str(), 1);              // the hook: the default argument follows VKIFRAME_DMI_FILE
+    CHECK(MachineDefaultsFor().target_fps == 90.0f && DefaultBaseFpsCap() == 45.0f);
+    setenv("VKIFRAME_DMI_FILE", "/nonexistent/dmi", 1);
+    CHECK(MachineDefaultsFor().target_fps == 120.0f);
+    TestDmiSpecialFiles(dir);
+    unlink(dmi.c_str());
+}
+
+static void TestEnvAndFile(const std::string& conf) {
     LiveSettings& L = Live();
     CHECK(GetConfig().interpolate);
     Poll();                                                       // no file: environment values
@@ -89,7 +90,10 @@ int main() {
     Write(conf, "# test\nREV=1\nFRAMEGEN_TARGET_FPS=60\nVKIFRAME_MAX_SYNTHETIC=2\nWARP_BIDIR=1\nENABLED=1\n");
     Poll();
     CHECK(L.target_fps == 60.0f && L.max_synthetic == 2 && L.interp_bidir == 1 && L.base_fps_cap == 45.0f);   // missing keys keep the environment value
+}
 
+static void TestClampedFile(const std::string& conf) {
+    LiveSettings& L = Live();
     Write(conf, "REV=2\nTARGET_FPS=9999\nMAX_SYNTHETIC=9\nMIN_GAIN=abc\nPHASE_OFFSET=-3\nBASE_FPS_CAP=500\nNONSENSE=1\nWARP=1\nINTERPOLATE=1\nOPTICAL_FLOW=1\nWARP_BIDIR=0\nFLOW_LEVEL=1\nno equals sign\nENABLED=0\n"); Touch(conf, 5);
     Poll();
     CHECK(L.target_fps == 600.0f);                                 // clamped to the schema range
@@ -103,7 +107,10 @@ int main() {
     Write(conf, "REV=3\nENABLED=1\nTARGET_FPS=75\n"); Touch(conf, 10);
     Poll();
     CHECK(L.enabled == 1 && L.target_fps == 75.0f && L.max_synthetic == 3 && L.base_fps_cap == 45.0f);
+}
 
+static void TestCmdBuffersAndMargin(const std::string& conf) {
+    LiveSettings& L = Live();
     Write(conf, "REV=4\nCMD_BUFFERS=99\n"); Touch(conf, 12); Poll(); CHECK(L.cmd_buffers == 32);
     Write(conf, "REV=5\nCMD_BUFFERS=2\n"); Touch(conf, 14); Poll(); CHECK(L.cmd_buffers == 4);
     Write(conf, "REV=6\nCMD_BUFFERS=16\n"); Touch(conf, 16); Poll(); CHECK(L.cmd_buffers == 16);
@@ -112,7 +119,90 @@ int main() {
     Write(conf, "REV=7\nSYNTH_MARGIN=0\n"); Touch(conf, 18); Poll(); CHECK(L.synth_margin == 0.0f);
     Write(conf, "REV=8\nSYNTH_MARGIN=0.9\n"); Touch(conf, 20); Poll(); CHECK(L.synth_margin == 0.45f);
     Write(conf, "REV=9\nSYNTH_MARGIN=-1\n"); Touch(conf, 22); Poll(); CHECK(L.synth_margin == 0.0f);
+}
 
+static void TestRevAndRemoval(const std::string& conf) {
+    LiveSettings& L = Live();
+    // REV is only logged; a value that is not a whole number is ignored and said so, it is not read as a prefix or as 0 or as a wrapped number
+    Write(conf, "REV=40\nTARGET_FPS=75\n"); Touch(conf, 66); Poll();
+    Write(conf, "REV=12abc\nTARGET_FPS=76\n"); Touch(conf, 68); Poll();
+    Write(conf, "REV=99999999999999999999999\nTARGET_FPS=77\n"); Touch(conf, 70); Poll();
+    Write(conf, "REV=-5\nTARGET_FPS=78\n"); Touch(conf, 72); Poll();
+    CHECK(L.target_fps == 78.0f);                                 // the settings in those files still applied
+    Write(conf, "REV=41\nTARGET_FPS=75\n"); Touch(conf, 74); Poll();
+
+    unlink(conf.c_str());                                         // removing the file reverts everything
+    Poll();
+    CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8 && L.synth_margin == 0.15f);
+}
+
+static void TestLogMessages(const std::string& text) {
+    CHECK(text.find("startup setting EXTRAPOLATE=1") != std::string::npos);
+    CHECK(text.find("session start") != std::string::npos);
+    CHECK(text.find("REV=\"12abc\" is not a whole number") != std::string::npos && text.find("REV=\"99999999999999999999999\" is not a whole number") != std::string::npos && text.find("REV=\"-5\" is not a whole number") != std::string::npos);
+    CHECK(text.find("REV 40,") != std::string::npos && text.find("REV 41,") != std::string::npos);            // the last good number stays, then the next good one
+    CHECK(text.find("CHANGE TARGET_FPS: 90 -> 60") != std::string::npos);
+    CHECK(text.find("CHANGE ENABLED: 1 -> 0") != std::string::npos);
+    CHECK(text.find("clamped to the range") != std::string::npos);
+    CHECK(text.find("unknown key \"NONSENSE\"") != std::string::npos);
+    CHECK(text.find("unknown key \"OPTICAL_FLOW\"") == std::string::npos && text.find("unknown key \"INTERPOLATE\"") == std::string::npos && text.find("unknown key \"WARP\"") == std::string::npos);          // start-of-game keys are not errors
+    CHECK(text.find("CHANGE MIN_GAIN") == std::string::npos);              // 1.01 vs 1.01f is not a change
+    CHECK(text.find("no '='") != std::string::npos);
+    CHECK(text.find("not a valid value") != std::string::npos);
+    CHECK(text.find("live.conf removed") != std::string::npos);
+}
+
+static void TestLogCleanAndBench(const std::string& text) {
+    {   // the log is plain lines: no control character but the line ends, whatever the settings file contained
+        bool clean = true; for (char ch : text) if (ch != '\n' && (static_cast<unsigned char>(ch) < 0x20 || ch == 0x7f)) clean = false;
+        CHECK(clean);
+        CHECK(text.find("contains a NUL byte") != std::string::npos);
+        CHECK(text.find("bigger than 65536 bytes") != std::string::npos);
+        size_t bogus = 0; for (size_t pos = 0; (pos = text.find("unknown key \"BOGUS", pos)) != std::string::npos; ++pos) ++bogus;
+        CHECK(bogus > 0 && bogus <= 10);                                                    // the notes of one file are capped
+        CHECK(text.find("more notes about this file not shown") != std::string::npos);
+    }
+    CHECK(text.find("BENCH in live.conf is not used any more") != std::string::npos);
+    CHECK(text.find("bench.req: request 1700000001") != std::string::npos && text.find("is not a request number") != std::string::npos);
+    CHECK(text.find("unknown key \"BENCH\"") == std::string::npos);
+    CHECK(text.find("back to the startup value") != std::string::npos);
+}
+
+// files the layer writes are private: folder 0700, status.json 0600, and no HOME / XDG_CONFIG_HOME means no files at all
+static void TestPrivateFiles() {
+    char home[] = "/tmp/vkihome_XXXXXX";
+    CHECK(mkdtemp(home) != nullptr);
+    unsetenv("VKIFRAME_LIVE_CONF"); unsetenv("VKIFRAME_LIVE_LOG");
+    setenv("XDG_CONFIG_HOME", home, 1);
+    LiveWriteStatus(30, 90, 2, "interp", 90.0);
+    struct stat sd, sf;
+    const std::string cd = std::string(home) + "/vkiframes";
+    CHECK(stat(cd.c_str(), &sd) == 0 && (sd.st_mode & 0777) == 0700);
+    CHECK(stat((cd + "/status.json").c_str(), &sf) == 0 && (sf.st_mode & 0777) == 0600);
+    unlink((cd + "/status.json").c_str()); rmdir(cd.c_str());
+    unsetenv("XDG_CONFIG_HOME"); unsetenv("HOME");
+    LiveWriteStatus(30, 90, 2, "interp", 90.0);                 // nowhere to write: nothing happens, and nothing lands in /tmp
+    CHECK(access("/tmp/vkiframes/status.json", F_OK) != 0);
+    rmdir(home);
+}
+
+int main() {
+    TestRefreshClamp();
+    char dir[] = "/tmp/vkilive_XXXXXX";
+    if (!mkdtemp(dir)) return 2;
+    const std::string conf = std::string(dir) + "/live.conf", log = std::string(dir) + "/live.log";
+    setenv("VKIFRAME_LIVE_CONF", conf.c_str(), 1);
+    setenv("VKIFRAME_LIVE_LOG", log.c_str(), 1);
+    setenv("VKIFRAME_TARGET_FPS", "90", 1);
+    setenv("VKIFRAME_BASE_FPS_CAP", "45", 1);
+    setenv("VKIFRAME_WARP", "1", 1);                              // the oldest name of OPTICAL_FLOW still works
+
+    TestStartupKeys(conf);
+    TestMachineDefaults(dir);
+    TestEnvAndFile(conf);
+    TestClampedFile(conf);
+    TestCmdBuffersAndMargin(conf);
+    LiveSettings& L = Live();
     {   // hostile or broken file contents: nothing crashes, nothing hangs, nothing broken is applied
         int t = 100;
         auto Put = [&](const std::string& text) { Write(conf, text); Touch(conf, t += 2); Poll(); };
@@ -222,62 +312,12 @@ int main() {
         Write(conf, "REV=32\nTARGET_FPS=75\n"); Touch(conf, 64); Poll();
     }
 
-    // REV is only logged; a value that is not a whole number is ignored and said so, it is not read as a prefix or as 0 or as a wrapped number
-    Write(conf, "REV=40\nTARGET_FPS=75\n"); Touch(conf, 66); Poll();
-    Write(conf, "REV=12abc\nTARGET_FPS=76\n"); Touch(conf, 68); Poll();
-    Write(conf, "REV=99999999999999999999999\nTARGET_FPS=77\n"); Touch(conf, 70); Poll();
-    Write(conf, "REV=-5\nTARGET_FPS=78\n"); Touch(conf, 72); Poll();
-    CHECK(L.target_fps == 78.0f);                                 // the settings in those files still applied
-    Write(conf, "REV=41\nTARGET_FPS=75\n"); Touch(conf, 74); Poll();
-
-    unlink(conf.c_str());                                         // removing the file reverts everything
-    Poll();
-    CHECK(L.target_fps == 90.0f && L.enabled == 1 && L.cmd_buffers == 8 && L.synth_margin == 0.15f);
+    TestRevAndRemoval(conf);
 
     const std::string text = Slurp(log);
-    CHECK(text.find("startup setting EXTRAPOLATE=1") != std::string::npos);
-    CHECK(text.find("session start") != std::string::npos);
-    CHECK(text.find("REV=\"12abc\" is not a whole number") != std::string::npos && text.find("REV=\"99999999999999999999999\" is not a whole number") != std::string::npos && text.find("REV=\"-5\" is not a whole number") != std::string::npos);
-    CHECK(text.find("REV 40,") != std::string::npos && text.find("REV 41,") != std::string::npos);            // the last good number stays, then the next good one
-    CHECK(text.find("CHANGE TARGET_FPS: 90 -> 60") != std::string::npos);
-    CHECK(text.find("CHANGE ENABLED: 1 -> 0") != std::string::npos);
-    CHECK(text.find("clamped to the range") != std::string::npos);
-    CHECK(text.find("unknown key \"NONSENSE\"") != std::string::npos);
-    CHECK(text.find("unknown key \"OPTICAL_FLOW\"") == std::string::npos && text.find("unknown key \"INTERPOLATE\"") == std::string::npos && text.find("unknown key \"WARP\"") == std::string::npos);          // start-of-game keys are not errors
-    CHECK(text.find("CHANGE MIN_GAIN") == std::string::npos);              // 1.01 vs 1.01f is not a change
-    CHECK(text.find("no '='") != std::string::npos);
-    CHECK(text.find("not a valid value") != std::string::npos);
-    CHECK(text.find("live.conf removed") != std::string::npos);
-    {   // the log is plain lines: no control character but the line ends, whatever the settings file contained
-        bool clean = true; for (char ch : text) if (ch != '\n' && (static_cast<unsigned char>(ch) < 0x20 || ch == 0x7f)) clean = false;
-        CHECK(clean);
-        CHECK(text.find("contains a NUL byte") != std::string::npos);
-        CHECK(text.find("bigger than 65536 bytes") != std::string::npos);
-        size_t bogus = 0; for (size_t pos = 0; (pos = text.find("unknown key \"BOGUS", pos)) != std::string::npos; ++pos) ++bogus;
-        CHECK(bogus > 0 && bogus <= 10);                                                    // the notes of one file are capped
-        CHECK(text.find("more notes about this file not shown") != std::string::npos);
-    }
-    CHECK(text.find("BENCH in live.conf is not used any more") != std::string::npos);
-    CHECK(text.find("bench.req: request 1700000001") != std::string::npos && text.find("is not a request number") != std::string::npos);
-    CHECK(text.find("unknown key \"BENCH\"") == std::string::npos);
-    CHECK(text.find("back to the startup value") != std::string::npos);
-
-    {   // files the layer writes are private: folder 0700, status.json 0600, and no HOME / XDG_CONFIG_HOME means no files at all
-        char home[] = "/tmp/vkihome_XXXXXX";
-        CHECK(mkdtemp(home) != nullptr);
-        unsetenv("VKIFRAME_LIVE_CONF"); unsetenv("VKIFRAME_LIVE_LOG");
-        setenv("XDG_CONFIG_HOME", home, 1);
-        LiveWriteStatus(30, 90, 2, "interp", 90.0);
-        struct stat sd, sf;
-        const std::string cd = std::string(home) + "/vkiframes";
-        CHECK(stat(cd.c_str(), &sd) == 0 && (sd.st_mode & 0777) == 0700);
-        CHECK(stat((cd + "/status.json").c_str(), &sf) == 0 && (sf.st_mode & 0777) == 0600);
-        unlink((cd + "/status.json").c_str()); rmdir(cd.c_str());
-        unsetenv("XDG_CONFIG_HOME"); unsetenv("HOME");
-        LiveWriteStatus(30, 90, 2, "interp", 90.0);                 // nowhere to write: nothing happens, and nothing lands in /tmp
-        CHECK(access("/tmp/vkiframes/status.json", F_OK) != 0);
-        rmdir(home);
-    }
+    TestLogMessages(text);
+    TestLogCleanAndBench(text);
+    TestPrivateFiles();
     unlink(log.c_str()); rmdir(dir);
     std::printf(g_fail ? "live config: FAILED\n" : "live config: ok\n");
     return g_fail ? 1 : 0;
