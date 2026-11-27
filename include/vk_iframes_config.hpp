@@ -191,3 +191,83 @@ inline double CostWarnFromEnv(const char* v) {
 inline const char* DumpNeedsFlowNote(int dump_pair, bool flow_on) {
     return dump_pair > 0 && !flow_on ? "VKIFRAME_DUMP needs VKIFRAME_OPTICAL_FLOW=1; nothing will be captured" : nullptr;
 }
+
+// GetConfig reads the settings in four groups, in this order (a later group may override an earlier one).
+// log target, defaults by machine, pacing, presenter and capture sizes
+inline void ConfigReadPacing(Config& c) {
+    { const MachineDefaults md = MachineDefaultsFor(); c.target_fps = md.target_fps; c.base_fps_cap = md.base_fps_cap; }
+    // VKIFRAME_LOG_FILE=<path>: append everything the layer prints (and the game's own stderr) to that file; for runs without the launch script
+    if (const char* v = EnvVar("LOG_FILE"); v && *v) { FILE* r_ = std::freopen(v, "a", stderr); (void)r_; }
+    else (void)LiveLogOpen();                     // default: one log, ~/.config/vkiframes/live.log, shared with the settings changes
+    EnvNumber("TARGET_FPS", 1.0, 600.0, c.target_fps);
+    EnvNumber("SYNTH_MARGIN", 0.0, 0.45, c.synth_margin);
+    EnvNumber("PHASE_OFFSET", 0.0, 0.999, c.phase_offset);
+    EnvFlag("PHASE_LOCK", c.phase_lock);
+    EnvNumber("MIN_GAIN", 1.01, 2.0, c.min_gain);
+    EnvInt("MAX_SYNTHETIC", 1, 10, c.max_synthetic);
+    EnvNumber("BASE_FPS_CAP", 0.0, 240.0, c.base_fps_cap);
+    if (c.base_fps_cap < 1.0f) c.base_fps_cap = 0.0f;                      // below 1 fps is not a cap anybody means: off (a 1/x second sleep per frame would freeze the game)
+    EnvFlag("HOLD", c.hold);
+    EnvFlag("SYNTH", c.synth);
+    EnvFlag("PACE_SLEEP", c.pace_sleep);
+    EnvFlag("PRESENTER", c.presenter);
+    EnvInt("CMD_BUFFERS", 4, 32, c.cmd_buffers);
+    EnvInt("ACQUIRE_WAIT_US", 0, 20000, c.acquire_wait_us);
+    EnvInt("PACE_LEAD_US", 0, 20000, c.pace_lead_us);
+    EnvFlag("ABSOLUTE", c.absolute);
+}
+// flow, tickmark, interpolation guide and fade thresholds
+inline void ConfigReadFlow(Config& c) {
+    EnvFlag("FLOW", c.flow);
+    EnvFlag("DEBUG_FLOW", c.debug_flow);
+    EnvInt("TICKMARK", 0, 3, c.tickmark);
+    EnvInt("FLOW_LEVEL", 1, 3, c.flow_level);
+    if (const char* v = EnvVar2("INTERP_GUIDE", "WARP_GUIDE")) EnvNumberValue("INTERP_GUIDE", v, 0.0, 1.0, c.interp_guide);
+    EnvNumber("CONF_LO", 0.0, 10.0, c.conf_lo);
+    EnvNumber("CONF_HI", 0.0, 10.0, c.conf_hi);
+    EnvNumber("PAN_LO", 0.0, 1.0, c.pan_lo);
+    EnvNumber("PAN_HI", 0.0, 1.0, c.pan_hi);
+    EnvNumber("UI_MASK_THRESHOLD", 0.0, 0.5, c.ui_mask);
+}
+// base-rate cap mode
+inline void ConfigReadCap(Config& c) {
+    EnvFlag("CAP_EARLY", c.cap_early);
+    EnvFlag("STATS_FRAMES", c.stats_frames);
+    if (c.cap_early) c.cap_mode = Config::CapMode::Early;
+    if (const char* v = EnvVar("CAP_MODE")) {
+        if (c.cap_early && std::strcmp(v, "early")) FG_LOG("VKIFRAME_CAP_EARLY=1 and VKIFRAME_CAP_MODE=\"%s\" disagree: CAP_MODE wins", ShownValue(v).c_str());
+        if (!std::strcmp(v, "late")) c.cap_mode = Config::CapMode::Late;
+        else if (!std::strcmp(v, "early")) c.cap_mode = Config::CapMode::Early;
+        else if (!std::strcmp(v, "hybrid")) c.cap_mode = Config::CapMode::Hybrid;
+        else FG_LOG("VKIFRAME_CAP_MODE=\"%s\" is not late, early or hybrid: ignored", ShownValue(v).c_str());
+    }
+}
+// extrapolation, interpolation options, dump, debug switches
+inline void ConfigReadInterp(Config& c) {
+    EnvFlag("EXTRAPOLATE", c.extrapolate);
+    if (const char* v = EnvVar2("INTERP_BIDIR", "WARP_BIDIR")) EnvFlagValue("INTERP_BIDIR", v, c.interp_bidir);
+    if (const char* v = EnvVar2("INTERP_CAND", "WARP_CAND")) EnvNumberValue("INTERP_CAND", v, 0.0, 1.0, c.cand_thr);
+    EnvInt("FLOW_BWD_SKIP", 0, 2, c.flow_bwd_skip);
+    EnvFlag("FLOW_SUBPIXEL", c.flow_subpixel);
+    if (const char* v = EnvVar("DUMP_DIR"))         { std::snprintf(c.dump_dir, sizeof c.dump_dir, "%s", v); }
+    EnvInt("DUMP", 0, 1000000000, c.dump_pair);
+    EnvInt("DUMP_FRAMES", 5, 60, c.dump_frames);
+    if (const char* v = EnvVar3("OPTICAL_FLOW", "INTERPOLATE", "WARP")) EnvFlagValue("OPTICAL_FLOW", v, c.interpolate);
+    EnvFlag("ONESIDED_FILL", c.onesided_fill);
+    if (c.onesided_fill && LiveMaxSyntheticLimit() <= 4) { c.onesided_fill = false; FG_LOG("VKIFRAME_ONESIDED_FILL is experimental: it needs VKIFRAME_EXPERIMENTAL=1 as well; ignored"); }
+    if (c.extrapolate) { c.interpolate = true; c.debug_flow = false; }
+    if (c.debug_flow || c.interpolate) c.flow = true;
+    EnvFlag("DEBUG_RING", c.debug_ring);
+    EnvFlag("TIMING_TEST", c.timing_test);
+}
+inline const Config& GetConfig() {
+    static const Config c = [] {
+        Config c;
+        ConfigReadPacing(c);
+        ConfigReadFlow(c);
+        ConfigReadCap(c);
+        ConfigReadInterp(c);
+        return c;
+    }();
+    return c;
+}
