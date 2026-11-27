@@ -12,6 +12,20 @@
 // predictions from B and are dropped once a newer job exists (gen != SwapchainState::job_gen).
 struct PresentJob { HeldFrame a, b; PairScheduler::Plan plan; VkQueue queue{}; bool extrap{false}; uint64_t gen{0}; };
 
+// Used by PresenterMain until it moves next to them (removed again in that commit).
+#include <condition_variable>
+#include <deque>
+#include <thread>
+struct Presenter {
+    std::thread th;
+    std::mutex mu;
+    std::condition_variable cv, idle_cv;
+    std::deque<PresentJob> q;
+    bool busy{false};
+    std::atomic<bool> stop{false};
+};
+namespace fg_layer { void NotePresentError(SwapchainState& sc, VkResult r); }
+
 // The bodies of the hooks: layer_main.cpp wraps each in the out-of-memory guard.
 VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
 void Impl_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
