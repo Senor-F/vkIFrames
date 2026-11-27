@@ -1,5 +1,5 @@
 // Panel sections: the types and the plain functions that build the JSX of the quick-access panel (no hooks).
-import { ButtonItem, Focusable, PanelSectionRow } from "@decky/ui";
+import { ButtonItem, Focusable, PanelSection, PanelSectionRow } from "@decky/ui";
 
 export type Term = { key: string; eq: number };
 export type SchemaItem = {
@@ -29,6 +29,12 @@ export type State = {
   bench: { status: string | null; reason: string; age_s: number; layer_cost_mean_ms: number | null; gpu_share: number | null } | null;
   bench_file: string;
 };
+
+const LAUNCH_PLAIN = "VKIFRAME_ENABLE=1";
+const LAUNCH_FULL = "VKIFRAME_ENABLE=1 %command%";
+const LAUNCH_32BIT = "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%";   // 32-bit games: Proton runs them inside a 64-bit process, so the 64-bit layer can load
+const LAUNCH_DXVK_ONLY = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" VKIFRAME_ENABLE=1 %command%';   // the same without WOW64 (not tested separately: the tested line is the one below)
+const LAUNCH_DXVK = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%';   // Proton - Experimental, game loads the layer but gets no extra frames: DXVK stops using present timing (a workaround, tested in one game)
 
 // One launch option to copy: the whole line on a small font that wraps anywhere (the lines are long), a one-line note under it.
 export function LaunchRow({ text, note, onCopy }: { text: string; note: string; onCopy: () => void }) {
@@ -75,4 +81,108 @@ export function EndMarker({ text }: { text: string }) {
 // Blank space plus a thin line between sections, so one section's tooltip text is not mistaken for the next one's.
 export function Gap() {
   return <div style={{ height: 1, margin: "18px 16px", background: "rgba(255,255,255,0.15)" }} />;
+}
+
+// Section: layer install state and the live status line.
+export function renderStatusSection(layer: LayerInfo, statusText: string, onInstall: () => void) {
+  return (
+    <PanelSection title="Layer and status">
+      {/* Only while the layer is missing. Once it is installed the button is gone from the top, so a stray tap cannot reinstall it; Reinstall and Uninstall are at the very bottom of the panel. */}
+      {!layer.installed && (
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={!layer.bundled_available}
+            onClick={onInstall}
+          >
+            Install layer
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
+      {!layer.installed && !layer.bundled_available && (
+        <PanelSectionRow>
+          <div style={{ fontSize: 11, opacity: 0.7 }}>
+            No library in the plugin's bin/ folder (scripts/link-build.sh points at a local build).
+          </div>
+        </PanelSectionRow>
+      )}
+      <PanelSectionRow>
+        <Focusable style={{ fontSize: 12, wordBreak: "break-word" }} onActivate={() => {}}>
+          <div style={{ fontWeight: 600 }}>{layer.installed ? "Layer installed" : "Layer not installed"}</div>
+          {layer.library && <div style={{ fontSize: 11, opacity: 0.7, wordBreak: "break-all" }}>{layer.library}</div>}
+          <div style={{ marginTop: 4 }}>{statusText}</div>
+        </Focusable>
+      </PanelSectionRow>
+      <EndMarker text="End of status" />
+    </PanelSection>
+  );
+}
+
+// Section: the launch options to copy.
+export function renderLaunchSection(copy: (text: string) => void) {
+  return (
+    <PanelSection title="Launch options">
+      <PanelSectionRow>
+        <div style={{ fontSize: 11, opacity: 0.75 }}>
+          Copy one into the game's launch options (Properties → General). The plugin never sets it. Already have options? Put VKIFRAME_ENABLE=1 before %command%.
+        </div>
+      </PanelSectionRow>
+      <LaunchRow text={LAUNCH_PLAIN} note="Plain" onCopy={() => copy(LAUNCH_PLAIN)} />
+      <LaunchRow text={LAUNCH_FULL} note="Plain with %command%" onCopy={() => copy(LAUNCH_FULL)} />
+      <LaunchRow text={LAUNCH_32BIT} note="32-bit games (Proton WOW64; not every game works)" onCopy={() => copy(LAUNCH_32BIT)} />
+      <LaunchRow text={LAUNCH_DXVK_ONLY} note="DXVK without present timing (not tested by itself)" onCopy={() => copy(LAUNCH_DXVK_ONLY)} />
+      <LaunchRow text={LAUNCH_DXVK} note="DXVK without present timing + 32-bit" onCopy={() => copy(LAUNCH_DXVK)} />
+      <PanelSectionRow>
+        <div style={{ fontSize: 11, opacity: 0.75 }}>
+          No extra frames (seen with Batman: Arkham Asylum on Proton - Experimental)? Try GE-Proton, or the last line (tested on one game). The DXVK-only line is not tested. They turn off present timing in DXVK; may change frame pacing. Remove if the game misbehaves.
+        </div>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+}
+
+// Section: benchmark button and the last result.
+export function renderBenchSection(state: State, gameRunning: boolean, benchRunning: boolean, benchLabel: string, onBench: () => void) {
+  return (
+    <PanelSection title="Benchmark">
+      <PanelSectionRow>
+        <div style={{ fontSize: 11, opacity: 0.75 }}>
+          Measures what the layer costs: 30 s warm-up, then 6 x (60 s off, 60 s on), about 13 min. Stay in one demanding scene; it stops if you change a setting or leave the game. Result: bench.json in the vkiframes config folder.
+        </div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          disabled={!gameRunning || benchRunning}
+          onClick={onBench}
+        >
+          {benchRunning ? "Benchmark running: " + benchLabel : "Run benchmark (13 min)"}
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Focusable style={{ fontSize: 12 }} onActivate={() => {}}>
+          {state.bench
+            ? state.bench.status === "complete"
+              ? `Last run: layer costs ${state.bench.layer_cost_mean_ms} ms per game frame, ${Math.round((state.bench.gpu_share ?? 0) * 100)} % of the GPU (${Math.round(state.bench.age_s / 60)} min ago)`
+              : `Last run stopped: ${state.bench.reason}`
+            : "No benchmark run yet."}
+        </Focusable>
+      </PanelSectionRow>
+      <EndMarker text="End of benchmark" />
+    </PanelSection>
+  );
+}
+
+// Section: the change log tail.
+export function renderLogSection(log: string[]) {
+  return (
+    <PanelSection title="Change log">
+      <PanelSectionRow>
+        <div style={{ fontSize: 10, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", opacity: 0.85 }}>
+          {log.length ? log.join("\n") : "Nothing logged yet."}
+        </div>
+      </PanelSectionRow>
+      <EndMarker text="End of change log" />
+    </PanelSection>
+  );
 }
