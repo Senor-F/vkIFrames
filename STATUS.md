@@ -102,5 +102,6 @@ The project rules (CLAUDE.md, Rules 1 to 3) are in place: documents split, INDEX
   5. `src/optical_flow.cpp` and `decky/src/index.tsx` last: the mock tests do not run the flow engine (open point 5 above) and the panel has no test; add tests first.
   6. The long test `main` functions: split last, they are the safety net.
 * **Files without a one-line purpose comment:** none (`src/live_config.cpp` already had one). (`cmake/*.cmake`, `decky/rollup.config.js` and `decky/decky.pyi` are not measured.)
+* **src/gpu_frames.cpp (2026-11-27):** split by pure moves into `src/gpu_frames.cpp` and `src/gpu_setup.cpp` (both within 150-500 lines). Splitting GpuSynthesize (149 lines), GpuCapture (50) and GpuInit (45) is deferred until a GPU bench is possible.
 * **decky/main.py (2026-11-27):** `_open_dir` and `install_layer` are split (every function now 40 lines or less); the file stays about 630 lines until a sibling-module import is confirmed under Decky Loader on the Deck (its `sys.path`; the tests also patch `main.USER_HOME`, `main.DMI_PRODUCT`, `main.LOG_CAP_BYTES`, so a split needs them changed).
 * **Next:** add `tools/code_size.py` to the build once the tree passes it.

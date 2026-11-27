@@ -1,5 +1,5 @@
 #pragma once
-// Helpers shared by src/gpu_frames.cpp and src/optical_flow.cpp (command buffers of the GpuState, barriers, memory, images).
+// Helpers shared by src/gpu_frames.cpp, src/gpu_setup.cpp and src/optical_flow.cpp (command buffers of the GpuState, barriers, memory, images).
 
 #include "gpu_frames.hpp"
 
@@ -28,5 +28,9 @@ DumpPool::Buf* DumpRecord(const DeviceDispatch& dt, VkCommandBuffer cb, VkImage 
 void DumpFlush(const DeviceDispatch& dt, GpuState& g);
 void DumpMaybeFlush(const DeviceDispatch& dt, GpuState& g, bool force);
 void DumpTeardown(const DeviceDispatch& dt, GpuState& g);
+
+// Creation of one ring slot's image and of the blend compute pass (src/gpu_setup.cpp); both return false on failure.
+bool CreateSlot(const DeviceDispatch& dt, GpuState& g, GpuState::Slot& s);
+bool CreateBlendPass(const DeviceDispatch& dt, GpuState& g);
 
 } // namespace gpuint

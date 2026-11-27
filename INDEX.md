@@ -17,7 +17,8 @@ include/timing_engine.hpp | TimingEngine: EMA frame-time filter, smoothed arriva
 include/output_clock.hpp | PairScheduler: bypass gate, output clock, per-tick t, jitter buffer | PairScheduler, pacer, bypass, kmax, tick, content delay, target fps, ratio
 src/present_timing.cpp | VK_EXT_present_timing: time domains, past presentation timings, refresh duration | present_timing, time domain, vblank, refresh rate, PastPresentationTiming
 include/present_timing.hpp | present-timing helpers declarations | present_timing, timestamp, time domain
-src/gpu_frames.cpp | GpuState: ring buffer, synthetic frame passes, command buffers, descriptors, timestamps | GpuState, ring, blend, interpolate, command buffer, barrier, semaphore, extrapolation
+src/gpu_frames.cpp | GpuState: init, capture, held present, synthetic frame passes, command buffers | GpuInit, GpuCapture, GpuSynthesize, barrier, semaphore, extrapolation, interpolate
+src/gpu_setup.cpp | ring slot and blend pass creation, GpuDestroy teardown, dump pool recorder | CreateSlot, CreateBlendPass, GpuDestroy, DumpInit, DumpRecord, dump, teardown
 include/gpu_frames.hpp | GpuState struct: ring images, pipelines, per-slot state | GpuState, ring, slot, pipeline, descriptor, hidden image
 include/gpu_internal.hpp | helpers shared by gpu_frames and optical_flow: barriers, memory, images | barrier, Synchronization2, memory type, image helper
 src/gpu_images.cpp | optical-flow images and memory-type lookup (mock-linkable) | memory type, flow images, TRANSFER_SRC, FindMemoryType

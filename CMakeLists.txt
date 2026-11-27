@@ -125,6 +125,7 @@ set(FRAMEGEN_LAYER_SOURCES
     src/layer_dispatch.cpp
     src/present_timing.cpp
     src/gpu_frames.cpp
+    src/gpu_setup.cpp
     src/gpu_images.cpp
     src/optical_flow.cpp
     src/dump_queue.cpp
