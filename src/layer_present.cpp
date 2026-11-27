@@ -187,3 +187,70 @@ VkResult Impl_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInf
     }
     return r;
 }
+
+// Releases the held frame of a swapchain when the game waits for something that only that frame's presentation can complete:
+// its present id (vkWaitForPresentKHR) or its present fence (vkWaitForFences / vkGetFenceStatus). The ticks of the pair after it
+// are skipped; the next pair starts fresh.
+namespace fg_layer {
+VkResult FlushHeld(DeviceDispatch& dt, SwapchainState& sc, uint64_t present_id, VkFence fence, const char* why) {
+    std::lock_guard<std::mutex> fl(sc.flow_mu);
+    if (!sc.gpu || !sc.last_queue) return VK_SUCCESS;
+    GpuState& g = *sc.gpu;
+    DrainPresenter(sc);
+    const bool hit = g.held.valid && ((fence && g.held.fence == fence) || (present_id && g.held.present_id != 0 && g.held.present_id <= present_id));
+    if (!hit) return VK_SUCCESS;
+    static std::atomic<int> logged{0};
+    if (logged++ < 5) FG_LOG("hold: the game waits for the held frame (%s), presenting it now", why);
+    return PresentHeld(dt, sc.last_queue, sc, NowNs());
+}
+
+// Swapchains with a held frame whose application fence is among fences[]
+void FlushForFences(DeviceDispatch& dt, uint32_t n, const VkFence* fences, const char* why) {
+    std::vector<std::shared_ptr<SwapchainState>> hit;       // owning references: a swapchain destroyed on another thread while we flush stays allocated until we are done
+    {
+        std::lock_guard<std::mutex> l(dt.fence_mu);
+        if (dt.held_fences.empty()) return;
+        for (uint32_t i = 0; i < n; ++i)
+            for (auto& e : dt.held_fences)
+                if (e.first == uint64_t(reinterpret_cast<uintptr_t>(fences[i]))) if (auto s = e.second.lock()) hit.push_back(std::move(s));
+    }
+    for (uint32_t i = 0; i < n; ++i)
+        for (auto& sc : hit) (void)FlushHeld(dt, *sc, 0, fences[i], why);
+}
+} // namespace
+
+VkResult Impl_WaitForFences(VkDevice device, uint32_t n, const VkFence* fences, VkBool32 all, uint64_t timeout) {
+    DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
+    FlushForFences(*dt, n, fences, "vkWaitForFences");
+    return dt->WaitForFences(device, n, fences, all, timeout);
+}
+VkResult Impl_GetFenceStatus(VkDevice device, VkFence fence) {
+    DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
+    FlushForFences(*dt, 1, &fence, "vkGetFenceStatus");
+    return dt->GetFenceStatus(device, fence);
+}
+
+// vkWaitForPresentKHR for the id of the frame we are holding would wait for a present that only the game's next present
+// triggers (DXVK waits for every present it makes). The frame is not lost, only shown one frame late, so the wait is answered
+// at once and the game goes on to render the next frame. Waits for older ids are real: those frames are on screen or queued
+// on the presenter thread. A game that then stops presenting gets its held frame from the idle flush in the presenter thread.
+VkResult Impl_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
+    DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return VK_ERROR_DEVICE_LOST;
+    SwapchainState* sc = FindSwapchain(swapchain);
+    if (!dt->WaitForPresentKHR) return VK_ERROR_EXTENSION_NOT_PRESENT;                 // the driver has no vkWaitForPresentKHR (a game cannot legally call it then): do not call a null pointer
+    if (!sc) return dt->WaitForPresentKHR(device, swapchain, presentId, timeout);
+    {
+        std::lock_guard<std::mutex> fl(sc->flow_mu);
+        if (sc->gpu && sc->gpu->held.valid && sc->gpu->held.present_id != 0 && presentId >= sc->gpu->held.present_id) {
+            static std::atomic<int> logged{0};
+            if (logged++ < 3) FG_LOG("hold: vkWaitForPresentKHR(%llu) is for the held frame, answered early (it is shown with the next present)", (unsigned long long)presentId);
+            return VK_SUCCESS;
+        }
+    }
+    sc->wait_present_id = presentId; sc->wait_present_since_ns = NowNs();
+    struct Done { SwapchainState* s; ~Done() { s->wait_present_since_ns = 0; } } done{sc};
+    return dt->WaitForPresentKHR(device, swapchain, presentId, timeout);
+}
