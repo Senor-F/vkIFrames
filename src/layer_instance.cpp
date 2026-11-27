@@ -51,6 +51,50 @@ bool DeviceExtSupported(const std::vector<VkExtensionProperties>& props, const c
 
 // ---------------------------------------------------------------- instance
 
+namespace {
+// Present timing needs surface capabilities 2 on the instance. Add it when the app uses surfaces and the implementation offers it; for a
+// Vulkan 1.0 app (vkcube is one) also the KHR extension in place of the core 1.1 functions. We do not ask the layers below whether it is
+// offered (their vkGetInstanceProcAddr need not accept a null instance: Mesa's device_select crashes on one): we try the instance with the
+// extras and, if the implementation says an extension is not present, again with fewer of them.
+struct Extras { bool props2_ext, caps2_ext; };
+std::vector<Extras> ExtrasToTry(bool uses_surface, bool props2, bool surface_caps2) {
+    const bool add_props2 = uses_surface && !props2, add_caps2 = uses_surface && !surface_caps2;
+    std::vector<Extras> tries{{add_props2, add_caps2}};
+    if (add_caps2) tries.push_back({add_props2, false});
+    if (add_props2) tries.push_back({false, false});
+    tries.erase(std::unique(tries.begin(), tries.end(), [](const Extras& x, const Extras& y) { return x.props2_ext == y.props2_ext && x.caps2_ext == y.caps2_ext; }), tries.end());
+    return tries;
+}
+
+// What vkCreateInstance needs from the chain link of the layers below and the game's request.
+struct CreateCtx { VkLayerInstanceCreateInfo* link; VkLayerInstanceLink* next_link; PFN_vkCreateInstance create; const VkInstanceCreateInfo* ci; const VkAllocationCallbacks* alloc; VkInstance* out; };
+
+// Creates the instance with the first try the layers below accept; props2 and surface_caps2 end as what the created instance has.
+VkResult CreateWithExtras(const CreateCtx& c, const std::vector<Extras>& tries, bool& props2, bool& surface_caps2) {
+    const auto** exts = const_cast<const char**>(c.ci->ppEnabledExtensionNames);
+    const uint32_t n_exts = c.ci->enabledExtensionCount;
+    VkResult r = VK_ERROR_EXTENSION_NOT_PRESENT;
+    bool got_props2 = props2, got_caps2 = surface_caps2;
+    for (const Extras& t : tries) {
+        std::vector<const char*> names(exts, exts + n_exts);
+        // surface capabilities 2 depends on get_physical_device_properties2 (or Vulkan 1.1): never add it alone
+        const bool caps2_ok = t.caps2_ext && (props2 || t.props2_ext);
+        if (t.props2_ext) names.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        if (caps2_ok) names.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+        VkInstanceCreateInfo ci = *c.ci;
+        ci.enabledExtensionCount = uint32_t(names.size());
+        ci.ppEnabledExtensionNames = names.data();
+        c.link->u.pLayerInfo = c.next_link;                          // a failed attempt left the chain advanced past the layers below: put it back
+        r = c.create(&ci, c.alloc, c.out);
+        if (r == VK_SUCCESS) { got_props2 = props2 || t.props2_ext; got_caps2 = surface_caps2 || caps2_ok; break; }
+        // Any failure of a request that carries our extras (a layer or driver below may answer an unwanted extension with another code) is tried again with
+        // fewer; the last try is the app's own list, and its result is what the app gets.
+    }
+    props2 = got_props2; surface_caps2 = got_caps2;
+    return r;
+}
+} // namespace
+
 VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
                                                    const VkAllocationCallbacks* pAllocator,
                                                    VkInstance* pInstance) {
@@ -73,36 +117,10 @@ VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
     bool props2 = api >= VK_API_VERSION_1_1 || HasExt(exts, n_exts, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
     const bool uses_surface = HasExt(exts, n_exts, VK_KHR_SURFACE_EXTENSION_NAME);
 
-    // Present timing needs surface capabilities 2 on the instance. Add it when the app uses surfaces and the implementation offers it; for a
-    // Vulkan 1.0 app (vkcube is one) also the KHR extension in place of the core 1.1 functions. We do not ask the layers below whether it is
-    // offered (their vkGetInstanceProcAddr need not accept a null instance: Mesa's device_select crashes on one): we try the instance with the
-    // extras and, if the implementation says an extension is not present, again with fewer of them.
-    struct Extras { bool props2_ext, caps2_ext; };
-    const bool add_props2 = uses_surface && !props2, add_caps2 = uses_surface && !surface_caps2;
-    std::vector<Extras> tries{{add_props2, add_caps2}};
-    if (add_caps2) tries.push_back({add_props2, false});
-    if (add_props2) tries.push_back({false, false});
-    tries.erase(std::unique(tries.begin(), tries.end(), [](const Extras& x, const Extras& y) { return x.props2_ext == y.props2_ext && x.caps2_ext == y.caps2_ext; }), tries.end());
-
-    VkResult r = VK_ERROR_EXTENSION_NOT_PRESENT;
-    bool got_props2 = props2, got_caps2 = surface_caps2;
-    for (const Extras& t : tries) {
-        std::vector<const char*> names(exts, exts + n_exts);
-        // surface capabilities 2 depends on get_physical_device_properties2 (or Vulkan 1.1): never add it alone
-        const bool caps2_ok = t.caps2_ext && (props2 || t.props2_ext);
-        if (t.props2_ext) names.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-        if (caps2_ok) names.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
-        VkInstanceCreateInfo ci = *pCreateInfo;
-        ci.enabledExtensionCount = uint32_t(names.size());
-        ci.ppEnabledExtensionNames = names.data();
-        link->u.pLayerInfo = next_link;                          // a failed attempt left the chain advanced past the layers below: put it back
-        r = create(&ci, pAllocator, pInstance);
-        if (r == VK_SUCCESS) { got_props2 = props2 || t.props2_ext; got_caps2 = surface_caps2 || caps2_ok; break; }
-        // Any failure of a request that carries our extras (a layer or driver below may answer an unwanted extension with another code) is tried again with
-        // fewer; the last try is the app's own list, and its result is what the app gets.
-    }
+    const CreateCtx ctx{link, next_link, create, pCreateInfo, pAllocator, pInstance};
+    const std::vector<Extras> tries = ExtrasToTry(uses_surface, props2, surface_caps2);
+    const VkResult r = CreateWithExtras(ctx, tries, props2, surface_caps2);
     if (r != VK_SUCCESS) return r;
-    props2 = got_props2; surface_caps2 = got_caps2;
     if (uses_surface && !surface_caps2) FG_LOG("present timing: instance extension VK_KHR_get_surface_capabilities2 unavailable");
 
     InstanceDispatch* inst = RegisterInstance(GetKey(*pInstance), *pInstance, gipa);
