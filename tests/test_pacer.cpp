@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <functional>
 #include <thread>
 #include <unistd.h>
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); std::exit(1); } } while (0)
@@ -187,6 +188,60 @@ static Env Bring(void* lib, bool loader_callback = true) {
     return e;
 }
 
+using PresentFn = std::function<std::pair<VkSemaphore, uint32_t>(useconds_t)>;
+
+static size_t test_pacing(const PresentFn& present_frame) {
+    // 1) 40 FPS source, 60 FPS target: the presenter thread paces the output
+    for (int i = 0; i < 70; ++i) present_frame(25'000);
+    usleep(80'000);                                                                           // let the last job finish
+    size_t n_now; { std::lock_guard<std::mutex> l(g_rec); n_now = r_present_ms.size(); }
+    CHECK(r_dispatches > 10);
+    std::vector<double> d; { std::lock_guard<std::mutex> l(g_rec); for (size_t i = r_present_ms.size() - 60; i + 1 < r_present_ms.size(); ++i) d.push_back(r_present_ms[i + 1] - r_present_ms[i]); }
+    std::vector<double> sd = d; std::sort(sd.begin(), sd.end());
+    const double med = sd[sd.size() / 2]; int near = 0; for (double x : d) near += std::abs(x - 16.667) < 3.5;
+    std::printf("pacing: median %.2f ms, %d of %zu within 3.5 ms of 16.67\n", med, near, d.size());
+    CHECK(med > 15.5 && med < 17.8); CHECK(near >= int(d.size() * 0.85));                      // paced at the output clock, not at the game's 25 ms or back-to-back
+    return n_now;
+}
+
+static void test_polled_acquire(const Env& e, VkSwapchainKHR sc, PFN_vkAcquireNextImageKHR acq) {
+    // 2) the game's acquire is polled: the driver only ever sees timeout 0, and the call still behaves like the original
+    { std::lock_guard<std::mutex> l(g_rec); g_acq_calls = 0; k_not_ready = 3; }
+    uint32_t ai = 99; CHECK(acq(e.dev, sc, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &ai) == VK_SUCCESS && ai >= 4);
+    { std::lock_guard<std::mutex> l(g_rec); CHECK(g_acq_calls >= 4); k_not_ready = 1000000; }
+    CHECK(acq(e.dev, sc, 2'000'000, VK_NULL_HANDLE, VK_NULL_HANDLE, &ai) == VK_TIMEOUT);       // 2 ms budget
+    CHECK(acq(e.dev, sc, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, &ai) == VK_NOT_READY);
+    { std::lock_guard<std::mutex> l(g_rec); k_not_ready = 0; }
+}
+
+static void test_bypass_present_order(const PresentFn& present_frame) {
+    // 3) the game's own present (bypass after a stall) goes out after everything queued
+    { size_t before; { std::lock_guard<std::mutex> l(g_rec); before = r_present_ms.size(); }
+      auto [gsem, idx] = present_frame(300'000); (void)idx; (void)gsem;
+      usleep(100'000);
+      std::lock_guard<std::mutex> l(g_rec);
+      CHECK(r_presents.size() == r_present_ms.size());
+      CHECK(r_presents.back().wait == gsem && r_presents.back().image == idx);                 // nothing was presented after the game's frame
+      CHECK(r_presents.size() >= before + 1); }
+}
+
+static void test_idle_flush(const PresentFn& present_frame) {
+    // 3b) a game that stops presenting gets its held frame shown by the presenter thread's idle flush
+    { for (int i = 0; i < 30; ++i) present_frame(25'000);
+      usleep(60'000); size_t before; { std::lock_guard<std::mutex> l(g_rec); before = r_presents.size(); }
+      usleep(500'000);
+      std::lock_guard<std::mutex> l(g_rec);
+      CHECK(r_presents.size() > before); }
+}
+
+static void test_queue_exclusion_teardown(const Env& e, VkQueue q, VkSwapchainKHR sc, size_t n_now) {
+    // 4) the queue ops of the game and of the presenter never overlapped (QOp checks every one), and teardown is clean
+    CHECK(((PFN_vkQueueWaitIdle)e.gdpa(e.dev, "vkQueueWaitIdle"))(q) == VK_SUCCESS);
+    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
+    CHECK(r_destroyed_images == r_images_created && r_images_created == 7);
+    std::printf("PASS: stage 3c-ii mock driver (%d dispatches, %zu presents)\n", r_dispatches, n_now);
+}
+
 int main(int, char** argv) {
     ClearFramegenEnv();
     setenv("VKIFRAME_TARGET_FPS", "60", 1);                       // the test is about a 60 fps output; the built-in default depends on the machine
@@ -212,44 +267,9 @@ int main(int, char** argv) {
         return std::pair<VkSemaphore, uint32_t>{game_sem, idx};
     };
 
-    // 1) 40 FPS source, 60 FPS target: the presenter thread paces the output
-    for (int i = 0; i < 70; ++i) present_frame(25'000);
-    usleep(80'000);                                                                           // let the last job finish
-    size_t n_now; { std::lock_guard<std::mutex> l(g_rec); n_now = r_present_ms.size(); }
-    CHECK(r_dispatches > 10);
-    std::vector<double> d; { std::lock_guard<std::mutex> l(g_rec); for (size_t i = r_present_ms.size() - 60; i + 1 < r_present_ms.size(); ++i) d.push_back(r_present_ms[i + 1] - r_present_ms[i]); }
-    std::vector<double> sd = d; std::sort(sd.begin(), sd.end());
-    const double med = sd[sd.size() / 2]; int near = 0; for (double x : d) near += std::abs(x - 16.667) < 3.5;
-    std::printf("pacing: median %.2f ms, %d of %zu within 3.5 ms of 16.67\n", med, near, d.size());
-    CHECK(med > 15.5 && med < 17.8); CHECK(near >= int(d.size() * 0.85));                      // paced at the output clock, not at the game's 25 ms or back-to-back
-
-    // 2) the game's acquire is polled: the driver only ever sees timeout 0, and the call still behaves like the original
-    { std::lock_guard<std::mutex> l(g_rec); g_acq_calls = 0; k_not_ready = 3; }
-    uint32_t ai = 99; CHECK(acq(e.dev, sc, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &ai) == VK_SUCCESS && ai >= 4);
-    { std::lock_guard<std::mutex> l(g_rec); CHECK(g_acq_calls >= 4); k_not_ready = 1000000; }
-    CHECK(acq(e.dev, sc, 2'000'000, VK_NULL_HANDLE, VK_NULL_HANDLE, &ai) == VK_TIMEOUT);       // 2 ms budget
-    CHECK(acq(e.dev, sc, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, &ai) == VK_NOT_READY);
-    { std::lock_guard<std::mutex> l(g_rec); k_not_ready = 0; }
-
-    // 3) the game's own present (bypass after a stall) goes out after everything queued
-    { size_t before; { std::lock_guard<std::mutex> l(g_rec); before = r_present_ms.size(); }
-      auto [gsem, idx] = present_frame(300'000); (void)idx; (void)gsem;
-      usleep(100'000);
-      std::lock_guard<std::mutex> l(g_rec);
-      CHECK(r_presents.size() == r_present_ms.size());
-      CHECK(r_presents.back().wait == gsem && r_presents.back().image == idx);                 // nothing was presented after the game's frame
-      CHECK(r_presents.size() >= before + 1); }
-
-    // 3b) a game that stops presenting gets its held frame shown by the presenter thread's idle flush
-    { for (int i = 0; i < 30; ++i) present_frame(25'000);
-      usleep(60'000); size_t before; { std::lock_guard<std::mutex> l(g_rec); before = r_presents.size(); }
-      usleep(500'000);
-      std::lock_guard<std::mutex> l(g_rec);
-      CHECK(r_presents.size() > before); }
-
-    // 4) the queue ops of the game and of the presenter never overlapped (QOp checks every one), and teardown is clean
-    CHECK(((PFN_vkQueueWaitIdle)e.gdpa(e.dev, "vkQueueWaitIdle"))(q) == VK_SUCCESS);
-    ((PFN_vkDestroySwapchainKHR)e.gdpa(e.dev, "vkDestroySwapchainKHR"))(e.dev, sc, nullptr);
-    CHECK(r_destroyed_images == r_images_created && r_images_created == 7);
-    std::printf("PASS: stage 3c-ii mock driver (%d dispatches, %zu presents)\n", r_dispatches, n_now);
+    size_t n_now = test_pacing(present_frame);                                                // 1) 40 FPS source, 60 FPS target
+    test_polled_acquire(e, sc, acq);                                                          // 2)
+    test_bypass_present_order(present_frame);                                                 // 3)
+    test_idle_flush(present_frame);                                                           // 3b)
+    test_queue_exclusion_teardown(e, q, sc, n_now);                                           // 4)
 }
