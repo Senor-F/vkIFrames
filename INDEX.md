@@ -5,9 +5,9 @@ Update this file in the same commit that adds, moves or deletes a file.
 
 ## Code: layer (src/, include/)
 src/layer_dispatch.cpp | loader negotiation, GetProcAddr routing, dispatch-table registries | negotiate, GetInstanceProcAddr, GetDeviceProcAddr, dispatch table, HOOK, FrameGen_Negotiate
-src/layer_main.cpp | all hooks: instance/device/swapchain create, present hook, presenter thread, hold-one | Hook_QueuePresentKHR, Hook_CreateSwapchainKHR, PresenterMain, StopPresenter, hold, cap mode, base fps cap, acquire, fence
+src/layer_main.cpp | hook wrappers with out-of-memory guard, queue lock, submit, wait-idle, acquire hooks | Hook_QueuePresentKHR, Hook_CreateSwapchainKHR, GuardNote, bad_alloc, QueueLock, PolledAcquire, acquire, wait idle
 src/layer_internal.hpp | declarations shared by the layer_*.cpp files, internal namespace fg_layer | Impl_, PresentJob, AppChain, kMinImageCount, g_presenter_detached
-src/layer_present.cpp | present hook and the waits that release a held frame | Impl_QueuePresentKHR, Impl_WaitForFences, Impl_GetFenceStatus, Impl_WaitForPresentKHR, FlushHeld, hold-one
+src/layer_present.cpp | present hook and the waits that release a held frame | Impl_QueuePresentKHR, Impl_WaitForFences, Impl_GetFenceStatus, Impl_WaitForPresentKHR, FlushHeld, hold-one, cap mode, base fps cap
 src/layer_presenter.cpp | presenter thread: queued present jobs, start, drain, stop | PresenterMain, ExecutePair, ExecuteExtrap, StartPresenter, StopPresenter, DrainPresenter, detached thread
 src/layer_present_steps.cpp | rate gate plan, per-second rate log, real/held/synthetic presents | PlanAndCount, LogRates, PresentWithTiming, PresentFrame, PresentHeld, PresentSynthetic, status.json
 src/layer_swapchain.cpp | swapchain create/destroy hooks, extra images, present mode | Impl_CreateSwapchainKHR, Impl_DestroySwapchainKHR, min image count, SameCreateInfo

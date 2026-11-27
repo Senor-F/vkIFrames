@@ -1,4 +1,4 @@
-// All hooks: instance/device/swapchain create, present hook, presenter thread, hold-one.
+// Hook entry points: the out-of-memory guard around each Impl_* body, queue locking, submit, wait-idle and acquire hooks.
 #include "vk_iframes_layer.hpp"
 #include "live_config.hpp"
 #include "gpu_frames.hpp"
@@ -7,12 +7,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <deque>
 #include <exception>
 #include <mutex>
 #include <new>
-#include <thread>
 #include <unistd.h>
 #include <cstring>
 #include <string>
@@ -20,11 +17,10 @@
 
 #include "layer_internal.hpp"
 using namespace fg_layer;
+
 // Set by the hook bodies for the guard below (see "host out of memory" at the end of this file): the next layer's destroy was already called; the game's frame
 // was already consumed by the layer; the swapchain of the present in progress.
 namespace fg_layer { std::atomic<bool> g_presenter_detached{false}; thread_local bool t_guard_forwarded = false, t_guard_present_consumed = false; thread_local SwapchainState* t_guard_present_sc = nullptr; }
-
-
 
 // ---------------------------------------------------------------- queue locking (Stage 3c-ii)
 // The presenter thread submits and presents on the game's queue. Vulkan requires external synchronization per queue, so every
