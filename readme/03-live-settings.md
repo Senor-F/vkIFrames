@@ -69,7 +69,13 @@ vkIFrames/
 │   ├── stats.hpp                # measurement records and the benchmark
 │   └── flow_ref.hpp             # CPU reference of the flow and the interpolation
 ├── src/
-│   ├── layer_main.cpp           # hooked entry points, presenter thread
+│   ├── layer_main.cpp           # hook wrappers, queue lock, submit, acquire hooks
+│   ├── layer_internal.hpp       # declarations shared by the layer_*.cpp files
+│   ├── layer_instance.cpp       # instance and device create/destroy hooks, queue lookup
+│   ├── layer_swapchain.cpp      # swapchain create/destroy hooks, extra images
+│   ├── layer_present.cpp        # present hook and the waits that release a held frame
+│   ├── layer_presenter.cpp      # presenter thread: queued present jobs, start, drain, stop
+│   ├── layer_present_steps.cpp  # rate gate plan, rate log, real/held/synthetic presents
 │   ├── layer_dispatch.cpp       # registries, proc-addr tables, loader negotiation
 │   ├── gpu_frames.cpp           # capture, synthesize, present of synthetic frames
 │   ├── gpu_images.cpp           # images and buffers of the layer
