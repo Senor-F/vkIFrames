@@ -50,6 +50,59 @@ static PFN_vkVoidFunction VKAPI_CALL next_gipa(VkInstance inst, const char* n) {
 
 static bool has(const std::vector<std::string>& v, const char* n) { for (auto& s : v) if (s == n) return true; return false; }
 
+template <class Run>
+static void test_v10_fallbacks(Run& run, const char* P2, const char* C2, const char* SURF) {
+    // 1.0 surface app, both offered: one attempt, both added
+    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 1 && has(g_attempts[0], P2) && has(g_attempts[0], C2) && has(g_attempts[0], SURF));
+    // only properties2 offered: the first attempt fails, the second has properties2 alone (caps2 is never added without it)
+    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 2 && has(g_attempts[1], P2) && !has(g_attempts[1], C2));
+    // neither offered: three attempts, the last is the app's list unchanged
+    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
+}
+
+template <class Run>
+static void test_v11_and_special_apps(Run& run, const char* P2, const char* C2, const char* SURF) {
+    // a 1.1 app already has the core functions: only caps2 is tried, then dropped
+    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF, C2}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 1 && has(g_attempts[0], C2) && !has(g_attempts[0], P2));
+    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 2 && g_attempts[1].size() == 1);
+    // an app with no surface is left alone
+    CHECK(run(VK_API_VERSION_1_0, {}, {}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 1 && g_attempts[0].empty());
+    // an app that already asks for both: nothing added, nothing retried
+    CHECK(run(VK_API_VERSION_1_0, {SURF, P2, C2}, {SURF, P2, C2}) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 1 && g_attempts[0].size() == 3);
+    // an extension the app itself asked for and nobody offers: the app gets the error, after the layer's own fallbacks
+    CHECK(run(VK_API_VERSION_1_0, {SURF, "VK_FOO_not_there"}, {SURF}) == VK_ERROR_EXTENSION_NOT_PRESENT);
+    CHECK(g_attempts.size() == 3);
+}
+
+template <class Run>
+static void test_forced_error_with_extras(Run& run, const char* P2, const char* C2, const char* SURF) {
+    // a layer or driver below answers an extension it does not want with another code: the requests carrying the extras fail with it, the app's own
+    // list works, so the game's vkCreateInstance succeeds after the fallbacks (1.0 surface app: three attempts, the last is the app's list unchanged)
+    g_force_only_with_extras = true;
+    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}, VK_ERROR_INITIALIZATION_FAILED) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
+    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF, P2, C2}, VK_ERROR_INCOMPATIBLE_DRIVER) == VK_SUCCESS);
+    CHECK(g_attempts.size() == 2 && g_attempts[1].size() == 1);
+    g_force_only_with_extras = false;
+}
+
+template <class Run>
+static void test_forced_error_everywhere(Run& run, const char* P2, const char* C2, const char* SURF) {
+    // everything fails with that code: the last try's code comes back, and the last try is the app's own list unchanged
+    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}, VK_ERROR_INITIALIZATION_FAILED) == VK_ERROR_INITIALIZATION_FAILED);
+    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
+    // an app with no surface gets no extras and a single attempt, whatever the error
+    CHECK(run(VK_API_VERSION_1_0, {}, {}, VK_ERROR_INITIALIZATION_FAILED) == VK_ERROR_INITIALIZATION_FAILED);
+    CHECK(g_attempts.size() == 1 && g_attempts[0].empty());
+}
+
 int main(int, char** argv) {
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); CHECK(lib);
     auto negotiate = (PFN_vkNegotiateLoaderLayerInterfaceVersion)dlsym(lib, "FrameGen_NegotiateLoaderLayerInterfaceVersion"); CHECK(negotiate);
@@ -75,42 +128,9 @@ int main(int, char** argv) {
         return r;
     };
 
-    // 1.0 surface app, both offered: one attempt, both added
-    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 1 && has(g_attempts[0], P2) && has(g_attempts[0], C2) && has(g_attempts[0], SURF));
-    // only properties2 offered: the first attempt fails, the second has properties2 alone (caps2 is never added without it)
-    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 2 && has(g_attempts[1], P2) && !has(g_attempts[1], C2));
-    // neither offered: three attempts, the last is the app's list unchanged
-    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
-    // a 1.1 app already has the core functions: only caps2 is tried, then dropped
-    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF, C2}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 1 && has(g_attempts[0], C2) && !has(g_attempts[0], P2));
-    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 2 && g_attempts[1].size() == 1);
-    // an app with no surface is left alone
-    CHECK(run(VK_API_VERSION_1_0, {}, {}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 1 && g_attempts[0].empty());
-    // an app that already asks for both: nothing added, nothing retried
-    CHECK(run(VK_API_VERSION_1_0, {SURF, P2, C2}, {SURF, P2, C2}) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 1 && g_attempts[0].size() == 3);
-    // an extension the app itself asked for and nobody offers: the app gets the error, after the layer's own fallbacks
-    CHECK(run(VK_API_VERSION_1_0, {SURF, "VK_FOO_not_there"}, {SURF}) == VK_ERROR_EXTENSION_NOT_PRESENT);
-    CHECK(g_attempts.size() == 3);
-    // a layer or driver below answers an extension it does not want with another code: the requests carrying the extras fail with it, the app's own
-    // list works, so the game's vkCreateInstance succeeds after the fallbacks (1.0 surface app: three attempts, the last is the app's list unchanged)
-    g_force_only_with_extras = true;
-    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}, VK_ERROR_INITIALIZATION_FAILED) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
-    CHECK(run(VK_API_VERSION_1_1, {SURF}, {SURF, P2, C2}, VK_ERROR_INCOMPATIBLE_DRIVER) == VK_SUCCESS);
-    CHECK(g_attempts.size() == 2 && g_attempts[1].size() == 1);
-    g_force_only_with_extras = false;
-    // everything fails with that code: the last try's code comes back, and the last try is the app's own list unchanged
-    CHECK(run(VK_API_VERSION_1_0, {SURF}, {SURF, P2, C2}, VK_ERROR_INITIALIZATION_FAILED) == VK_ERROR_INITIALIZATION_FAILED);
-    CHECK(g_attempts.size() == 3 && g_attempts[2].size() == 1 && g_attempts[2][0] == SURF);
-    // an app with no surface gets no extras and a single attempt, whatever the error
-    CHECK(run(VK_API_VERSION_1_0, {}, {}, VK_ERROR_INITIALIZATION_FAILED) == VK_ERROR_INITIALIZATION_FAILED);
-    CHECK(g_attempts.size() == 1 && g_attempts[0].empty());
+    test_v10_fallbacks(run, P2, C2, SURF);
+    test_v11_and_special_apps(run, P2, C2, SURF);
+    test_forced_error_with_extras(run, P2, C2, SURF);
+    test_forced_error_everywhere(run, P2, C2, SURF);
     std::printf("PASS: instance extensions are tried and dropped, no null-instance call below the layer\n");
 }
