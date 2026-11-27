@@ -179,3 +179,44 @@ VkResult Impl_CreateSwapchainKHR(VkDevice device,
     }
     return VK_SUCCESS;
 }
+
+void Impl_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                    const VkAllocationCallbacks* pAllocator) {
+    DeviceDispatch* dt = LookupDevice(GetKey(device));
+    if (!dt) return;
+    StatsBenchAbort("the game closed its swapchain");           // a benchmark run stops and restores ENABLED
+    FG_LOG("shutdown: vkDestroySwapchainKHR");
+    const uint64_t t0 = NowNs();
+    if (swapchain) {
+        if (SwapchainState* sc = FindSwapchain(swapchain)) {
+            if (sc->timing_enabled) { std::lock_guard<std::mutex> l(sc->mu); DrainPastTimings(*dt, *sc); }   // under mu like every other caller: the presenter thread may be in its own drain
+            bool detached;
+            {   // flow_mu: a thread that flushes the held frame for a fence or a present id (Hook_WaitForFences, Hook_GetFenceStatus, Hook_WaitForPresentKHR) holds it for the whole
+                // flush. Destroy waits for that flush here; after it those threads find no GPU state (sc->gpu is null) and do nothing. The state itself stays allocated
+                // for as long as a flush holds a reference to it (FlushForFences).
+                std::lock_guard<std::mutex> fl(sc->flow_mu);
+                detached = StopPresenter(*sc);                                    // no job may touch the swapchain while it is destroyed
+                FG_LOG("shutdown: presenter stopped (%.0f ms)", (NowNs() - t0) / 1e6);
+                HeldFencesDrop(*dt, sc);                                          // a later wait on the held frame's fence must not reach this state
+                if (!detached && sc->gpu) {
+                    GpuState* g = sc->gpu;
+                    sc->gpu = nullptr;                                            // the held frame is simply dropped with its swapchain
+                    GpuDestroy(*dt, g);
+                    FG_LOG("shutdown: GPU resources destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
+                }
+            }
+            if (detached) {
+                // The presenter thread is stuck in a driver call and still holds the swapchain state, its GPU state and the device dispatch table:
+                // none of them is freed (this is shutdown, a small leak); vkDestroyDevice leaves the dispatch table alone too.
+                FG_LOG("shutdown: the presenter thread is still running; its swapchain state, GPU state and dispatch table are left allocated");
+                g_presenter_detached = true;
+                LeakSwapchainState(swapchain);
+            } else {
+                DestroySwapchainState(swapchain);
+            }
+        } else DestroySwapchainState(swapchain);
+    }
+    t_guard_forwarded = true;
+    dt->DestroySwapchainKHR(device, swapchain, pAllocator);
+    FG_LOG("shutdown: swapchain destroyed (%.0f ms)", (NowNs() - t0) / 1e6);
+}
