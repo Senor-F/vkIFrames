@@ -121,6 +121,133 @@ static void TestCmdBuffersAndMargin(const std::string& conf) {
     Write(conf, "REV=9\nSYNTH_MARGIN=-1\n"); Touch(conf, 22); Poll(); CHECK(L.synth_margin == 0.0f);
 }
 
+// hostile or broken file contents: nothing crashes, nothing hangs, nothing broken is applied
+static void TestHostileValues(const std::string& conf, int& t) {
+    LiveSettings& L = Live();
+    auto Put = [&](const std::string& text) { Write(conf, text); Touch(conf, t += 2); Poll(); };
+    Put("REV=40\nTARGET_FPS=80\nMAX_SYNTHETIC=3\nPHASE_OFFSET=0.3\nCMD_BUFFERS=10\n");
+    CHECK(L.target_fps == 80.0f && L.max_synthetic == 3);
+    // a NUL byte: that line is dropped whole, the lines after it still count
+    Put(std::string("TARGET_FPS=65\0junk\nMAX_SYNTHETIC=2\n", 35));
+    CHECK(L.target_fps == 90.0f && L.max_synthetic == 2);                              // 65 was not applied: the file has no valid TARGET_FPS line, so the startup value (90, environment) stands
+    // CRLF line ends are fine; a lone CR (an old Mac file) makes one long line whose value is not a number
+    Put("TARGET_FPS=70\r\nMAX_SYNTHETIC=1\r\n");
+    CHECK(L.target_fps == 70.0f && L.max_synthetic == 1);
+    Put("TARGET_FPS=71\rMAX_SYNTHETIC=3\n");
+    CHECK(L.target_fps == 90.0f);                                                       // not a number: the line is invalid, the startup value (environment) applies
+    // nan, inf, hex floats, hex ints, text after the number: none of them is a number
+    Put("TARGET_FPS=nan\nMIN_GAIN=inf\nPHASE_OFFSET=0x1p-1\nSYNTH_MARGIN=-inf\nCMD_BUFFERS=0x10\nBASE_FPS_CAP=1e999\nMAX_SYNTHETIC=2x\n");
+    CHECK(L.target_fps == 90.0f && L.min_gain == 1.01f && L.phase_offset == 0.5f && L.cmd_buffers == 8 && L.synth_margin == 0.15f && L.base_fps_cap == 45.0f && L.max_synthetic == 3);
+    // empty key, empty value, only blanks, a bare =
+    Put("=5\nTARGET_FPS=\n   =   \n=\n\t\nTARGET_FPS = 66 \n");
+    CHECK(L.target_fps == 66.0f);                                                       // blanks around key and value are fine; the broken lines did nothing
+    // BASE_FPS_CAP below 1 is off, 1 is a cap, and the cap is not applied at 0.5
+    Put("BASE_FPS_CAP=0.0001\n"); CHECK(L.base_fps_cap == 0.0f);
+    Put("BASE_FPS_CAP=0.99\n");   CHECK(L.base_fps_cap == 0.0f);
+    Put("BASE_FPS_CAP=1\n");      CHECK(L.base_fps_cap == 1.0f);
+    Put("BASE_FPS_CAP=500\n");    CHECK(L.base_fps_cap == 240.0f);
+    Put("BASE_FPS_CAP=120\n");    CHECK(L.base_fps_cap == 120.0f);                  // a cap of 120 is no longer clamped to 90
+    Put("BASE_FPS_CAP=240\n");    CHECK(L.base_fps_cap == 240.0f);
+    Put("TARGET_FPS=600\n");      CHECK(L.target_fps == 600.0f);
+    Put("TARGET_FPS=601\n");      CHECK(L.target_fps == 600.0f);
+}
+
+static void TestOversizeFile(const std::string& conf, int& t) {
+    LiveSettings& L = Live();
+    auto Put = [&](const std::string& text) { Write(conf, text); Touch(conf, t += 2); Poll(); };
+    // a file over 64 KiB: the complete lines inside the first 64 KiB are used, the line cut by the limit is dropped (not read as TARGET_FPS=8), the rest is ignored
+    {
+        std::string big = "MAX_SYNTHETIC=2\n";
+        const std::string tail = "TARGET_FPS=88\n";
+        const size_t limit = 65536, cut_at = limit - 12;              // the tail starts 12 bytes before the limit: "TARGET_FPS=8" is what the limit leaves of it
+        while (big.size() + 1 < cut_at) big += (cut_at - big.size() > 80 ? "#" + std::string(78, 'x') + "\n" : std::string("#\n"));
+        if (big.size() < cut_at) big += std::string(cut_at - big.size() - 1, '#') + "\n";
+        CHECK(big.size() == cut_at);
+        big += tail + "ENABLED=0\n" + std::string(4000, '#');
+        Put(big);
+        CHECK(L.max_synthetic == 2);                                                   // before the limit: used
+        CHECK(L.target_fps == 90.0f);                                                  // the cut line is not TARGET_FPS=8 (clamped to 30), not 88: the startup value stands
+        CHECK(L.enabled == 1);                                                         // after the limit: ignored
+    }
+}
+
+static void TestRequestedMaxSynthetic(const std::string& conf, int& t) {
+    auto Put = [&](const std::string& text) { Write(conf, text); Touch(conf, t += 2); Poll(); };
+    // the swapchain capacity request at game start follows the live parser: a MAX_SYNTHETIC line it ignores (5x, 0x4, nan) sets nothing, the last valid line counts
+    Put("MAX_SYNTHETIC=5x\n");                 CHECK(LiveRequestedMaxSynthetic() == 0);
+    Put("MAX_SYNTHETIC=0x4\n");                CHECK(LiveRequestedMaxSynthetic() == 0);
+    Put("MAX_SYNTHETIC=nan\n");                CHECK(LiveRequestedMaxSynthetic() == 0);
+    Put("MAX_SYNTHETIC=7\n");                  CHECK(LiveRequestedMaxSynthetic() == 7);
+    Put("MAX_SYNTHETIC=8\nMAX_SYNTHETIC=5x\n"); CHECK(LiveRequestedMaxSynthetic() == 8);
+    Put("MAX_SYNTHETIC=99\n");                 CHECK(LiveRequestedMaxSynthetic() == 10);
+    Put("REV=40\n");
+}
+
+static void TestFifoAndJunk(const std::string& conf, int& t) {
+    LiveSettings& L = Live();
+    auto Put = [&](const std::string& text) { Write(conf, text); Touch(conf, t += 2); Poll(); };
+    // a FIFO (or any special file) in the place of live.conf must not block the game: it is refused
+    unlink(conf.c_str());
+    CHECK(mkfifo(conf.c_str(), 0600) == 0);
+    alarm(10);                                                                       // a blocked open() would hang here: the alarm ends the test with a failure
+    Poll();
+    alarm(0);
+    CHECK(L.target_fps == 90.0f);
+    unlink(conf.c_str());
+    Put("REV=41\nTARGET_FPS=75\n"); CHECK(L.target_fps == 75.0f);                    // a normal file works again
+    // control characters in the file never reach live.log, and a file of junk makes a handful of notes, not thousands
+    std::string junk = "\x1b[31mred\x07=1\nTARGET_FPS=\x01\x02 5\n";
+    for (int i = 0; i < 300; ++i) junk += "BOGUS" + std::to_string(i) + "=1\n";
+    Put(junk);
+    CHECK(L.target_fps == 90.0f);
+}
+
+// bench.req (next to live.conf): the benchmark request token. It is not a setting.
+static void TestBenchReq(const std::string& conf, const std::string& req, int& t) {
+    auto Req = [&](const char* text) { Write(req, text); Touch(req, t += 2); Poll(); };
+    long long tok = 0;
+    CHECK(!LiveBenchRequest(&tok) && !LiveBenchCancel());
+    const unsigned long long gen0 = LiveGeneration();
+    Req("1700000001\n");
+    CHECK(LiveBenchRequest(&tok) && tok == 1700000001ll);
+    CHECK(LiveGeneration() == gen0);                          // no live value moved: a request can never count as a changed setting
+    LiveBenchAck(tok); CHECK(!LiveBenchRequest(&tok));
+    Req("1700000001\n"); CHECK(!LiveBenchRequest(&tok));      // the same number again is not a new request
+    Req("1700000002\n"); CHECK(LiveBenchRequest(&tok) && tok == 1700000002ll);
+    LiveBenchAck(tok);
+    Req("0\n"); CHECK(LiveBenchCancel() && !LiveBenchCancel() && !LiveBenchRequest(&tok));      // 0: stop a running benchmark, once
+    Req("0\n"); CHECK(!LiveBenchCancel());
+    Req("abc\n"); CHECK(!LiveBenchRequest(&tok) && !LiveBenchCancel());                          // not a number: ignored
+    Req("-5\n"); CHECK(!LiveBenchRequest(&tok));
+    Req("17000000010 x\n"); CHECK(!LiveBenchRequest(&tok));
+    Req("99999999999999999999\n"); CHECK(!LiveBenchRequest(&tok));
+    Req("  1700000003  \r\n"); CHECK(LiveBenchRequest(&tok) && tok == 1700000003ll);             // blanks and CRLF are fine
+    LiveBenchAck(tok);
+    // a BENCH line in live.conf (an older plugin or script) is neither a setting nor a request, and it moves no live value
+    Write(conf, "REV=30\nBENCH=1700000009\nTARGET_FPS=75\n"); Touch(conf, 60); Poll();
+    CHECK(!LiveBenchRequest(&tok) && Live().target_fps == 75.0f);
+    const unsigned long long gen1 = LiveGeneration();
+    Write(conf, "REV=31\nBENCH=1700000010\nTARGET_FPS=75\n"); Touch(conf, 62); Poll();
+    CHECK(!LiveBenchRequest(&tok) && LiveGeneration() == gen1);
+}
+
+static void TestBenchSpecialFiles(const char* dir, const std::string& conf, const std::string& req, int& t) {
+    long long tok = 0;
+    // a NUL byte, and a FIFO in the place of bench.req (open() must not block the game)
+    Write(req, std::string("1700000051\0x\n", 13)); Touch(req, t += 2); Poll(); CHECK(!LiveBenchRequest(&tok));
+    unlink(req.c_str()); CHECK(mkfifo(req.c_str(), 0600) == 0);
+    alarm(10); Poll(); alarm(0); CHECK(!LiveBenchRequest(&tok));
+    unlink(req.c_str());
+    // the file is read only when it is the user's own regular file: a symlink is not followed
+    unlink(req.c_str());
+    Poll(); CHECK(!LiveBenchRequest(&tok));
+    const std::string target = std::string(dir) + "/elsewhere";
+    Write(target, "1700000099\n");
+    CHECK(symlink(target.c_str(), req.c_str()) == 0); Poll(); CHECK(!LiveBenchRequest(&tok));
+    unlink(req.c_str()); unlink(target.c_str());
+    Write(conf, "REV=32\nTARGET_FPS=75\n"); Touch(conf, 64); Poll();
+}
+
 static void TestRevAndRemoval(const std::string& conf) {
     LiveSettings& L = Live();
     // REV is only logged; a value that is not a whole number is ignored and said so, it is not read as a prefix or as 0 or as a wrapped number
@@ -202,116 +329,19 @@ int main() {
     TestEnvAndFile(conf);
     TestClampedFile(conf);
     TestCmdBuffersAndMargin(conf);
-    LiveSettings& L = Live();
-    {   // hostile or broken file contents: nothing crashes, nothing hangs, nothing broken is applied
+    {
         int t = 100;
-        auto Put = [&](const std::string& text) { Write(conf, text); Touch(conf, t += 2); Poll(); };
-        Put("REV=40\nTARGET_FPS=80\nMAX_SYNTHETIC=3\nPHASE_OFFSET=0.3\nCMD_BUFFERS=10\n");
-        CHECK(L.target_fps == 80.0f && L.max_synthetic == 3);
-        // a NUL byte: that line is dropped whole, the lines after it still count
-        Put(std::string("TARGET_FPS=65\0junk\nMAX_SYNTHETIC=2\n", 35));
-        CHECK(L.target_fps == 90.0f && L.max_synthetic == 2);                              // 65 was not applied: the file has no valid TARGET_FPS line, so the startup value (90, environment) stands
-        // CRLF line ends are fine; a lone CR (an old Mac file) makes one long line whose value is not a number
-        Put("TARGET_FPS=70\r\nMAX_SYNTHETIC=1\r\n");
-        CHECK(L.target_fps == 70.0f && L.max_synthetic == 1);
-        Put("TARGET_FPS=71\rMAX_SYNTHETIC=3\n");
-        CHECK(L.target_fps == 90.0f);                                                       // not a number: the line is invalid, the startup value (environment) applies
-        // nan, inf, hex floats, hex ints, text after the number: none of them is a number
-        Put("TARGET_FPS=nan\nMIN_GAIN=inf\nPHASE_OFFSET=0x1p-1\nSYNTH_MARGIN=-inf\nCMD_BUFFERS=0x10\nBASE_FPS_CAP=1e999\nMAX_SYNTHETIC=2x\n");
-        CHECK(L.target_fps == 90.0f && L.min_gain == 1.01f && L.phase_offset == 0.5f && L.cmd_buffers == 8 && L.synth_margin == 0.15f && L.base_fps_cap == 45.0f && L.max_synthetic == 3);
-        // empty key, empty value, only blanks, a bare =
-        Put("=5\nTARGET_FPS=\n   =   \n=\n\t\nTARGET_FPS = 66 \n");
-        CHECK(L.target_fps == 66.0f);                                                       // blanks around key and value are fine; the broken lines did nothing
-        // BASE_FPS_CAP below 1 is off, 1 is a cap, and the cap is not applied at 0.5
-        Put("BASE_FPS_CAP=0.0001\n"); CHECK(L.base_fps_cap == 0.0f);
-        Put("BASE_FPS_CAP=0.99\n");   CHECK(L.base_fps_cap == 0.0f);
-        Put("BASE_FPS_CAP=1\n");      CHECK(L.base_fps_cap == 1.0f);
-        Put("BASE_FPS_CAP=500\n");    CHECK(L.base_fps_cap == 240.0f);
-        Put("BASE_FPS_CAP=120\n");    CHECK(L.base_fps_cap == 120.0f);                  // a cap of 120 is no longer clamped to 90
-        Put("BASE_FPS_CAP=240\n");    CHECK(L.base_fps_cap == 240.0f);
-        Put("TARGET_FPS=600\n");      CHECK(L.target_fps == 600.0f);
-        Put("TARGET_FPS=601\n");      CHECK(L.target_fps == 600.0f);
-        // a file over 64 KiB: the complete lines inside the first 64 KiB are used, the line cut by the limit is dropped (not read as TARGET_FPS=8), the rest is ignored
-        {
-            std::string big = "MAX_SYNTHETIC=2\n";
-            const std::string tail = "TARGET_FPS=88\n";
-            const size_t limit = 65536, cut_at = limit - 12;              // the tail starts 12 bytes before the limit: "TARGET_FPS=8" is what the limit leaves of it
-            while (big.size() + 1 < cut_at) big += (cut_at - big.size() > 80 ? "#" + std::string(78, 'x') + "\n" : std::string("#\n"));
-            if (big.size() < cut_at) big += std::string(cut_at - big.size() - 1, '#') + "\n";
-            CHECK(big.size() == cut_at);
-            big += tail + "ENABLED=0\n" + std::string(4000, '#');
-            Put(big);
-            CHECK(L.max_synthetic == 2);                                                   // before the limit: used
-            CHECK(L.target_fps == 90.0f);                                                  // the cut line is not TARGET_FPS=8 (clamped to 30), not 88: the startup value stands
-            CHECK(L.enabled == 1);                                                         // after the limit: ignored
-        }
-        // the swapchain capacity request at game start follows the live parser: a MAX_SYNTHETIC line it ignores (5x, 0x4, nan) sets nothing, the last valid line counts
-        Put("MAX_SYNTHETIC=5x\n");                 CHECK(LiveRequestedMaxSynthetic() == 0);
-        Put("MAX_SYNTHETIC=0x4\n");                CHECK(LiveRequestedMaxSynthetic() == 0);
-        Put("MAX_SYNTHETIC=nan\n");                CHECK(LiveRequestedMaxSynthetic() == 0);
-        Put("MAX_SYNTHETIC=7\n");                  CHECK(LiveRequestedMaxSynthetic() == 7);
-        Put("MAX_SYNTHETIC=8\nMAX_SYNTHETIC=5x\n"); CHECK(LiveRequestedMaxSynthetic() == 8);
-        Put("MAX_SYNTHETIC=99\n");                 CHECK(LiveRequestedMaxSynthetic() == 10);
-        Put("REV=40\n");
-        // a FIFO (or any special file) in the place of live.conf must not block the game: it is refused
-        unlink(conf.c_str());
-        CHECK(mkfifo(conf.c_str(), 0600) == 0);
-        alarm(10);                                                                       // a blocked open() would hang here: the alarm ends the test with a failure
-        Poll();
-        alarm(0);
-        CHECK(L.target_fps == 90.0f);
-        unlink(conf.c_str());
-        Put("REV=41\nTARGET_FPS=75\n"); CHECK(L.target_fps == 75.0f);                    // a normal file works again
-        // control characters in the file never reach live.log, and a file of junk makes a handful of notes, not thousands
-        std::string junk = "\x1b[31mred\x07=1\nTARGET_FPS=\x01\x02 5\n";
-        for (int i = 0; i < 300; ++i) junk += "BOGUS" + std::to_string(i) + "=1\n";
-        Put(junk);
-        CHECK(L.target_fps == 90.0f);
+        TestHostileValues(conf, t);
+        TestOversizeFile(conf, t);
+        TestRequestedMaxSynthetic(conf, t);
+        TestFifoAndJunk(conf, t);
     }
-
-    {   // bench.req (next to live.conf): the benchmark request token. It is not a setting.
+    {
         const std::string req = std::string(dir) + "/bench.req";
         int t = 40;
-        auto Req = [&](const char* text) { Write(req, text); Touch(req, t += 2); Poll(); };
-        long long tok = 0;
-        CHECK(!LiveBenchRequest(&tok) && !LiveBenchCancel());
-        const unsigned long long gen0 = LiveGeneration();
-        Req("1700000001\n");
-        CHECK(LiveBenchRequest(&tok) && tok == 1700000001ll);
-        CHECK(LiveGeneration() == gen0);                          // no live value moved: a request can never count as a changed setting
-        LiveBenchAck(tok); CHECK(!LiveBenchRequest(&tok));
-        Req("1700000001\n"); CHECK(!LiveBenchRequest(&tok));      // the same number again is not a new request
-        Req("1700000002\n"); CHECK(LiveBenchRequest(&tok) && tok == 1700000002ll);
-        LiveBenchAck(tok);
-        Req("0\n"); CHECK(LiveBenchCancel() && !LiveBenchCancel() && !LiveBenchRequest(&tok));      // 0: stop a running benchmark, once
-        Req("0\n"); CHECK(!LiveBenchCancel());
-        Req("abc\n"); CHECK(!LiveBenchRequest(&tok) && !LiveBenchCancel());                          // not a number: ignored
-        Req("-5\n"); CHECK(!LiveBenchRequest(&tok));
-        Req("17000000010 x\n"); CHECK(!LiveBenchRequest(&tok));
-        Req("99999999999999999999\n"); CHECK(!LiveBenchRequest(&tok));
-        Req("  1700000003  \r\n"); CHECK(LiveBenchRequest(&tok) && tok == 1700000003ll);             // blanks and CRLF are fine
-        LiveBenchAck(tok);
-        // a BENCH line in live.conf (an older plugin or script) is neither a setting nor a request, and it moves no live value
-        Write(conf, "REV=30\nBENCH=1700000009\nTARGET_FPS=75\n"); Touch(conf, 60); Poll();
-        CHECK(!LiveBenchRequest(&tok) && Live().target_fps == 75.0f);
-        const unsigned long long gen1 = LiveGeneration();
-        Write(conf, "REV=31\nBENCH=1700000010\nTARGET_FPS=75\n"); Touch(conf, 62); Poll();
-        CHECK(!LiveBenchRequest(&tok) && LiveGeneration() == gen1);
-        // a NUL byte, and a FIFO in the place of bench.req (open() must not block the game)
-        Write(req, std::string("1700000051\0x\n", 13)); Touch(req, t += 2); Poll(); CHECK(!LiveBenchRequest(&tok));
-        unlink(req.c_str()); CHECK(mkfifo(req.c_str(), 0600) == 0);
-        alarm(10); Poll(); alarm(0); CHECK(!LiveBenchRequest(&tok));
-        unlink(req.c_str());
-        // the file is read only when it is the user's own regular file: a symlink is not followed
-        unlink(req.c_str());
-        Poll(); CHECK(!LiveBenchRequest(&tok));
-        const std::string target = std::string(dir) + "/elsewhere";
-        Write(target, "1700000099\n");
-        CHECK(symlink(target.c_str(), req.c_str()) == 0); Poll(); CHECK(!LiveBenchRequest(&tok));
-        unlink(req.c_str()); unlink(target.c_str());
-        Write(conf, "REV=32\nTARGET_FPS=75\n"); Touch(conf, 64); Poll();
+        TestBenchReq(conf, req, t);
+        TestBenchSpecialFiles(dir, conf, req, t);
     }
-
     TestRevAndRemoval(conf);
 
     const std::string text = Slurp(log);
