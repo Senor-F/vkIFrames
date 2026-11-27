@@ -18,9 +18,8 @@ static int g_fail = 0;
 // Known, documented differences that the owner has decided to keep: none. A schema key whose DEFAULT differs from the layer's fails the test.
 static bool Known(const char*) { return false; }
 
-int main() {
-    const Config d{};                                        // the layer's built-in defaults, before any environment variable
-    LiveKeyRow rows[32]; const int n = LiveKeyTable(rows, 32);
+// Schema rows against the layer's live-key table and the start-of-game defaults: default, toggle, range.
+static void TestSchemaDefaults(const Config& d, const LiveKeyRow* rows, const int n) {
     auto layer = [&](const char* key) -> const LiveKeyRow* { for (int i = 0; i < n; ++i) if (!std::strcmp(rows[i].name, key)) return &rows[i]; return nullptr; };
 
     // start-of-game keys: the layer's default comes from Config
@@ -55,7 +54,10 @@ int main() {
             FAIL("%s: the schema range %g..%g and the layer's %g..%g must be the same (the owner raised these limits)", s.key, s.lo, s.hi, llo, lhi);
         if (check_range && (s.def < s.lo - 1e-9 || s.def > s.hi + 1e-9)) FAIL("%s: the schema's default %g is outside its own range", s.key, s.def);
     }
+}
+
     // the table by machine: the layer's (MachineDefaultsFor) against the schema's "machine_defaults" for the two keys that have one, and nothing else may differ by machine
+static void TestMachineDefaults() {
     {
         const char* path = "/tmp/vkiframes_test_defaults_dmi";
         auto board = [&](const char* name) { { std::ofstream o(path, std::ios::trunc); o << name << "\n"; } return MachineDefaultsFor(path); };
@@ -69,7 +71,10 @@ int main() {
         CHECK(gal.base_fps_cap == 45.0f && gal.target_fps == 90.0f && jup.base_fps_cap == 30.0f && jup.target_fps == 60.0f && other.base_fps_cap == 60.0f && other.target_fps == 120.0f);
         std::remove(path);
     }
+}
+
     // the other direction: every live key of the layer is in the schema (STATS is a measurement switch the panel does not show)
+static void TestLiveKeysInSchema(const LiveKeyRow* rows, const int n) {
     for (int i = 0; i < n; ++i) {
         if (!std::strcmp(rows[i].name, "STATS")) continue;
         bool found = false;
@@ -77,7 +82,10 @@ int main() {
         if (!found) FAIL("the layer's live key %s is missing in the schema", rows[i].name);
     }
 
+}
+
     // the layer's safety defaults: nothing experimental, nothing that writes files or costs GPU time unasked
+static void TestSafetyDefaults(const Config& d) {
     CHECK(d.dump_pair == 0);                                  // VKIFRAME_DUMP: off
     CHECK(!d.debug_flow && !d.debug_ring && d.tickmark == 0);
     CHECK(!d.onesided_fill);                                  // the experimental fill is off
@@ -90,12 +98,24 @@ int main() {
     CHECK(LiveMaxSyntheticLimit() == kLiveMaxSyntheticNormal);   // EXPERIMENTAL is off: the limit is 4, not 10
     CHECK(Live().stats.load() == 0 && Live().enabled.load() == 1);
     CHECK(d.dump_frames == 5);
+}
 
     // the manifest turns the layer on only for a process that sets VKIFRAME_ENABLE=1, and VKIFRAME_DISABLE=1 wins
+static void TestManifestOptIn() {
     std::ifstream f(FRAMEGEN_MANIFEST_IN); std::stringstream ss; ss << f.rdbuf(); const std::string m = ss.str();
     CHECK(!m.empty());
     CHECK(m.find("\"enable_environment\": { \"VKIFRAME_ENABLE\": \"1\" }") != std::string::npos);
     CHECK(m.find("\"disable_environment\": { \"VKIFRAME_DISABLE\": \"1\" }") != std::string::npos);
+}
+
+int main() {
+    const Config d{};                                        // the layer's built-in defaults, before any environment variable
+    LiveKeyRow rows[32]; const int n = LiveKeyTable(rows, 32);
+    TestSchemaDefaults(d, rows, n);
+    TestMachineDefaults();
+    TestLiveKeysInSchema(rows, n);
+    TestSafetyDefaults(d);
+    TestManifestOptIn();
 
     std::printf(g_fail ? "defaults: FAILED\n" : "defaults: ok\n");
     return g_fail ? 1 : 0;
