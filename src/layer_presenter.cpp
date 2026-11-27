@@ -111,4 +111,105 @@ void ExecuteExtrap(DeviceDispatch& dt, SwapchainState& sc, const PresentJob& j, 
     GpuUnpin(g, j.a.slot); GpuUnpin(g, j.b.slot);
 }
 
+void PresenterMain(DeviceDispatch* dt, SwapchainState* sc, Presenter* p) {
+    uint64_t wd_logged = 0;
+    for (;;) {
+        PresentJob j;
+        {
+            std::unique_lock<std::mutex> l(p->mu);
+            while (!p->cv.wait_for(l, std::chrono::milliseconds(50), [&] { return p->stop.load() || !p->q.empty(); })) {
+                const uint64_t now = NowNs(), last = sc->last_present_ns.load();
+                if (last && now - last > 200'000'000ull && sc->gpu && sc->last_queue) {   // idle flush: the game stopped presenting, show its last frame
+                    l.unlock();
+                    {
+                        std::unique_lock<std::mutex> fl(sc->flow_mu, std::try_to_lock);
+                        if (fl.owns_lock() && sc->gpu->held.valid && NowNs() - sc->last_present_ns.load() > 200'000'000ull) {
+                            FG_LOG_ROUTINE("hold: no present for %.0f ms, showing the held frame", (NowNs() - last) / 1e6);
+                            NotePresentError(*sc, PresentHeld(*dt, sc->last_queue, *sc, NowNs()));
+                        }
+                    }
+                    l.lock();
+                    if (p->stop.load() || !p->q.empty()) break;
+                }
+                if (!(last && now - last > 2'000'000'000ull)) continue;                      // watchdog: the game stopped presenting
+                if (last && now - last > 2'000'000'000ull && now - wd_logged > 5'000'000'000ull) {
+                    wd_logged = now;
+                    const uint64_t aw = sc->acquire_wait_since_ns.load(), pw = sc->wait_present_since_ns.load();
+                    // The frame count (sc->mu) and the held frame (flow_mu) belong to the game thread; this log line only looks at them when it can take the locks at once,
+                    // and with the presenter's own mutex released (the game thread takes flow_mu and then that mutex, never the other way round).
+                    unsigned long long frames = 0; int held = -2; unsigned long long held_id = 0; int held_fence = 0; bool known = false;
+                    l.unlock();
+                    {
+                        std::unique_lock<std::mutex> ml(sc->mu, std::try_to_lock);
+                        std::unique_lock<std::mutex> fl(sc->flow_mu, std::try_to_lock);
+                        if (ml.owns_lock() && fl.owns_lock()) {
+                            known = true; frames = sc->frames;
+                            held = sc->gpu ? int(sc->gpu->held.valid) : -1; held_id = sc->gpu ? sc->gpu->held.present_id : 0; held_fence = sc->gpu ? int(sc->gpu->held.fence != VK_NULL_HANDLE) : 0;
+                        }
+                    }
+                    l.lock();
+                    if (known) FG_LOG_ROUTINE("watchdog: no present for %.1f s | frames %llu | held %d (id %llu fence %d) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
+                           (now - last) / 1e9, frames, held, held_id, held_fence, aw ? (now - aw) / 1e9 : 0.0, pw ? (now - pw) / 1e9 : 0.0, (unsigned long long)sc->wait_present_id.load());
+                    else FG_LOG_ROUTINE("watchdog: no present for %.1f s | the game thread holds its locks (frame state not read) | in acquire %.1f s | in present-wait %.1f s (id %llu)",
+                           (now - last) / 1e9, aw ? (now - aw) / 1e9 : 0.0, pw ? (now - pw) / 1e9 : 0.0, (unsigned long long)sc->wait_present_id.load());
+                    if (p->stop.load() || !p->q.empty()) break;
+                }
+            }
+            if (p->stop.load()) break;
+            j = p->q.front(); p->q.pop_front(); p->busy = true;
+        }
+        const uint64_t cpu0 = ThreadCpuNs();
+        try {
+            if (j.extrap) ExecuteExtrap(*dt, *sc, j, p); else ExecutePair(*dt, *sc, j, p);
+        } catch (...) {
+            // Out of host memory (or any exception) in a job: it must not end the thread or the process, and the game thread must not wait for it for ever (busy is
+            // cleared below). The job's references on its two ring slots are released here (they are released at the end of the job otherwise), the swapchain
+            // goes back to plain presents for what follows, and the frames of this job are not shown (the next job starts fresh). No lock is held here.
+            GuardNote("presenter thread", "a job failed");
+            sc->synth_failed = true;
+            if (sc->gpu) { GpuUnpin(*sc->gpu, j.a.slot); GpuUnpin(*sc->gpu, j.b.slot); }
+        }
+        sc->cpu_presenter_ns += ThreadCpuNs() - cpu0;
+        { std::lock_guard<std::mutex> l(p->mu); p->busy = false; }
+        p->idle_cv.notify_all();
+    }
+}
+
+void StartPresenter(DeviceDispatch& dt, SwapchainState& sc) {
+    auto* p = new Presenter;
+    sc.presenter = p;
+    p->th = std::thread(PresenterMain, &dt, &sc, p);
+    FG_LOG("presenter: thread started (lead %d us)", GetConfig().pace_lead_us);
+}
+
+bool StopPresenter(SwapchainState& sc) {    // true: the thread was detached and still uses `sc`, its GPU state and the device dispatch table
+    Presenter* p = sc.presenter;
+    if (!p) return false;
+    { std::lock_guard<std::mutex> l(p->mu); p->stop = true; p->q.clear(); }
+    p->cv.notify_all();
+    if (p->th.joinable()) {
+        // a presenter that is stuck inside a driver call must not hang the game's exit: wait a few seconds, then leave the thread behind
+        std::unique_lock<std::mutex> l(p->mu);
+        if (!p->idle_cv.wait_for(l, std::chrono::seconds(3), [&] { return !p->busy; })) {
+            l.unlock();
+            FG_LOG("shutdown: the presenter thread is still busy after 3 s, detaching it");
+            p->th.detach();
+            sc.presenter = nullptr;
+            return true;                                                      // the Presenter object is leaked on purpose: the thread still uses it
+        }
+        l.unlock();
+        p->th.join();
+    }
+    sc.presenter = nullptr;
+    delete p;
+    return false;
+}
+
+// Waits until every queued tick has been presented. Needed before the game's own present goes out, to keep the order.
+void DrainPresenter(SwapchainState& sc) {
+    Presenter* p = sc.presenter;
+    if (!p) return;
+    std::unique_lock<std::mutex> l(p->mu);
+    if (!p->idle_cv.wait_for(l, std::chrono::seconds(2), [&] { return p->q.empty() && !p->busy; })) FG_LOG("presenter: drain timed out");
+}
 } // namespace

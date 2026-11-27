@@ -5,6 +5,9 @@
 #include "present_timing.hpp"
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 
 // A pair: A (held until now) and B (just captured), with the ticks the scheduler planned for it. A's ring slot reference was
 // handed over from the held frame; B got one more for the job. Both are released when the job is done.
@@ -12,10 +15,7 @@
 // predictions from B and are dropped once a newer job exists (gen != SwapchainState::job_gen).
 struct PresentJob { HeldFrame a, b; PairScheduler::Plan plan; VkQueue queue{}; bool extrap{false}; uint64_t gen{0}; };
 
-// Used by PresenterMain until it moves next to them (removed again in that commit).
-#include <condition_variable>
-#include <deque>
-#include <thread>
+// The presenter thread's state: the present hook queues jobs on it, PresenterMain works them off.
 struct Presenter {
     std::thread th;
     std::mutex mu;
@@ -24,7 +24,6 @@ struct Presenter {
     bool busy{false};
     std::atomic<bool> stop{false};
 };
-namespace fg_layer { void NotePresentError(SwapchainState& sc, VkResult r); }
 
 // The bodies of the hooks: layer_main.cpp wraps each in the out-of-memory guard.
 VkResult Impl_CreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
