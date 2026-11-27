@@ -1,3 +1,4 @@
+// Quick-access panel UI (React).
 import {
   ButtonItem,
   Focusable,

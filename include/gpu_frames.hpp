@@ -1,4 +1,5 @@
 #pragma once
+// GpuState struct: ring images, pipelines, per-slot state.
 #include <atomic>
 
 // Stage 3b: GPU side of holding a frame. The game's image is blitted into an internal RGBA16F ring slot ("captured"),

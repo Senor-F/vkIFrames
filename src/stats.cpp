@@ -1,3 +1,4 @@
+// Measurement logic: stats.jsonl, status line, bench schedule, bench.json.
 #include "stats.hpp"
 #include <cstdarg>
 

@@ -1,3 +1,4 @@
+// Loader negotiation, GetProcAddr routing, dispatch-table registries.
 #include "vk_iframes_layer.hpp"
 
 #include <algorithm>

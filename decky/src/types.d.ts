@@ -1,3 +1,4 @@
+// TypeScript type declarations for the panel.
 declare module "*.svg" {
   const content: string;
   export default content;

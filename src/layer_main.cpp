@@ -1,3 +1,4 @@
+// All hooks: instance/device/swapchain create, present hook, presenter thread, hold-one.
 #include "vk_iframes_layer.hpp"
 #include "live_config.hpp"
 #include "gpu_frames.hpp"

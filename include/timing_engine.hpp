@@ -1,4 +1,5 @@
 #pragma once
+// TimingEngine: EMA frame-time filter, smoothed arrival times.
 
 #include <algorithm>
 #include <cmath>

@@ -101,5 +101,5 @@ The project rules (CLAUDE.md, Rules 1 to 3) are in place: documents split, INDEX
   4. `src/layer_main.cpp`: the same mock tests plus test_chain, test_timing, test_destroy_race, test_detach, test_oom, test_passthru, test_capmodes; biggest, so split by responsibility in several sessions.
   5. `src/optical_flow.cpp` and `decky/src/index.tsx` last: the mock tests do not run the flow engine (open point 5 above) and the panel has no test; add tests first.
   6. The long test `main` functions: split last, they are the safety net.
-* **Files without a one-line purpose comment (16):** `decky/src/index.tsx`, `decky/src/types.d.ts`, `decky/tests/test_backend.py`, `include/gpu_frames.hpp`, `include/present_timing.hpp`, `include/timing_engine.hpp`, `include/vk_iframes_layer.hpp`, `src/dump_pool.cpp`, `src/dump_queue.cpp`, `src/gpu_frames.cpp`, `src/layer_dispatch.cpp`, `src/layer_main.cpp`, `src/live_config.cpp`, `src/present_timing.cpp`, `src/stats.cpp`, `tools/clock_sim/frame_sources.py`. (`cmake/*.cmake`, `decky/rollup.config.js` and `decky/decky.pyi` are not measured.)
+* **Files without a one-line purpose comment:** none (`src/live_config.cpp` already had one). (`cmake/*.cmake`, `decky/rollup.config.js` and `decky/decky.pyi` are not measured.)
 * **Next:** add `tools/code_size.py` to the build once the tree passes it.

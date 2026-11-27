@@ -1,4 +1,5 @@
 #pragma once
+// Present-timing helpers declarations.
 
 #include "vk_iframes_layer.hpp"
 

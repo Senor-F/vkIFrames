@@ -1,3 +1,4 @@
+// VKIFRAME_DUMP: host-visible buffer pool, allocated once at start.
 #include "dump_pool.hpp"
 
 #include <algorithm>

@@ -1,3 +1,4 @@
+// VKIFRAME_DUMP: writes capture files together after the window.
 #include "dump_queue.hpp"
 #include "vk_iframes_layer.hpp"
 

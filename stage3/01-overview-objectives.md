@@ -36,7 +36,8 @@ src/
 ├── layer_dispatch.cpp       # dispatch tables, registries (never destroyed), the queue-family map
 ├── layer_main.cpp          # device/swapchain/present hooks, PlanAndCount, ExecutePair, the presenter thread
 ├── gpu_frames.cpp          # ring buffer, capture, GpuSynthesize, flush of the held frame
-└── live_config.cpp         # live.conf
+├── live_config.cpp         # live.conf
+└── live_config_io.cpp      # live.log, status.json, file reads and writes
 ```
 
 The Vulkan entry points are listed once in the dispatch tables (`DeviceDispatch`, `InstanceDispatch`); a new call is added there and used as `dt.CmdBlitImage(...)` and so on. Calls go through the dispatch tables, never as bare `vk*` symbols.

@@ -76,7 +76,7 @@ vkIFrames/
 │   ├── dump_pool.cpp, dump_queue.cpp  # debug capture (VKIFRAME_DUMP)
 │   ├── optical_flow.cpp         # flow passes and GPU timers
 │   ├── present_timing.cpp
-│   ├── live_config.cpp          # live.conf, live.log, status.json
+│   ├── live_config.cpp, live_config_io.cpp  # live.conf, live.log, status.json
 │   └── stats.cpp                # stats.jsonl, bench.json
 ├── shaders/                     # flow_luma/down/coarse/refine/occlusion, flow_interp (interpolation, pan fallback, UI mask, extrapolation), flow_vis, blend
 ├── scripts/                     # install.sh, uninstall.sh, gamemode_launch.sh, check_env.sh, vkiframes-bench.sh, package.sh (release archives), check_so.sh, repro_check.sh, layer.map

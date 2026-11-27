@@ -1,4 +1,5 @@
 #pragma once
+// Shared declarations: dispatch tables, SwapchainState, hook list, log macros.
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
@@ -23,7 +24,7 @@
 #include "timing_engine.hpp"
 
 #define FRAMEGEN_EXPORT extern "C" __attribute__((visibility("default")))
-bool LiveLogOpen();   // live_config.cpp
+bool LiveLogOpen();   // live_config_io.cpp
 int  LiveMaxSyntheticLimit();   // live_config.cpp: 10 when VKIFRAME_EXPERIMENTAL was set at game start, else 4
 inline std::atomic<FILE*> g_fg_log{nullptr};              // the layer's log stream (live.log), null = stderr; swapped when live.log is rotated while the layer runs
 inline FILE* FgLog() { FILE* f = g_fg_log.load(std::memory_order_acquire); return f ? f : stderr; }

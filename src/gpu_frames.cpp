@@ -1,3 +1,4 @@
+// GpuState: ring buffer, synthetic frame passes, command buffers, descriptors, timestamps.
 #include "gpu_internal.hpp"
 #include "live_config.hpp"
 
