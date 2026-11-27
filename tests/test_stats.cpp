@@ -43,80 +43,91 @@ static stats::Record Second(bool layer_on) {
     return r;
 }
 
-int main() {
+static void TestPercentiles() {
     // ---- percentiles: nearest rank, counting from 1 ----
-    {
-        std::vector<double> v; for (int i = 100; i >= 1; --i) v.push_back(i);
-        NEAR(stats::Percentile(v, 0.95), 95, 0); NEAR(stats::Percentile(v, 0.99), 99, 0); NEAR(stats::Percentile(v, 1.0), 100, 0); NEAR(stats::Percentile(v, 0.0), 1, 0);
-        NEAR(stats::Percentile({5.0}, 0.95), 5, 0); NEAR(stats::Percentile({4, 1, 3, 2}, 0.95), 4, 0); NEAR(stats::Percentile({}, 0.95), 0, 0);
-        NEAR(stats::Percentile({10, 20}, 0.5), 10, 0);
-    }
+    std::vector<double> v; for (int i = 100; i >= 1; --i) v.push_back(i);
+    NEAR(stats::Percentile(v, 0.95), 95, 0); NEAR(stats::Percentile(v, 0.99), 99, 0); NEAR(stats::Percentile(v, 1.0), 100, 0); NEAR(stats::Percentile(v, 0.0), 1, 0);
+    NEAR(stats::Percentile({5.0}, 0.95), 5, 0); NEAR(stats::Percentile({4, 1, 3, 2}, 0.95), 4, 0); NEAR(stats::Percentile({}, 0.95), 0, 0);
+    NEAR(stats::Percentile({10, 20}, 0.5), 10, 0);
+}
+
+static void TestDerivedSecond() {
     // ---- derived values of one second ----
-    {
-        stats::Record r = Second(true);
-        CHECK(r.frames == 45);
-        NEAR(r.ft_mean, (44 * 22.0 + 30.0) / 45.0, 1e-9);
-        NEAR(r.ft_max, 30.0, 0); NEAR(r.ft_p95, 22.0, 0); NEAR(r.ft_p99, 30.0, 0);    // ceil(0.95*45) = 43rd of 45 sorted: 22.0; ceil(0.99*45) = 45th: the one 30 ms frame
-        NEAR(r.gpu_share, (45 * 4.0 + 45 * 1.0) / 1000.0, 1e-12);                       // 0.225 of the GPU
-        { const double m = (44 * 22.0 + 30.0) / 45.0; NEAR(r.ft_std_ms, std::sqrt((44 * (22.0 - m) * (22.0 - m) + (30.0 - m) * (30.0 - m)) / 45.0), 1e-9); }   // population standard deviation
-        { stats::FrameTimes ft; ft.Add(16.667); ft.Add(33.4); ft.Add(0.0004);
-          const std::string fj = stats::FramesJson(ft, 1700000001, 16.667, 4242);       // every frame time of a second, in microseconds, with the process and the cap's slot
-          CHECK(fj == "{\"t\":1700000001,\"pid\":4242,\"slot_ms\":16.667,\"us\":[16667,33400,0]}"); }
-        { stats::FrameTimes ft; CHECK(stats::FramesJson(ft, 1, 0.0, 7) == "{\"t\":1,\"pid\":7,\"slot_ms\":0.000,\"us\":[]}"); }
-        const std::string j = stats::RecordJson(r, 1700000000);
-        CHECK(j.find("\"gpu_share\":0.22500") != std::string::npos && j.find("\"mode\":\"interp\"") != std::string::npos);
-        CHECK(j.front() == '{' && j.back() == '}' && j.find('\n') == std::string::npos);
-        CHECK(j.find('/') == std::string::npos);                                         // no path in a record
-        stats::Record c = r; c.cap_wait_ms = 7.25; c.cap_hold_ms = 0.5; c.pid = 4242;    // the base-rate cap's sleeps and the writing process
-        const std::string jc = stats::RecordJson(c, 1700000000);
-        CHECK(jc.find("\"cap_wait_ms\":7.250,\"cap_hold_ms\":0.500,") != std::string::npos);
-        CHECK(j.find("\"cap_wait_ms\":0.000,\"cap_hold_ms\":0.000,") != std::string::npos);   // the fields are always there
-        CHECK(j.find("\"ft_std_ms\":") != std::string::npos && j.find("\"content_delay_ms\":0.000,\"pid\":0}") != std::string::npos);
-        c.content_delay_ms = 41.5; c.ft_std_ms = 2.125;
-        CHECK(stats::RecordJson(c, 1700000000).find("\"ft_std_ms\":2.125,\"content_delay_ms\":41.500,\"pid\":4242}") != std::string::npos);
+    stats::Record r = Second(true);
+    CHECK(r.frames == 45);
+    NEAR(r.ft_mean, (44 * 22.0 + 30.0) / 45.0, 1e-9);
+    NEAR(r.ft_max, 30.0, 0); NEAR(r.ft_p95, 22.0, 0); NEAR(r.ft_p99, 30.0, 0);    // ceil(0.95*45) = 43rd of 45 sorted: 22.0; ceil(0.99*45) = 45th: the one 30 ms frame
+    NEAR(r.gpu_share, (45 * 4.0 + 45 * 1.0) / 1000.0, 1e-12);                       // 0.225 of the GPU
+    { const double m = (44 * 22.0 + 30.0) / 45.0; NEAR(r.ft_std_ms, std::sqrt((44 * (22.0 - m) * (22.0 - m) + (30.0 - m) * (30.0 - m)) / 45.0), 1e-9); }   // population standard deviation
+    { stats::FrameTimes ft; ft.Add(16.667); ft.Add(33.4); ft.Add(0.0004);
+      const std::string fj = stats::FramesJson(ft, 1700000001, 16.667, 4242);       // every frame time of a second, in microseconds, with the process and the cap's slot
+      CHECK(fj == "{\"t\":1700000001,\"pid\":4242,\"slot_ms\":16.667,\"us\":[16667,33400,0]}"); }
+    { stats::FrameTimes ft; CHECK(stats::FramesJson(ft, 1, 0.0, 7) == "{\"t\":1,\"pid\":7,\"slot_ms\":0.000,\"us\":[]}"); }
+    const std::string j = stats::RecordJson(r, 1700000000);
+    CHECK(j.find("\"gpu_share\":0.22500") != std::string::npos && j.find("\"mode\":\"interp\"") != std::string::npos);
+    CHECK(j.front() == '{' && j.back() == '}' && j.find('\n') == std::string::npos);
+    CHECK(j.find('/') == std::string::npos);                                         // no path in a record
+    stats::Record c = r; c.cap_wait_ms = 7.25; c.cap_hold_ms = 0.5; c.pid = 4242;    // the base-rate cap's sleeps and the writing process
+    const std::string jc = stats::RecordJson(c, 1700000000);
+    CHECK(jc.find("\"cap_wait_ms\":7.250,\"cap_hold_ms\":0.500,") != std::string::npos);
+    CHECK(j.find("\"cap_wait_ms\":0.000,\"cap_hold_ms\":0.000,") != std::string::npos);   // the fields are always there
+    CHECK(j.find("\"ft_std_ms\":") != std::string::npos && j.find("\"content_delay_ms\":0.000,\"pid\":0}") != std::string::npos);
+    c.content_delay_ms = 41.5; c.ft_std_ms = 2.125;
+    CHECK(stats::RecordJson(c, 1700000000).find("\"ft_std_ms\":2.125,\"content_delay_ms\":41.500,\"pid\":4242}") != std::string::npos);
+}
+
+static void ScheduleRun(stats::Bench& b) {
+    b.Start(1, 90, 4, 60, 1.01, 1);
+    int off_switches = 0, on_switches = 0, seconds = 0, enabled = 1;
+    std::string labels; std::vector<int> on_at;
+    while (b.Active() && seconds < 1000) {
+        stats::Record r = Second(enabled != 0);
+        on_at.push_back(enabled);
+        const int next = b.OnSecond(r);
+        ++seconds;
+        if (seconds <= 30) CHECK(r.bench == "warmup" && enabled == 1);
+        if (next != enabled) { (next ? on_switches : off_switches)++; enabled = next; }
     }
+    CHECK(seconds == 30 + 12 * 60);
+    CHECK(b.GetState() == stats::Bench::State::Complete);
+    CHECK(off_switches == 4 && on_switches == 4);            // off, on | on, off | off, on | ...: off at 30, 210, 450, 690; on at 90, 330, 570 and the end returns the user's value (1)
+    CHECK(on_at.size() == 750 && on_at[100] == 1 && on_at[160] == 1 && on_at[220] == 0);   // seconds 90..210 on (pair 1 ends on, pair 2 starts on), then off
+}
+
+static void ScheduleDerived(stats::Bench& b) {
+    const auto off = b.Aggregate(false), on = b.Aggregate(true);
+    CHECK(off.seconds == 6 * 58 && on.seconds == 6 * 58);    // 2 settle seconds left out of every segment
+    NEAR(off.ft_mean, (59 * 16.0 + 20.0) / 60.0, 1e-9);
+    NEAR(on.ft_mean, (44 * 22.0 + 30.0) / 45.0, 1e-9);
+    NEAR(on.gpu_share, 0.225, 1e-9); NEAR(on.gpu_flow_share, 0.18, 1e-9); NEAR(on.gpu_interp_share, 0.045, 1e-9);
+    NEAR(on.flow_ms, 4.0, 1e-9); NEAR(on.interp_ms, 1.0, 1e-9); NEAR(off.gpu_share, 0.0, 0);
+    NEAR(on.cpu_game_ms, 0.5, 1e-9); NEAR(on.presenter_core, 0.2, 1e-9); NEAR(on.wait_game_ms, 0.4, 1e-9);
+    const std::string j = b.Json();
+    const double cost = on.ft_mean - off.ft_mean;
+    char want[80]; std::snprintf(want, sizeof want, "\"layer_cost_mean_ms\":%.3f", cost);
+    CHECK(j.find("\"status\":\"complete\"") != std::string::npos && j.find(want) != std::string::npos);
+    std::snprintf(want, sizeof want, "\"async_gain_upper_bound_ms\":%.3f", cost);
+    CHECK(j.find(want) != std::string::npos);
+    CHECK(j.find("\"flow_share_of_gpu\":0.8000") != std::string::npos);
+    CHECK(j.find("\"base_fps_cap_kept_while_off\":true") != std::string::npos);
+    CHECK(b.Restore() == 1);
+    // the spread over the pairs: six identical pairs have no spread, so the cost is not within noise
+    const auto pc = b.PairCosts();
+    CHECK(pc.size() == 6);
+    for (double x : pc) NEAR(x, cost, 1e-9);
+    CHECK(j.find("\"layer_cost_pairs_ms\":[") != std::string::npos && j.find("\"layer_cost_se_ms\":0.000") != std::string::npos && j.find("\"layer_cost_within_noise\":false") != std::string::npos);
+    CHECK(j.find("\"cmd_buffers\":0") != std::string::npos);      // not recorded when Start is not given it
+    CHECK(j.find("\"synth_margin\":-1.00") != std::string::npos);
+}
+
+static void TestSchedule() {
     // ---- the schedule and the derived numbers ----
-    {
-        stats::Bench b;
-        b.Start(1, 90, 4, 60, 1.01, 1);
-        int off_switches = 0, on_switches = 0, seconds = 0, enabled = 1;
-        std::string labels; std::vector<int> on_at;
-        while (b.Active() && seconds < 1000) {
-            stats::Record r = Second(enabled != 0);
-            on_at.push_back(enabled);
-            const int next = b.OnSecond(r);
-            ++seconds;
-            if (seconds <= 30) CHECK(r.bench == "warmup" && enabled == 1);
-            if (next != enabled) { (next ? on_switches : off_switches)++; enabled = next; }
-        }
-        CHECK(seconds == 30 + 12 * 60);
-        CHECK(b.GetState() == stats::Bench::State::Complete);
-        CHECK(off_switches == 4 && on_switches == 4);            // off, on | on, off | off, on | ...: off at 30, 210, 450, 690; on at 90, 330, 570 and the end returns the user's value (1)
-        CHECK(on_at.size() == 750 && on_at[100] == 1 && on_at[160] == 1 && on_at[220] == 0);   // seconds 90..210 on (pair 1 ends on, pair 2 starts on), then off
-        const auto off = b.Aggregate(false), on = b.Aggregate(true);
-        CHECK(off.seconds == 6 * 58 && on.seconds == 6 * 58);    // 2 settle seconds left out of every segment
-        NEAR(off.ft_mean, (59 * 16.0 + 20.0) / 60.0, 1e-9);
-        NEAR(on.ft_mean, (44 * 22.0 + 30.0) / 45.0, 1e-9);
-        NEAR(on.gpu_share, 0.225, 1e-9); NEAR(on.gpu_flow_share, 0.18, 1e-9); NEAR(on.gpu_interp_share, 0.045, 1e-9);
-        NEAR(on.flow_ms, 4.0, 1e-9); NEAR(on.interp_ms, 1.0, 1e-9); NEAR(off.gpu_share, 0.0, 0);
-        NEAR(on.cpu_game_ms, 0.5, 1e-9); NEAR(on.presenter_core, 0.2, 1e-9); NEAR(on.wait_game_ms, 0.4, 1e-9);
-        const std::string j = b.Json();
-        const double cost = on.ft_mean - off.ft_mean;
-        char want[80]; std::snprintf(want, sizeof want, "\"layer_cost_mean_ms\":%.3f", cost);
-        CHECK(j.find("\"status\":\"complete\"") != std::string::npos && j.find(want) != std::string::npos);
-        std::snprintf(want, sizeof want, "\"async_gain_upper_bound_ms\":%.3f", cost);
-        CHECK(j.find(want) != std::string::npos);
-        CHECK(j.find("\"flow_share_of_gpu\":0.8000") != std::string::npos);
-        CHECK(j.find("\"base_fps_cap_kept_while_off\":true") != std::string::npos);
-        CHECK(b.Restore() == 1);
-        // the spread over the pairs: six identical pairs have no spread, so the cost is not within noise
-        const auto pc = b.PairCosts();
-        CHECK(pc.size() == 6);
-        for (double x : pc) NEAR(x, cost, 1e-9);
-        CHECK(j.find("\"layer_cost_pairs_ms\":[") != std::string::npos && j.find("\"layer_cost_se_ms\":0.000") != std::string::npos && j.find("\"layer_cost_within_noise\":false") != std::string::npos);
-        CHECK(j.find("\"cmd_buffers\":0") != std::string::npos);      // not recorded when Start is not given it
-        CHECK(j.find("\"synth_margin\":-1.00") != std::string::npos);
-    }
+    stats::Bench b;
+    ScheduleRun(b);
+    ScheduleDerived(b);
+}
+
+static void TestSpread() {
     {   // spread arithmetic by hand: costs 0, 2, 4 -> mean 2, sample sd 2, se 2 / sqrt(3)
         const auto s3 = stats::Bench::SpreadOf({0.0, 2.0, 4.0});
         CHECK(s3.n == 3); NEAR(s3.mean, 2.0, 1e-12); NEAR(s3.se, 2.0 / std::sqrt(3.0), 1e-12); CHECK(s3.within_noise);   // |2| < 2 * 1.1547
@@ -128,33 +139,48 @@ int main() {
         CHECK(one.n == 1 && one.se == 0 && one.within_noise);      // one pair: no judgement, reported as null in the file
         CHECK(stats::Bench::SpreadOf({}).n == 0);
     }
+}
+
+static void TestSettingsEcho() {
     {   // the settings echo
         stats::Bench e; e.Start(1, 90, 4, 60, 1.01, 1, 16, 3, 0.0, 1);
         CHECK(e.Json().find("\"cmd_buffers\":16,\"flow_level\":3,\"synth_margin\":0.00,\"optical_flow\":1,") != std::string::npos);        // the file says whether the flow or the plain cross-fade made the frames
     }
+}
+
+static void TestLabels() {
     // labels and the first seconds of a run
-    {
-        stats::Bench b; b.Start(0, 90, 4, 60, 1.01, 1);
-        std::string seq; int en = 1;
-        for (int i = 0; i < 100 && b.Active(); ++i) {
-            stats::Record r = Second(en != 0); en = b.OnSecond(r);
-            if (i == 0 || i == 29 || i == 30 || i == 31 || i == 32 || i == 33 || i == 89 || i == 90 || i == 91 || i == 92) seq += r.bench + (en ? "+" : "-") + " ";
-        }
-        // the record at index i carries the label of its own second; en is what the next second runs with
-        CHECK(seq == "warmup+ warmup- settle- settle- off- off- off+ settle+ settle+ on+ ");
-        stats::Bench c; c.Start(0, 90, 4, 60, 1.01, 1);                  // the user's ENABLED was 0: it comes back at the end
-        int e = 1, s = 0; while (c.Active() && s++ < 1000) { stats::Record r = Second(e != 0); e = c.OnSecond(r); }
-        CHECK(e == 0 && c.Restore() == 0);
+    stats::Bench b; b.Start(0, 90, 4, 60, 1.01, 1);
+    std::string seq; int en = 1;
+    for (int i = 0; i < 100 && b.Active(); ++i) {
+        stats::Record r = Second(en != 0); en = b.OnSecond(r);
+        if (i == 0 || i == 29 || i == 30 || i == 31 || i == 32 || i == 33 || i == 89 || i == 90 || i == 91 || i == 92) seq += r.bench + (en ? "+" : "-") + " ";
     }
+    // the record at index i carries the label of its own second; en is what the next second runs with
+    CHECK(seq == "warmup+ warmup- settle- settle- off- off- off+ settle+ settle+ on+ ");
+    stats::Bench c; c.Start(0, 90, 4, 60, 1.01, 1);                  // the user's ENABLED was 0: it comes back at the end
+    int e = 1, s = 0; while (c.Active() && s++ < 1000) { stats::Record r = Second(e != 0); e = c.OnSecond(r); }
+    CHECK(e == 0 && c.Restore() == 0);
+}
+
+static void TestAborted() {
     // an aborted run says so and has no derived numbers
-    {
-        stats::Bench b; b.Start(1, 90, 4, 60, 1.01, 1);
-        int e = 1; for (int i = 0; i < 100; ++i) { stats::Record r = Second(e != 0); e = b.OnSecond(r); }
-        b.Abort("a setting was changed during the run");
-        const std::string j = b.Json();
-        CHECK(b.GetState() == stats::Bench::State::Aborted && j.find("\"status\":\"aborted\"") != std::string::npos && j.find("\"derived\":null") != std::string::npos);
-        CHECK(j.find("a setting was changed") != std::string::npos);
-    }
+    stats::Bench b; b.Start(1, 90, 4, 60, 1.01, 1);
+    int e = 1; for (int i = 0; i < 100; ++i) { stats::Record r = Second(e != 0); e = b.OnSecond(r); }
+    b.Abort("a setting was changed during the run");
+    const std::string j = b.Json();
+    CHECK(b.GetState() == stats::Bench::State::Aborted && j.find("\"status\":\"aborted\"") != std::string::npos && j.find("\"derived\":null") != std::string::npos);
+    CHECK(j.find("a setting was changed") != std::string::npos);
+}
+
+int main() {
+    TestPercentiles();
+    TestDerivedSecond();
+    TestSchedule();
+    TestSpread();
+    TestSettingsEcho();
+    TestLabels();
+    TestAborted();
 
     // ---- through bench.req and live.conf: a benchmark request, the run, the files ----
     char dir[] = "/tmp/vkistats_XXXXXX";
