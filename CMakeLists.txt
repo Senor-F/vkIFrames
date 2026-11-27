@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 project(vkIFrames VERSION 0.2.0 LANGUAGES CXX)
 
+# Docs and index check (tools/check_docs.py): documents under 150 lines, links resolve, INDEX.md matches the tree. Skipped without Python 3 or INDEX.md.
+option(VKIFRAMES_CHECK_DOCS "Run tools/check_docs.py when CMake configures" ON)
+if(VKIFRAMES_CHECK_DOCS AND EXISTS "${CMAKE_SOURCE_DIR}/INDEX.md")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        execute_process(COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_docs.py ${CMAKE_SOURCE_DIR}
+                        RESULT_VARIABLE _docs_rc OUTPUT_VARIABLE _docs_out ERROR_VARIABLE _docs_out)
+        if(NOT _docs_rc EQUAL 0)
+            message(FATAL_ERROR "tools/check_docs.py failed (turn off with -DVKIFRAMES_CHECK_DOCS=OFF):\n${_docs_out}")
+        endif()
+    endif()
+endif()
+
 # One release version for the whole project (library log line, Decky plugin, archives). The commit and its commit time come from git (or from
 # -DFRAMEGEN_COMMIT=... -DFRAMEGEN_COMMIT_TIME=<unix seconds> when building from a tarball): no build date or time is embedded, so two builds of the
 # same commit give the same library.

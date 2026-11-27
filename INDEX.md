@@ -86,6 +86,10 @@ tests/data/ref_*.txt | test reference data (clock-sim traces), read-only; see in
 decky/tests/test_*.py | Decky backend tests: clamp, launch options, status text, symlinks | decky backend, launch options, status text, symlink, script agreement
 
 ## Tools
+INDEX.md | this index: path, purpose, search words, by area | index, find files, rg INDEX.md
+tools/check_docs.py | checks doc sizes, links and index coverage; runs at configure | check_docs, 150 lines, broken link, index coverage, VKIFRAMES_CHECK_DOCS
+tools/code_size.py | measures file, function and change size against the limits | code_size, 500 lines, 40 lines, function length, over limit
+tools/make_data_map.py | writes index/data.md for read-only data files | make_data_map, data map, index/data.md
 tools/clock_sim/clock_sim.py | models the output clock: EMA, bypass gate, jitter buffer | clock_sim, output clock, simulation
 tools/clock_sim/export_ref.py | writes reference traces for test_scheduler into tests/data | export_ref, ref traces, tests/data
 tools/clock_sim/frame_sources.py | synthetic game frame-time patterns for the simulator | frame_sources, jitter, steady, wobble, ramp
@@ -93,7 +97,7 @@ tools/interp_eval/interp_eval.cpp | offline scoring of interpolation methods on 
 
 ## Docs (indexes of parts; text lives in the folders)
 README.md | user README: help, install, limits, config, how it works, build | readme, install, known issues, launch options, config, sanitizer builds, project layout
-readme/01-*.md ... readme/03-*.md | README parts: troubleshooting, how it works, quick start, live settings | If something goes wrong, Tested, matrix, Configuration, Project layout, Evaluating changes offline
+readme/*.md | README parts: troubleshooting, how it works, quick start, live settings | If something goes wrong, Tested, matrix, Configuration, Project layout, Evaluating changes offline
 DESIGN.md | architecture blueprint: rate matching, output clock, hold-one, flow, interpolation | design, architecture, ratio, output clock, t, held frame
 STATUS.md | implementation status and measurements | status, measurements, resume point, alpha
 TARGETS.md | target machines (Deck, desktop), environment, gamescope notes | Deck, gamescope, Mesa, target, present_timing support
@@ -109,7 +113,8 @@ AUDIT.md, audit/ | Auditor notes: priority list, review log (running log) | audi
 CLAUDE.md | rules for every session: roles, commits, anonymity, design decisions, project rules | rules, roles, Co-Authored-By, anonymity, TZ
 
 ## Data
-tests/data/ref_*.txt | see Tests; map to be written to index/data.md by tools/make_data_map.py | data map
+index/data.md | data map: size, purpose, section start lines of read-only data | data map, ref traces, pnpm-lock, offset, make_data_map
+tests/data/ref_*.txt | clock-sim reference traces, read-only; see [index/data.md](index/data.md) | ref_steady, ref_jit, ref_hitch, trace
 
 ## Third-party and generated
 LICENSE | Apache 2.0 licence text (read-only) | license, Apache

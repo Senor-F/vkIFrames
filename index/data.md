@@ -1,0 +1,18 @@
+# Data map (generated: edit tools/make_data_map.py instead)
+
+Read-only data files. `path | size | lines | type | purpose`. Large files list where sections start (line numbers), so jump there with offset/limit.
+
+decky/pnpm-lock.yaml | 50337 bytes | 1572 lines | YAML lock file (third-party, read-only) | pinned versions of the Decky plugin build dependencies; changed only by pnpm
+  sections start at line: 1 lockfileVersion, 3 settings, 7 overrides, 11 importers, 50 packages, 844 snapshots
+tests/data/ref_hitch.txt | 48487 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "hitch" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_hitch30.txt | 50288 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "hitch30" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_hitch60.txt | 50656 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "hitch60" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_hover.txt | 15574 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "hover" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_jit30.txt | 61821 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "jit30" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_jit40.txt | 50051 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "jit40" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_ramp.txt | 46475 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "ramp" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_steady30.txt | 61589 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "steady30" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_steady40.txt | 49898 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "steady40" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_steady58.txt | 15566 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "steady58" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_steady60.txt | 15544 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "steady60" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
+tests/data/ref_wobble.txt | 50039 bytes | 901 lines | text trace: line 1 "# target_fps kmax", then one line per native frame | expected output of the C++ scheduler for the "wobble" frame-time case; made by tools/clock_sim/export_ref.py, read by tests/test_scheduler.cpp
