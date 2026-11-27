@@ -11,35 +11,8 @@ import {
 import { callable, definePlugin, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { FaFilm } from "react-icons/fa";
-
-type Term = { key: string; eq: number };
-type SchemaItem = {
-  key: string;
-  label: string;
-  type: "toggle" | "slider";
-  default: number;
-  min?: number;
-  max?: number;
-  step?: number;          // normal slider step
-  fine?: number;          // finer step, used while "fine steps" is on
-  desc?: string;          // one or two sentences for the user
-  group?: "switch" | "main" | "gate" | "more";
-  needsLayer?: "live" | "restart";   // live: applied within a second; restart: read when a game starts
-  greyWhen?: Term[][];    // greyed out when any group has all its terms true
-  greyWhy?: string;
-};
-type LayerInfo = { installed: boolean; manifest: string; library: string | null; bundled_available: boolean };
-type State = {
-  schema: SchemaItem[];
-  values: Record<string, number>;
-  layer: LayerInfo;
-  live_conf: string;
-  refresh_hz: number;
-  refresh_src: string;
-  status: Record<string, unknown> | null;
-  bench: { status: string | null; reason: string; age_s: number; layer_cost_mean_ms: number | null; gpu_share: number | null } | null;
-  bench_file: string;
-};
+import { EndMarker, Gap, LaunchRow, describeValue } from "./sections";
+import type { LayerInfo, SchemaItem, State } from "./sections";
 
 const getState = callable<[], State>("get_state");
 const setValue = callable<[key: string, value: number], Record<string, number>>("set_value");
@@ -55,24 +28,6 @@ const LAUNCH_32BIT = "PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%";   // 32-b
 const LAUNCH_DXVK_ONLY = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" VKIFRAME_ENABLE=1 %command%';   // the same without WOW64 (not tested separately: the tested line is the one below)
 const LAUNCH_DXVK = 'DXVK_CONFIG="dxvk.enablePresentTiming = False" PROTON_USE_WOW64=1 VKIFRAME_ENABLE=1 %command%';   // Proton - Experimental, game loads the layer but gets no extra frames: DXVK stops using present timing (a workaround, tested in one game)
 
-// One launch option to copy: the whole line on a small font that wraps anywhere (the lines are long), a one-line note under it.
-function LaunchRow({ text, note, onCopy }: { text: string; note: string; onCopy: () => void }) {
-  return (
-    <PanelSectionRow>
-      <ButtonItem layout="below" onClick={onCopy}>
-        <span style={{ fontSize: 11, lineHeight: 1.25, whiteSpace: "normal", wordBreak: "break-all" }}>{text}</span>
-        <div style={{ fontSize: 10, opacity: 0.75, marginTop: 2 }}>{note}</div>
-      </ButtonItem>
-    </PanelSectionRow>
-  );
-}
-
-function describeValue(item: SchemaItem, v: number): string {
-  if ((item.key === "BASE_FPS_CAP" || item.key === "UI_MASK_THRESHOLD") && v === 0) return "off";
-  const step = item.fine ?? item.step ?? 1;
-  if (Number.isInteger(step)) return String(v);
-  return v.toFixed(step < 0.01 ? 3 : 2);
-}
 
 function isGreyed(item: SchemaItem, values: Record<string, number>, all: SchemaItem[]): boolean {
   const val = (k: string) => values[k] ?? all.find((i) => i.key === k)?.default ?? 0;
@@ -452,34 +407,6 @@ function Content() {
   );
 }
 
-// A greyed button with no action: it only gives the gamepad something to land on, so the panel can scroll down to the end of a text-only section.
-function EndMarker({ text }: { text: string }) {
-  return (
-    <PanelSectionRow>
-      <Focusable
-        onActivate={() => {}}
-        style={{
-          opacity: 0.4,
-          minHeight: 0,
-          height: 20,
-          lineHeight: "20px",
-          padding: "0 10px",
-          fontSize: 10,
-          textAlign: "center",
-          borderRadius: 3,
-          background: "rgba(255,255,255,0.08)",
-        }}
-      >
-        {text}
-      </Focusable>
-    </PanelSectionRow>
-  );
-}
-
-// Blank space plus a thin line between sections, so one section's tooltip text is not mistaken for the next one's.
-function Gap() {
-  return <div style={{ height: 1, margin: "18px 16px", background: "rgba(255,255,255,0.15)" }} />;
-}
 
 export default definePlugin(() => ({
   name: "vkIFrames",

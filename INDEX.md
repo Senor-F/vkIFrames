@@ -65,6 +65,7 @@ scripts/vkiframes-bench.sh | runs the layer-off/on benchmark in the running game
 ## Decky plugin (decky/)
 decky/main.py | plugin backend: install/remove layer, read and write live.conf, status | Decky, backend, live.conf, install, status text, launch options
 decky/src/index.tsx | quick-access panel UI (React) | panel, tsx, slider, toggle, QuickAccess
+decky/src/sections.tsx | panel sections and shared types, plain JSX builders | panel, section, EndMarker, Gap, LaunchRow, types
 decky/src/types.d.ts | TypeScript type declarations for the panel | types
 decky/settings_schema.json | settings the panel shows: key, default, range, step | settings_schema, default, range, step, VKIFRAME_
 decky/LIVECONF.md | live.conf protocol, plugin to layer | live config, REV, protocol, live.conf, hotkeys, vkiframes-ctl
