@@ -125,4 +125,136 @@ void LogRates(SwapchainState& sc, uint64_t now) {
     r = {.last_ns = now};
 }
 
+// One present of the queue's mutex-protected queue, with the Stage 2 timing chain when the swapchain has it.
+// tick_ns (CLOCK_MONOTONIC) is the time the frame is due; it becomes an absolute target only with VKIFRAME_ABSOLUTE=1.
+VkResult PresentWithTiming(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const VkPresentInfoKHR& in, uint64_t now, double tick_ns) {
+    const Config& cfg = GetConfig();
+    // Never mix with a present id from the application; our chain would clash with it.
+    const bool app_has_ids = FindInChain(in.pNext, VK_STRUCTURE_TYPE_PRESENT_ID_KHR) ||
+                             FindInChain(in.pNext, VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) ||
+                             FindInChain(in.pNext, VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT);
+    { std::lock_guard<std::mutex> l(sc.mu); ++sc.rates.shown; }
+    auto present = [&](const VkPresentInfoKHR* p) {
+        std::mutex* qm = QueueMutex(queue);
+        std::unique_lock<std::mutex> lk;
+        if (qm) lk = std::unique_lock<std::mutex>(*qm);        // the game thread submits to this queue too
+        return dt.QueuePresentKHR(queue, p);
+    };
+    if (!sc.timing_enabled || app_has_ids) return present(&in);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        TimingChain chain;
+        VkPresentInfoKHR pi = in;
+        {
+            std::lock_guard<std::mutex> l(sc.mu);
+            uint64_t target = 0;                                // 0: as soon as possible
+            if (sc.absolute_ok && cfg.timing_test) target = ToDomainTime(dt, sc, now + 2 * sc.timing.SmoothedNs());
+            else if (sc.absolute_ok && cfg.absolute && tick_ns > 0.0) target = ToDomainTime(dt, sc, uint64_t(tick_ns));
+            pi.pNext = BuildTimingChain(chain, sc, target, in.pNext);
+        }
+        const VkResult r = present(&pi);
+        if (r != VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT) return r;
+        std::lock_guard<std::mutex> l(sc.mu);
+        ++sc.st.queue_full_total;
+        DrainPastTimings(dt, sc);                               // free queue slots, then try once more
+    }
+    return present(&in);                                        // still full: present without timing rather than fail the game
+}
+
+AppChainInfo ClassifyPresentChain(const VkPresentInfoKHR* pi) {
+    AppChainInfo r;
+    for (auto* p = static_cast<const VkBaseInStructure*>(pi->pNext); p; p = p->pNext) {
+        switch (int(p->sType)) {
+            case VK_STRUCTURE_TYPE_PRESENT_ID_KHR: {
+                auto* x = reinterpret_cast<const VkPresentIdKHR*>(p);
+                if (x->swapchainCount != 1 || !x->pPresentIds) { r.kind = AppChain::Unsupported; return r; }
+                r.id = x->pPresentIds[0]; r.kind = AppChain::Carried; break; }
+            case VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR: {
+                auto* x = reinterpret_cast<const VkSwapchainPresentFenceInfoKHR*>(p);
+                if (x->swapchainCount != 1 || !x->pFences) { r.kind = AppChain::Unsupported; return r; }
+                r.fence = x->pFences[0]; r.kind = AppChain::Carried; break; }
+            case VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR: {
+                auto* x = reinterpret_cast<const VkSwapchainPresentModeInfoKHR*>(p);
+                if (x->swapchainCount != 1 || !x->pPresentModes) { r.kind = AppChain::Unsupported; return r; }
+                r.mode = x->pPresentModes[0]; r.has_mode = true; r.kind = AppChain::Carried; break; }
+            case VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR:
+            case VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT:
+                r.kind = AppChain::Unsupported; return r;
+            default: break;                                                      // other structures are dropped for a held frame
+        }
+    }
+    return r;
+}
+
+// The carried part of an application's present chain, as a pNext chain for the layer's own present of that frame.
+struct CarriedExt {
+    VkPresentIdKHR pid{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+    VkSwapchainPresentFenceInfoKHR fi{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR};
+    VkSwapchainPresentModeInfoKHR mi{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR};
+    uint64_t id{0}; VkFence fence{}; VkPresentModeKHR mode{}; bool has_mode{false};
+    const void* Link() {
+        const void* head = nullptr;
+        if (has_mode) { mi.swapchainCount = 1; mi.pPresentModes = &mode; mi.pNext = head; head = &mi; }
+        if (fence) { fi.swapchainCount = 1; fi.pFences = &fence; fi.pNext = head; head = &fi; }
+        if (id)    { pid.swapchainCount = 1; pid.pPresentIds = &id; pid.pNext = head; head = &pid; }
+        return head;
+    }
+};
+
+// Frames the layer holds back keep their application fence registered, so a wait for it releases the frame (see the hooks below).
+void HeldFenceAdd(DeviceDispatch& dt, SwapchainState& sc, const HeldFrame& h) {
+    if (!h.fence) return;
+    std::lock_guard<std::mutex> l(dt.fence_mu);
+    dt.held_fences.emplace_back(uint64_t(reinterpret_cast<uintptr_t>(h.fence)), sc.weak_from_this());
+}
+void HeldFencesDrop(DeviceDispatch& dt, SwapchainState* sc) {      // every held fence that belongs to a swapchain that is being destroyed
+    std::lock_guard<std::mutex> l(dt.fence_mu);
+    dt.held_fences.erase(std::remove_if(dt.held_fences.begin(), dt.held_fences.end(), [&](auto& e) { auto s = e.second.lock(); return !s || s.get() == sc; }), dt.held_fences.end());
+}
+void HeldFenceRemove(DeviceDispatch& dt, const HeldFrame& h) {
+    if (!h.fence) return;
+    std::lock_guard<std::mutex> l(dt.fence_mu);
+    const uint64_t k = uint64_t(reinterpret_cast<uintptr_t>(h.fence));
+    dt.held_fences.erase(std::remove_if(dt.held_fences.begin(), dt.held_fences.end(), [&](auto& e) { return e.first == k; }), dt.held_fences.end());
+}
+
+// Presents the real image of a held frame (through the ring when VKIFRAME_DEBUG_RING=1). Does not touch the ring pins.
+VkResult PresentFrame(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const HeldFrame& h, uint64_t now, double tick_ns) {
+    GpuState& g = *sc.gpu;
+    VkSemaphore wait = VK_NULL_HANDLE;
+    if (!GpuPrepareHeldPresent(dt, queue, g, h, GetConfig().debug_ring, wait)) {      // the debug round trip failed: show the real image
+        GpuPrepareHeldPresent(dt, queue, g, h, /*via_ring=*/false, wait);
+    }
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &wait;
+    pi.swapchainCount = 1; pi.pSwapchains = &sc.handle; pi.pImageIndices = &h.image_index;
+    CarriedExt ext; ext.id = h.present_id; ext.fence = h.fence; ext.mode = h.mode; ext.has_mode = h.has_mode;                   // the frame's own application id and fence
+    pi.pNext = ext.Link();
+    return PresentWithTiming(dt, queue, sc, pi, now, tick_ns);
+}
+
+// Presents the frame being held (if any) and drops its ring reference. Returns VK_SUCCESS when nothing was held.
+VkResult PresentHeld(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, uint64_t now) {
+    GpuState& g = *sc.gpu;
+    if (!g.held.valid) return VK_SUCCESS;
+    const HeldFrame h = g.held;
+    g.held.valid = false;
+    HeldFenceRemove(dt, h);
+    const VkResult r = PresentFrame(dt, queue, sc, h, now);
+    GpuUnpin(g, h.slot);
+    return r;
+}
+
+// Presents one synthetic frame: mix(A, B, t) written into the carrier's image (hidden == false) or a hidden image.
+VkResult PresentSynthetic(DeviceDispatch& dt, VkQueue queue, SwapchainState& sc, const HeldFrame& a, const HeldFrame& b, float t, bool hidden, uint64_t now, double tick_ns, bool extrap) {
+    uint32_t idx = 0; VkSemaphore wait = VK_NULL_HANDLE;
+    const VkResult sr = GpuSynthesize(dt, queue, *sc.gpu, a, b, t, hidden, idx, wait, extrap);
+    if (sr != VK_SUCCESS) return sr;
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &wait;
+    pi.swapchainCount = 1; pi.pSwapchains = &sc.handle; pi.pImageIndices = &idx;
+    CarriedExt ext; if (!hidden) { ext.id = a.present_id; ext.fence = a.fence; ext.mode = a.mode; ext.has_mode = a.has_mode; }       // the carrier stands in for A: it keeps A's id and fence
+    pi.pNext = ext.Link();
+    { std::lock_guard<std::mutex> l(sc.mu); ++sc.rates.synthetic; }
+    return PresentWithTiming(dt, queue, sc, pi, now, tick_ns);
+}
 } // namespace
