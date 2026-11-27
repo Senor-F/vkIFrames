@@ -70,27 +70,8 @@ public:
         SlewDelay(smoothed, wanted, p);
 
         plan.kind = Kind::Pair;
-        int emitted = 0;
-        const double span = m_v_cur - m_v_prev;
-        for (int guard = 0; guard < 256; ++guard) {
-            const double tick = m_anchor + double(m_next) * p.target_ns;
-            const double tau  = tick - m_L;                                 // content time of this tick
-            if (tau >= m_v_cur) break;                                      // belongs to the next pair
-            // A tick within kNativeFrac of B (the phase lock puts one there) is B itself: leave it to the next pair, where it is t = 0
-            // and shows the native frame without an interpolation pass. Without this a tick a few ns before B was t = 1 in this pair,
-            // a full pass for a frame that is B. The first tick of a pair is never deferred, so a pair keeps at least one tick.
-            if (emitted > 0 && span > 0 && tau >= m_v_cur - kNativeFrac * span) break;
-            ++m_next;
-            if (emitted > p.k_max) { ++plan.dropped; continue; }
-            const double t = span > 0 ? std::clamp((tau - m_v_prev) / span, 0.0, 1.0) : 0.0;
-            if (plan.n < kMaxTicks) plan.ticks[plan.n++] = {tick, t, t < kNativeFrac};
-            ++emitted;
-        }
-        if (plan.n == 0) {                                                  // the held frame must still go out
-            plan.carrier_only = true;
-            plan.carrier_time_ns = m_anchor + double(m_next) * p.target_ns;
-            ++m_next;
-        }
+        EmitTicks(plan, p);
+        AddCarrierIfEmpty(plan, p);
         return plan;
     }
 
@@ -199,6 +180,33 @@ private:
         }
         m_L += std::clamp(delta, -2.5 * step, 2.5 * step);
         return true;
+    }
+
+    void EmitTicks(Plan& plan, const Params& p) {                           // the ticks of the output clock that fall in this pair
+        int emitted = 0;
+        const double span = m_v_cur - m_v_prev;
+        for (int guard = 0; guard < 256; ++guard) {
+            const double tick = m_anchor + double(m_next) * p.target_ns;
+            const double tau  = tick - m_L;                                 // content time of this tick
+            if (tau >= m_v_cur) break;                                      // belongs to the next pair
+            // A tick within kNativeFrac of B (the phase lock puts one there) is B itself: leave it to the next pair, where it is t = 0
+            // and shows the native frame without an interpolation pass. Without this a tick a few ns before B was t = 1 in this pair,
+            // a full pass for a frame that is B. The first tick of a pair is never deferred, so a pair keeps at least one tick.
+            if (emitted > 0 && span > 0 && tau >= m_v_cur - kNativeFrac * span) break;
+            ++m_next;
+            if (emitted > p.k_max) { ++plan.dropped; continue; }
+            const double t = span > 0 ? std::clamp((tau - m_v_prev) / span, 0.0, 1.0) : 0.0;
+            if (plan.n < kMaxTicks) plan.ticks[plan.n++] = {tick, t, t < kNativeFrac};
+            ++emitted;
+        }
+    }
+
+    void AddCarrierIfEmpty(Plan& plan, const Params& p) {
+        if (plan.n == 0) {                                                  // the held frame must still go out
+            plan.carrier_only = true;
+            plan.carrier_time_ns = m_anchor + double(m_next) * p.target_ns;
+            ++m_next;
+        }
     }
 
     static double WantedDelay(double smoothed, double jitter) {             // one frame to hold + a jitter buffer (2x, capped at half a frame)
